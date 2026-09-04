@@ -5,7 +5,7 @@
 #include "common.h"
 #include "dBgCh_Actr.h"
 /* Final name, not a shadow method: the ROM symbol takes Fix12<int> and the call
-   site has an int. See src/_ZN17BowserSkyPlatform13InitResourcesEv.cpp for the same case. */
+   site has an int. See src/_ZN10daKpa3Bg_c13InitResourcesEv.cpp for the same case. */
 extern "C" short _ZN8dActor_c12ReflectAngleE5Fix12IiES1_s(void* self, int a, int b,
                                                        short c);
 #include "SurfaceInfo.h"

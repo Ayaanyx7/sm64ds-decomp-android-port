@@ -1,13 +1,13 @@
 //cpp
-// @symbol _ZN17BowserSkyPlatform13InitResourcesEv
-#include "BowserSkyPlatform.h"
+// @symbol _ZN10daKpa3Bg_c13InitResourcesEv
+#include "daKpa3Bg_c.h"
 // recovered name: daKpa3Bg_c_InitResources
 /* recovered: renamed to Class_Method */
 /* daKpa3Bg_c::InitResources - name recovered from the vtable slot it fills.
    The body is a decompilation verified against the ROM, not an
    inferred stub. Model, ModelBase, dBgW_Kc, dBgW_KcMbg and
    dBgW are the real classes, pulled in transitively through
-   BowserSkyPlatform.h -> dBgActor_c.h; declaring local shadows with bodies
+   daKpa3Bg_c.h -> dBgActor_c.h; declaring local shadows with bodies
    for them (as the pre-header-include draft did) redefines the real class
    and fails to compile, so this uses the real types directly. */
 struct BMD_File; struct KCL_File; struct dActor_c; struct Matrix4x3;
@@ -33,7 +33,7 @@ extern "C" CLPS_Block* data_ov060_0211a980[];
 extern "C" void _ZN4dBgW22UpdatePosWithTransformERS_P8dActor_cR5dBgPiR7Vector3P10Vector3_16S8_();
 extern "C" void func_ov060_021183f4();
 
-s32 BowserSkyPlatform::InitResources()
+s32 daKpa3Bg_c::InitResources()
 {
     char* self = (char*)this;
     int idx = *(int*)(self + 8) & 0xf;

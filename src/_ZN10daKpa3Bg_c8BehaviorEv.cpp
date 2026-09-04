@@ -1,6 +1,6 @@
 //cpp
-// @symbol _ZN17BowserSkyPlatform8BehaviorEv
-#include "BowserSkyPlatform.h"
+// @symbol _ZN10daKpa3Bg_c8BehaviorEv
+#include "daKpa3Bg_c.h"
 // recovered name: daKpa3Bg_c_Behavior
 /* recovered: renamed to Class_Method */
 /* daKpa3Bg_c::Behavior - recovered from vtable slot identity */
@@ -16,7 +16,7 @@ struct C {
     unsigned char pad2[2];
     unsigned char flag;
 };
-s32 BowserSkyPlatform::Behavior() {
+s32 daKpa3Bg_c::Behavior() {
     C* c = (C*)this;
     (c->*(data_ov060_0211b1ac[c->idx].pmf))();
     _ZN10dBgActor_c21UpdateModelPosAndRotYEv(c);

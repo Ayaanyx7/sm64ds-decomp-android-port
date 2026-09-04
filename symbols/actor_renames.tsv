@@ -1353,13 +1353,13 @@ ov060	0x02117b9c	func_ov060_02117b9c	_ZN10daKpa2Bg_c6RenderEv	vtable slot 9
 ov060	0x02117bc8	func_ov060_02117bc8	_ZN10daKpa2Bg_c8BehaviorEv	vtable slot 6
 ov060	0x02117c30	func_ov060_02117c30	_ZN10daKpa2Bg_c13InitResourcesEv	vtable slot 0
 ov060	0x02117cdc	func_ov060_02117cdc	daKpa2Bg_c_classInit	spawnfunc
-ov060	0x02118408	func_ov060_02118408	BowserSkyPlatform_Spawn	spawnfunc
-ov060	0x02118438	func_ov060_02118438	_ZN9SpikeBombD1Ev	vtable slot 16 (was _ZN17BowserSkyPlatformD1Ev)
-ov060	0x02118470	func_ov060_02118470	_ZN9SpikeBombD0Ev	vtable slot 17 (was _ZN17BowserSkyPlatformD0Ev)
-ov060	0x02118ab0	func_ov060_02118ab0	_ZN9SpikeBomb16CleanupResourcesEv	vtable slot 3 (was _ZN17BowserSkyPlatform16CleanupResourcesEv)
-ov060	0x02118ad4	func_ov060_02118ad4	_ZN9SpikeBomb6RenderEv	vtable slot 9 (was _ZN17BowserSkyPlatform6RenderEv)
-ov060	0x02118b2c	func_ov060_02118b2c	_ZN9SpikeBomb8BehaviorEv	vtable slot 6 (was _ZN17BowserSkyPlatform8BehaviorEv)
-ov060	0x02118bb4	func_ov060_02118bb4	_ZN9SpikeBomb13InitResourcesEv	vtable slot 0 (was _ZN17BowserSkyPlatform13InitResourcesEv)
+ov060	0x02118408	func_ov060_02118408	daKpa3Bg_c_classInit	spawnfunc
+ov060	0x02118438	func_ov060_02118438	_ZN9SpikeBombD1Ev	vtable slot 16 (was _ZN10daKpa3Bg_cD1Ev)
+ov060	0x02118470	func_ov060_02118470	_ZN9SpikeBombD0Ev	vtable slot 17 (was _ZN10daKpa3Bg_cD0Ev)
+ov060	0x02118ab0	func_ov060_02118ab0	_ZN9SpikeBomb16CleanupResourcesEv	vtable slot 3 (was _ZN10daKpa3Bg_c16CleanupResourcesEv)
+ov060	0x02118ad4	func_ov060_02118ad4	_ZN9SpikeBomb6RenderEv	vtable slot 9 (was _ZN10daKpa3Bg_c6RenderEv)
+ov060	0x02118b2c	func_ov060_02118b2c	_ZN9SpikeBomb8BehaviorEv	vtable slot 6 (was _ZN10daKpa3Bg_c8BehaviorEv)
+ov060	0x02118bb4	func_ov060_02118bb4	_ZN9SpikeBomb13InitResourcesEv	vtable slot 0 (was _ZN10daKpa3Bg_c13InitResourcesEv)
 ov060	0x02118cbc	func_ov060_02118cbc	SpikeBomb_Spawn	spawnfunc
 ov060	0x02118cfc	func_ov060_02118cfc	_ZN16BowserShockwavesD1Ev	vtable slot 16
 ov060	0x02118d64	func_ov060_02118d64	_ZN16BowserShockwavesD0Ev	vtable slot 17
@@ -1376,9 +1376,9 @@ ov060	0x0211a7d0	data_ov060_0211a7d0	BowserFire_SpawnInfo	spawninfo
 ov060	0x0211a7f4	data_ov060_0211a7f4	_ZTV10BowserFire	vtable alloc=0x38c
 ov060	0x0211a88c	data_ov060_0211a88c	daKpa2Bg_c_SpawnInfo	spawninfo
 ov060	0x0211a8b0	data_ov060_0211a8b0	_ZTV10daKpa2Bg_c	vtable alloc=0x570
-ov060	0x0211a964	data_ov060_0211a964	BowserSkyPlatform_SpawnInfo	spawninfo
+ov060	0x0211a964	data_ov060_0211a964	daKpa3Bg_c_SpawnInfo	spawninfo
 ov060	0x0211aa68	data_ov060_0211aa68	SpikeBomb_SpawnInfo	spawninfo
-ov060	0x0211aa8c	data_ov060_0211aa8c	_ZTV9SpikeBomb	vtable alloc=? (was _ZTV17BowserSkyPlatform)
+ov060	0x0211aa8c	data_ov060_0211aa8c	_ZTV9SpikeBomb	vtable alloc=? (was _ZTV10daKpa3Bg_c)
 ov060	0x0211ab30	data_ov060_0211ab30	BowserShockwaves_SpawnInfo	spawninfo
 ov060	0x0211ab54	data_ov060_0211ab54	_ZTV16BowserShockwaves	vtable alloc=0x218
 ov062	0x02115ee0	func_ov062_02115ee0	_ZN7ChuckyaD1Ev	vtable slot 16
