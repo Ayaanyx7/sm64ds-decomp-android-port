@@ -1557,10 +1557,15 @@ void port_actor_render(void);        /* phase 5: the render bucket */
    the actor bucket, the submission after the level pass.
    port_particle_frame is Stage::Render's SysTracker::Update statement, so the
    slot-9 seat retires it: the ROM's own body makes that call now, and this one
-   survives under SM64DS_STAGE_SLOT9_HOST=1 only. port_particle_render is
-   GraphCallback1's, which no seated slot runs, so it stays unconditional. */
+   survives under SM64DS_STAGE_SLOT9_HOST=1 only. GraphCallback1's call is
+   the ROM's too now: phase 5 (port_frame_phase5, hal/rom_frame.cpp, run
+   linkfull lane K2RENDER) runs func_02019404, which dispatches the Stage
+   block's word 1; the two particle_bridges brackets around it keep the
+   SM64DS_NO_FX_RENDER A/B and SM64DS_FX_TRACE=3's triangle dump. */
 void port_particle_frame(void);      /* Stage::Render: SysTracker::Update */
-void port_particle_render(void);     /* GraphCallback1: Particle::RenderAll */
+void port_frame_phase5(void);        /* phase 5: func_02019404 (hal/rom_frame.cpp) */
+int port_particle_phase5_begin(void);
+void port_particle_phase5_end(void);
 void port_particle_counts(int *systems, int *particles);
 void port_actor_scene_pass(void);    /* phase 1: scene-tree housekeeping */
 /* THE ROM'S WHOLE ACTOR FRAME (run linkfull, lane K1LOOP; hal/actor_registry):
@@ -15831,7 +15836,7 @@ int main(void)
                 /* THE PARTICLE SIMULATION GOES HERE, which is where
                    Stage::Render drives it. The SUBMISSION does not: it belongs
                    after the level, where Stage::GraphCallback1 runs it, and it
-                   is called from there (port_particle_render, below the level
+                   is made there (phase 5, func_02019404, below the level
                    pass). Drawing translucent particles ahead of the opaque
                    level loses them all to the ground drawn over them. */
                 /* SM64DS_SWITCH=<0..3> drives the cap-block character change
@@ -16268,10 +16273,17 @@ int main(void)
             hal_render_player_world(player);
         else
             hal_player_texseq_tick(player);
-        /* Stage::GraphCallback1: the particle submission, last, after every
-           opaque draw in the frame. The billboards carry their own absolute
-           position matrix so nothing above this line has to be preserved for
-           them; what they need is to be the last thing the raster sees. */
+        /* PHASE 5, THE ROM'S func_02019404 (run linkfull, lane K2RENDER):
+           src/func_020197b8.c:48, the graphics block's word 1, after the
+           frame's render walk and before phase 6. On a level the block is the
+           Stage's and word 1 is Stage::GraphCallback1: the particle
+           submission, last, after every opaque draw in the frame (the ROM's
+           render walk includes the player, which this loop draws just above).
+           The billboards carry their own absolute position matrix so nothing
+           above this line has to be preserved for them; what they need is to
+           be the last thing the raster sees. This point used to call
+           Particle::RenderAll by hand (port_particle_render); the ROM's
+           dispatch makes the call now, under the same gates. */
         static int fx_no_actors = -1;
         if (fx_no_actors < 0)
             fx_no_actors = getenv("SM64DS_NO_ACTORS") ? 1 : 0;
@@ -16287,8 +16299,15 @@ int main(void)
                    showed a 16-bit countdown per 0x78-byte particle entry
                    advanced here (8 skipped renders, 8 steps short), so it
                    belongs with the Stage::Render spans the tick-only re-sim
-                   keeps, not with the pixel work it drops. */
-                port_particle_render();
+                   keeps, not with the pixel work it drops.
+                   port_particle_phase5_begin answers 0 only for the
+                   SM64DS_NO_FX_RENDER A/B (on a level, word 1's only work is
+                   the particle submission) and takes SM64DS_FX_TRACE=3's
+                   before-count; _end prints what the submission added. */
+                if (port_particle_phase5_begin()) {
+                    port_frame_phase5();
+                    port_particle_phase5_end();
+                }
                 if (rb_probe_mode()) rb_note(RB_PARTICLE, rb_now_ms() - rb_t);
             }
             if (fx_tr) {

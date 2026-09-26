@@ -612,6 +612,8 @@ void hal_camera_widen_frustum_scene(void);
 void hal_widen_probe_scene_frame(int frame, const char *where);  /* inert unset */
 /* phase 2: the ROM's func_02019390 and the settle-clear (hal/fader_wipes.cpp) */
 void port_frame_phase2(void);
+/* phase 5: the ROM's func_02019404 (hal/rom_frame.cpp, lane K2RENDER) */
+void port_frame_phase5(void);
 extern "C" int data_0209d50c;        /* the ROM's phase word (hal/rom_frame.cpp) */
 void port_frame_clock_tick(void);    /* phase 6: data_020a0db0 (hal/fader_wipes.cpp) */
 /* SM64DS_MG_RESULTS_PROBE (hal/scene_mg.cpp), off unless the variable is set */
@@ -7683,10 +7685,19 @@ extern "C" void port_scene_tick(int frame, int tick_game)
             hal_widen_probe_scene_frame(frame, "pre ");
         }
         if (tick_game) {
-            if (k1_rom)
+            if (k1_rom) {
                 port_actor_frame(0);
-            else
+                /* PHASE 5 (run linkfull, lane K2RENDER): src/func_020197b8.c:48,
+                   `data_0209d50c = 5; func_02019404();`, the graphics block's
+                   word 1, right after the render walk it follows on the DS.
+                   Every scene block's word 1 is a `return 1` body
+                   (hal/rom_frame.cpp's banner has the census; the exit line
+                   names each table phase 5 met). A frame whose render walk
+                   runs in the render block below takes phase 5 there. */
+                port_frame_phase5();
+            } else {
                 port_actor_tick();
+            }
             /* AFTER the actor phases, so it reports the state the frame ended
                in rather than the one it started in. */
             port_title_state_trace(frame);
@@ -7765,6 +7776,7 @@ extern "C" void port_scene_tick(int frame, int tick_game)
                 if (trace) std::fprintf(stderr, "[scene-trace] f%d actor_render\n", frame);
                 hal_widen_probe_scene_frame(frame, "pre ");
                 port_actor_render();
+                port_frame_phase5();   /* phase 5 after this frame's render walk */
             }
             /* WIDESCREEN OBJECT CULL, THE SCENE PATH'S HALF, gated on the
                RUNTIME aspect (ntr::widescreen) rather than a compile tier.

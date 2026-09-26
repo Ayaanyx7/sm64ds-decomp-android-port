@@ -191,10 +191,11 @@
  * menu's already do: port_graph_block_beat (func_02019144's head) calls slot 2
  * once a frame on every level, which is the ROM's own point for the minimap
  * affine, and the stand-in call hal/sub_screen.cpp made in its place is gone.
- * The port dispatches words 0 and 2 only. Word 0 is GraphCallback0, a bare
- * `return 1` both of its callers discard; word 1, Stage::GraphCallback1
- * (Particle::RenderAll), is func_02019404's, which the port does not run, so
- * no particle pass is added.
+ * Word 0 is GraphCallback0, a bare `return 1` both of its callers discard;
+ * word 1, Stage::GraphCallback1 (Particle::RenderAll), is func_02019404's,
+ * which the frame's phase 5 runs since run linkfull lane K2RENDER: it is the
+ * level's particle submission, made by hand at the same point before that
+ * (hal/rom_frame.cpp's port_frame_phase5), so no particle pass is added.
  *
  * THE THREE `return 1` BODIES ARE ONE BODY IN THIS IMAGE. GraphCallback0, 1
  * and 3 are all `return 1` and /OPT:ICF folds them: the baseline map has

@@ -24113,6 +24113,29 @@ foreach(_tw32k1loop walk_window walk_window_hires smoke_player)
     target_sources(${_tw32k1loop} PRIVATE ${SLICE_W32_K1LOOP_SOURCES})
 endforeach()
 
+# ===========================================================================
+# K2RENDER (run linkfull, lane K2RENDER): THE ROM'S PHASE 5
+# ===========================================================================
+#
+# port/slice_w32_k2render.txt carries func_02019404 (the ROM's phase-5 step,
+# the graphics block's word 1, called by hal/rom_frame.cpp's port_frame_phase5
+# from both host loops). hal/rom_frame.cpp is compiled by all three hosting
+# targets, so all three take the slice (a target that compiles a caller
+# without its callee answers LNK2019). Placed above XREL1's block, which stays
+# last.
+port_read_lines("${CMAKE_CURRENT_SOURCE_DIR}/slice_w32_k2render.txt" SLICE_W32_K2RENDER_LINES)
+set(SLICE_W32_K2RENDER_SOURCES "")
+foreach(line IN LISTS SLICE_W32_K2RENDER_LINES)
+    string(STRIP "${line}" line)
+    if(line MATCHES "^#" OR line STREQUAL "")
+        continue()
+    endif()
+    list(APPEND SLICE_W32_K2RENDER_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../${line}")
+endforeach()
+foreach(_tw32k2render walk_window walk_window_hires smoke_player)
+    target_sources(${_tw32k2render} PRIVATE ${SLICE_W32_K2RENDER_SOURCES})
+endforeach()
+
 # XREL1 (run linkfull): EVERY OVERLAY MOUNT DEPENDS ON THE CONFIG IT READS.
 #
 # tools/ovdata.py builds each mount out of its overlay's config/arm9/overlays/
