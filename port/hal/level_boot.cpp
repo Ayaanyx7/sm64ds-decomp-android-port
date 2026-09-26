@@ -6093,35 +6093,36 @@ static void port_level_free_captured_kcl(void)
    functions above are the port freeing the level's KCL because the port's
    level change never runs Stage::CleanupResources. The Game Over crossing
    does run it -- _ZTV5Stage slot 3, hal/stage_bridges.cpp's st_clean -- and
-   the ROM body frees the image through its own Deallocate(GetFile()). That
-   leaves this table's row naming a block the allocator has already taken
-   back, and the next level change's port_level_capture_kcl would find the
-   row by its handle and free the block a second time (after the scene in
-   between may have been handed the same memory). So the row goes, here, the
-   moment the ROM's free has happened: removed from the table rather than left
-   as a hole, the same compaction port_level_reset_host makes. Returns 1 if a
-   row named the image. */
+   the ROM body frees the image through its own Deallocate(GetFile()), then
+   the ROM destroys the Stage the collider lives in.
+
+   RE-HOMED ONTO THE COLLIDER'S RECORD when lane S4FILE's LoadFile retired the
+   port's handle table (the merge of both into lane K7GC2's branch; the
+   GAMEOVER1 version dropped that table's row). What the port still holds that
+   names the freed image is g_stage_mc, the collider port_level_capture_kcl
+   reads the next KCL from, and a capture already pending on the same block.
+   Both are forgotten here, the moment the ROM's free has happened, so the
+   next level change's capture does not read a collider inside a destroyed
+   Stage and free the block a second time (after the scene in between may have
+   been handed the same memory); the next Stage build seats g_stage_mc again
+   (port_stage_boot_body). Returns 1 if either named the image. */
 extern "C" int port_level_kcl_released(void *image)
 {
-    for (int i = 0; i < g_loadfile_used; ++i) {
-        if ((void *)g_loadfile_slot[i].filePtr != image)
-            continue;
-        std::fprintf(stderr, "  [lvl] the Stage's own teardown freed handle %u's "
-                     "image %p (the level's KCL); dropping its LoadFile row\n",
-                     (unsigned)g_loadfile_slot[i].fileID, image);
-        for (int j = i; j + 1 < g_loadfile_used; ++j) {
-            g_loadfile_slot[j] = g_loadfile_slot[j + 1];
-            g_loadfile_loads[j] = g_loadfile_loads[j + 1];
-        }
-        --g_loadfile_used;
-        g_loadfile_slot[g_loadfile_used].fileID = 0;
-        g_loadfile_slot[g_loadfile_used].numRefs = 0;
-        g_loadfile_slot[g_loadfile_used].filePtr = 0;
-        g_loadfile_slot[g_loadfile_used].pad = 0;
-        g_loadfile_loads[g_loadfile_used] = 0;
-        return 1;
+    int named = 0;
+    if (g_stage_mc && (void *)((dBgW_Kc *)g_stage_mc)->kclFile == image) {
+        g_stage_mc = 0;
+        named = 1;
     }
-    return 0;
+    if (g_have_pending_kcl && (void *)g_pending_kcl == image) {
+        g_have_pending_kcl = 0;
+        g_pending_kcl = 0;
+        named = 1;
+    }
+    if (named)
+        std::fprintf(stderr, "  [lvl] the Stage's own teardown freed the level's "
+                     "KCL image %p; the port's collider record of it is "
+                     "dropped\n", image);
+    return named;
 }
 
 extern "C" void port_level_reset_host(void)
