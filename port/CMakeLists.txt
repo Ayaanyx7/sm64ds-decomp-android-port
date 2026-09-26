@@ -23661,6 +23661,39 @@ set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/hal/fs.cpp" APPEND PROPERTY
     COMPILE_DEFINITIONS
     "$<$<IN_LIST:$<TARGET_PROPERTY:NAME>,port_slice_shared;walk_window;walk_window_hires;smoke_player>:SM64DS_LOADFILE_ROM=1>")
 
+# ===========================================================================
+# W32 FILEB (run linkfull wave 32, lane FILEB): THE FILE LOADER, PART B
+# ===========================================================================
+# The game's own SharedFilePtr::Load in place of hal/fs.cpp's host Load and its
+# decoded-file cache: an archive member comes out of the NARC the ROM's
+# LoadArchive mounted, a loose file off the card (hal/fs_names.cpp's image).
+# Mods are served by the card: hal/fs.cpp puts every claimed file in the
+# card's patched range, an archive member inside a rebuilt copy of its NARC.
+# Same shape as S4FILE's block above: the three hosting targets take the
+# slice, and hal/fs.cpp (compiled once for them as port_slice_shared) retires
+# its host Load behind SM64DS_SFP_LOAD_ROM on that whole name list; the smoke_*
+# harnesses keep it. The flat name is a reverse face (port/faces_sync.txt).
+port_read_lines("${CMAKE_CURRENT_SOURCE_DIR}/slice_w32_fileb.txt" SLICE_W32_FILEB_LINES)
+set(SLICE_W32_FILEB_SOURCES "")
+foreach(line IN LISTS SLICE_W32_FILEB_LINES)
+    string(STRIP "${line}" line)
+    if(line MATCHES "^#" OR line STREQUAL "")
+        continue()
+    endif()
+    list(APPEND SLICE_W32_FILEB_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../${line}")
+endforeach()
+set(FILEB_LOAD_SRC "${CMAKE_CURRENT_SOURCE_DIR}/../src/_ZN13SharedFilePtr4LoadEv.cpp")
+if(NOT FILEB_LOAD_SRC IN_LIST SLICE_W32_FILEB_SOURCES)
+    message(FATAL_ERROR "port/slice_w32_fileb.txt does not list "
+            "src/_ZN13SharedFilePtr4LoadEv.cpp, the Load hal/fs.cpp's copy retires for")
+endif()
+foreach(_tfileb walk_window walk_window_hires smoke_player)
+    target_sources(${_tfileb} PRIVATE ${SLICE_W32_FILEB_SOURCES})
+endforeach()
+set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/hal/fs.cpp" APPEND PROPERTY
+    COMPILE_DEFINITIONS
+    "$<$<IN_LIST:$<TARGET_PROPERTY:NAME>,port_slice_shared;walk_window;walk_window_hires;smoke_player>:SM64DS_SFP_LOAD_ROM=1>")
+
 # XREL1 (run linkfull): EVERY OVERLAY MOUNT DEPENDS ON THE CONFIG IT READS.
 #
 # tools/ovdata.py builds each mount out of its overlay's config/arm9/overlays/

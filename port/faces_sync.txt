@@ -4303,6 +4303,10 @@ __ZN8daTree_c8BehaviorEv                                                 ?Behavi
 # when the definition it shadows is in that same list.
 __ZN13ExpandingHeap11VDeallocateEPv                                      ?VDeallocate@ExpandingHeap@@UAEXPAX@Z                            0x0203c50c R
 __ZN13SharedFilePtr8LoadFileEv                                           ?LoadFile@SharedFilePtr@@QAEPAXXZ                                0x02017bc4 R
+# Run linkfull lane FILEB: the ROM's SharedFilePtr::Load (port/slice_w32_fileb.txt)
+# in place of hal/fs.cpp's host Load. SharedFilePtr::LoadFile calls it by its flat
+# name, receiver first; the matched body is a real member, so the flat name is a face.
+__ZN13SharedFilePtr4LoadEv                                               ?Load@SharedFilePtr@@QAEPAXXZ                                    0x02017c54 R
 # RETIRED AT THE FOLD (run link100 wave 9c, lane INT4). Lane DTORS2's gate 1
 # generates an extern "C" forwarder for this same flat ROM name in
 # port/hal/dtor_forwarders_gen_w9c.cpp, off the same ROM address, and both

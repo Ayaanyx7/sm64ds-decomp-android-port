@@ -111,6 +111,7 @@ extern "C" struct port_arc_entry port_archive_map[13]; /* host-src/romdata.c */
 extern "C" {
 extern unsigned (*port_fs_mod_map)(unsigned fileID);
 extern u32 (*port_fs_mod_filter)(unsigned fileID, u8 **data, u32 size);
+extern void (*port_fs_mod_claims)(void (*claim)(unsigned fileID));
 }
 
 namespace {
@@ -2903,14 +2904,75 @@ u32 mod_filter(unsigned fileID, u8 **data, u32 size)
     return size;
 }
 
+/* EVERY FILE AN ACTIVE MOD ABOVE CAN CHANGE, named to the card (run linkfull,
+   lane FILEB). The game targets link the ROM's own SharedFilePtr::Load, which
+   reads a loose file off the card and an archive member out of the NARC the
+   ROM mounted off the card, so a mod's bytes have to be ON the card: hal/fs.cpp
+   (port_fs_card_patches) runs each id claimed here through mod_map and
+   mod_filter once, at the first card read, and the card serves the result out
+   of its patched range (a member inside its rebuilt NARC). Each claim sits
+   under the gate its filter checks, so a mod that is off claims nothing; a
+   claim whose served bytes come out the same as the cartridge's is dropped
+   there, so claiming a file a filter may leave alone costs nothing. The
+   narrow harnesses still link hal/fs.cpp's host Load, which runs the same two
+   hooks per load and never asks for claims. */
+void mod_claims(void (*claim)(unsigned fileID))
+{
+    unsigned i;
+    if (lovesme_character()) {
+        resolve_ids();
+        if (g_yoshi_model && g_mario_model) {
+            claim(g_yoshi_model);
+            for (int a = 0; a < ANIM_COUNT; ++a)
+                if (g_anims[a])
+                    claim(g_anims[a]);
+        }
+    }
+    if (!pc_any() && palette_combo()) {
+        palette_load();
+        if (g_pal_state > 0)
+            for (i = 0; i < g_pal_npatch; ++i)
+                if (g_pal_patch[i].file_id)
+                    claim(g_pal_patch[i].file_id);
+    }
+    if (pc_any()) {
+        pc_load();
+        for (int c = 0; c < PC_COUNT; ++c)
+            if (g_pc[c].active)
+                for (i = 0; i < g_pc[c].npatch; ++i)
+                    if (g_pc[c].patch[i].file_id)
+                        claim(g_pc[c].patch[i].file_id);
+    }
+    if (getenv("SM64DS_VS_CHAR_COLORS")) {
+        vcc_load();
+        if (g_vcc_any)
+            for (int g = 0; g < vscg::kVscGroupCount && g < 64; ++g)
+                if (g_vcc_group_id[g])
+                    claim(g_vcc_group_id[g]);
+    }
+    if (getenv("SM64DS_VS_COLORS")) {
+        vsc_load();
+        for (i = 0; i < g_vsc_npatch; ++i)
+            if (g_vsc_patch[i].file_id)
+                claim(g_vsc_patch[i].file_id);
+    }
+    {   /* the sixteen Yoshi rows: unconditional, like yoshi_rows16_filter */
+        const unsigned y = resolve_file_by_name(YOSHI_BODY);
+        if (y)
+            claim(y);
+    }
+}
+
 /* Installed before main by the CRT's initializer walk; every fs call the
    game makes happens far later. Targets that do not link this file keep the
-   null hooks. */
+   null hooks. hal/stage_geom.cpp chains onto the filter and the claims from
+   .CRT$XCV, after this. */
 struct InstallHooks {
     InstallHooks()
     {
         port_fs_mod_map = mod_map;
         port_fs_mod_filter = mod_filter;
+        port_fs_mod_claims = mod_claims;
     }
 } g_install;
 

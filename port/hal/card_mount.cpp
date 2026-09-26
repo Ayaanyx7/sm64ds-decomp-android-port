@@ -81,9 +81,12 @@
 //     before main's loop starts any scene, so every mount appends behind it.
 //     The audit below prints the list and the current directory to prove it.
 //
-// hal/fs.cpp keeps its own copy of each NARC for the host readers that are
-// still faces (SharedFilePtr::Load, LoadFile, func_0201817c: route R3's). It
-// never read this table and does not now.
+// hal/fs.cpp keeps its own copy of each NARC, and since run linkfull (lanes
+// S4FILE and FILEB) no game read goes through it: LoadFile, func_0201817c and
+// SharedFilePtr::Load are the ROM's and read members out of the archives
+// mounted here. The copy serves the mods (which rebuild a NARC the card then
+// serves in place of the stock one), name lookups, the narrow harnesses' host
+// readers and one host panel. It never read this table and does not now.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
