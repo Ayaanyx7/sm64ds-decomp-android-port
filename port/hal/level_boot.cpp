@@ -3221,6 +3221,90 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
        logic can open a text box, so it rides the new call */
     port_message_archive_seat();
     PortLvlOverlay *o = (PortLvlOverlay *)port_level_mount();
+    /* THE SAVE BLOCK'S OPENING BIT, SETTLED BEFORE THE STAGE HALF READS IT (run
+       linkfull, lane CLOUDOAM1). On the cartridge data_0209caa0 came off the card
+       with the file, so every reader in Stage::InitResources sees one value from
+       its first line to its last -- and its first reader is Stage::LoadGraphics2D
+       (InitResources:351, reached through hal_sub_screen_level_init just below),
+       whose `(data_0209caa0[2] & 0x80) == 0` branch is the opening's bottom
+       screen: the cloud sky, and the cloud sprites' tiles (file 0x23d into sub
+       OBJ VRAM at 0x06600000). This decision used to sit further down, after that
+       call, so the call saw a bit this boot had not settled yet and
+       hal/sub_screen.cpp forced it set around the call; the opening's clouds then
+       drew with whatever the file select had left in sub OBJ VRAM (its letters).
+       Deciding it here, before the first reader, lets the ROM's own branch pick
+       the asset set, as it does on the DS. No port line between here and the
+       old position reads bit 0x80, and the ROM code in between now sees the
+       value a loaded file would have given it. */
+    /* ONE BIT, TWO JOBS, and they pull opposite ways on a port with no
+       sound engine.
+       LoadClsnAndObjects' last decision is the intro cutscene: mode 0 plus
+       bit 7 of data_0209caa0[2] clear (= the intro has not played) runs
+       StartIntroCutscene, which loads a sound group and, three calls down,
+       reads the DS console-type word at 0x027ffc40. So the bit has to be
+       SET across the boot.
+       The same bit is the one Player::InitResources tests to decide whether
+       to load the character's voice bank -- the identical unhosted sound
+       path. So it has to be CLEAR when the Player initialises.
+       Scoping it to the boot satisfied both while the Player was still the
+       harness's (Stage A1).
+
+       IT STAYS SET NOW, and that is the third job the same bit does: it is
+       what the whole bottom screen renders through. HUD::Behavior and
+       HUD::Render both open on
+
+           if ((data_0209caa0[2] & 0x80) == 0) return 1;
+
+       -- the adventure-mode branch draws the health meter, the coins, the
+       stars, the timer and the camera buttons, and with the bit clear it
+       returns before any of them. Clearing it after the boot left a hosted,
+       ticking, correctly-constructed HUD that drew nothing at all.
+
+       Leaving it set is the state the real game is in during gameplay: the
+       intro HAS played by the time a level is being walked around in. The
+       restore was only ever protecting Player::InitResources' voice-bank
+       load, and the Player initialises INSIDE the boot -- while the bit is
+       set either way -- so the restore was not protecting anything by the
+       time the entrance started spawning him.
+
+       SM64DS_INTRO_UNSEEN=1 puts the old behaviour back, which is also how to
+       see the pre-intro cloud backdrop the bottom screen shows without it.
+
+       AND THE ONE ENTRY THAT WANTS IT CLEAR. port_intro_wants_play() (the seam
+       above port_stage_boot_body) is true only for a title-bridge crossing into
+       a fresh file.
+       (run rel0215 lane boot-title: this used to add "and only with
+       SM64DS_INTRO=1 -- see the seam for the four measured gaps that keep it
+       opt-in". BOTH HALVES ARE NOW FALSE. The four gaps closed, the seam's
+       default inverted, and the opening PLAYS unless SM64DS_SKIP_INTRO is
+       present; SM64DS_INTRO no longer exists as a knob. What is unchanged is
+       the sentence this correction interrupts -- the crossing into a fresh file
+       is still the only thing that makes this true, so no level boot that named
+       its own level can reach it.)
+       On that one boot the bit is left
+       ALONE: LoadClsnAndObjects below then takes its own intro branch, declines to
+       spawn the HUD exactly as the ROM does, and calls StartIntroCutscene. The
+       bit gets set by the ROM's own hand at the end of the flight
+       (src/func_ov085_0212d5dc.cpp:51), and the HUD comes up on the next boot.
+       LakituBro::InitResources reads the same bit to choose his intro state
+       chain, and it runs inside this object pass, so it has to still be clear
+       here rather than restored afterwards. */
+    const int play_intro = port_intro_wants_play();
+    /* ...and the boot that CONTINUES an opening. ProcessKuppaScript's cmd 0x0b
+       parked the next script in data_0209fc4c next to the closing
+       LoadLevelNoReturn; ContinueKuppaScriptIfNecessary (inside
+       LoadClsnAndObjects below) is what consumes it. Non-zero HERE means this
+       boot is the opening's second half, and the bit has to stay clear so
+       LakituBro::InitResources picks the opening chain data_ov085_02130790 and
+       the ROM's own func_ov085_0212d5dc:51 writes it. */
+    const int continuing = (data_0209fc4c != 0);
+    unsigned char intro_seen = (unsigned char)(data_0209caa0[8] & 0x80);
+    if (!play_intro && !continuing)
+        data_0209caa0[8] |= 0x80;   /* word 2 bit 7: the intro has played */
+    else
+        std::fprintf(stderr, "[intro] the opening is ARMED for this entry: "
+                     "flags2 bit 7 left clear, the ROM's own gate decides\n");
+
     /* Stage::InitResources' own sub-screen bring-up, InitResources:262-351:
        Stage::SetVramBanks, the sub DISPCNT block, the layer mask and
        Stage::LoadGraphics2D. This is Stage::InitResources' own position for
@@ -3765,75 +3849,6 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
        A1 geometry regression has no course. */
     if (spawn)
         port_boot_course_sound((int)data_0209f2f8);
-
-    /* ONE BIT, TWO JOBS, and they pull opposite ways on a port with no
-       sound engine.
-       LoadClsnAndObjects' last decision is the intro cutscene: mode 0 plus
-       bit 7 of data_0209caa0[2] clear (= the intro has not played) runs
-       StartIntroCutscene, which loads a sound group and, three calls down,
-       reads the DS console-type word at 0x027ffc40. So the bit has to be
-       SET across the boot.
-       The same bit is the one Player::InitResources tests to decide whether
-       to load the character's voice bank -- the identical unhosted sound
-       path. So it has to be CLEAR when the Player initialises.
-       Scoping it to the boot satisfied both while the Player was still the
-       harness's (Stage A1).
-
-       IT STAYS SET NOW, and that is the third job the same bit does: it is
-       what the whole bottom screen renders through. HUD::Behavior and
-       HUD::Render both open on
-
-           if ((data_0209caa0[2] & 0x80) == 0) return 1;
-
-       -- the adventure-mode branch draws the health meter, the coins, the
-       stars, the timer and the camera buttons, and with the bit clear it
-       returns before any of them. Clearing it after the boot left a hosted,
-       ticking, correctly-constructed HUD that drew nothing at all.
-
-       Leaving it set is the state the real game is in during gameplay: the
-       intro HAS played by the time a level is being walked around in. The
-       restore was only ever protecting Player::InitResources' voice-bank
-       load, and the Player initialises INSIDE the boot -- while the bit is
-       set either way -- so the restore was not protecting anything by the
-       time the entrance started spawning him.
-
-       SM64DS_INTRO_UNSEEN=1 puts the old behaviour back, which is also how to
-       see the pre-intro cloud backdrop the bottom screen shows without it.
-
-       AND THE ONE ENTRY THAT WANTS IT CLEAR. port_intro_wants_play() (the seam
-       above port_stage_boot_body) is true only for a title-bridge crossing into
-       a fresh file.
-       (run rel0215 lane boot-title: this used to add "and only with
-       SM64DS_INTRO=1 -- see the seam for the four measured gaps that keep it
-       opt-in". BOTH HALVES ARE NOW FALSE. The four gaps closed, the seam's
-       default inverted, and the opening PLAYS unless SM64DS_SKIP_INTRO is
-       present; SM64DS_INTRO no longer exists as a knob. What is unchanged is
-       the sentence this correction interrupts -- the crossing into a fresh file
-       is still the only thing that makes this true, so no level boot that named
-       its own level can reach it.)
-       On that one boot the bit is left
-       ALONE: LoadClsnAndObjects below then takes its own intro branch, declines to
-       spawn the HUD exactly as the ROM does, and calls StartIntroCutscene. The
-       bit gets set by the ROM's own hand at the end of the flight
-       (src/func_ov085_0212d5dc.cpp:51), and the HUD comes up on the next boot.
-       LakituBro::InitResources reads the same bit to choose his intro state
-       chain, and it runs inside this object pass, so it has to still be clear
-       here rather than restored afterwards. */
-    const int play_intro = port_intro_wants_play();
-    /* ...and the boot that CONTINUES an opening. ProcessKuppaScript's cmd 0x0b
-       parked the next script in data_0209fc4c next to the closing
-       LoadLevelNoReturn; ContinueKuppaScriptIfNecessary (inside
-       LoadClsnAndObjects below) is what consumes it. Non-zero HERE means this
-       boot is the opening's second half, and the bit has to stay clear so
-       LakituBro::InitResources picks the opening chain data_ov085_02130790 and
-       the ROM's own func_ov085_0212d5dc:51 writes it. */
-    const int continuing = (data_0209fc4c != 0);
-    unsigned char intro_seen = (unsigned char)(data_0209caa0[8] & 0x80);
-    if (!play_intro && !continuing)
-        data_0209caa0[8] |= 0x80;   /* word 2 bit 7: the intro has played */
-    else
-        std::fprintf(stderr, "[intro] the opening is ARMED for this entry: "
-                     "flags2 bit 7 left clear, the ROM's own gate decides\n");
 
     /* ---- THE LEVEL MODEL, WHERE THE ROM LOADS IT (run link60, lane SL0) ---
        Stage::InitResources calls Stage::LoadModel at its line 361 and

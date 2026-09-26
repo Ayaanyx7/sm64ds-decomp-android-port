@@ -3510,13 +3510,24 @@ extern "C" void hal_sub_screen_level_init(void)
        loads its three BGs at priority 0 and every cloud pixel is opaque, so the
        whole HUD lost the priority compare against a backdrop that should not
        have been on screen at all. SM64DS_GFX2D_PREINTRO=1 puts the clouds
-       back. */
+       back.
+
+       AND THE BIT IS THE SAVE BLOCK'S NOW, NOT THIS FUNCTION'S (run linkfull,
+       lane CLOUDOAM1). This call used to force bit 0x80 SET around the load,
+       because the boot decided the bit only after this function ran. That
+       forcing was right for every level walked in and wrong for exactly the one
+       screen the cloud set exists for: THE OPENING, where the bit really is
+       clear. The port took the in-game branch there too, 0x23d never reached
+       0x06600000, and the opening's three drifting clouds (func_ov002_020f20f4,
+       OamAttrs data_ov002_0210be1c) drew with the file select's leftover
+       letters. hal/level_boot.cpp's port_stage_boot_body now settles the bit
+       (set for every entry but the opening and its continuation) BEFORE it
+       calls this, so the ROM's own test picks the set, as on the DS: the
+       in-game set for a level being played, the clouds for the opening. */
     if (!std::getenv("SM64DS_NO_GFX2D")) {
         const unsigned char saved = data_0209caa0[8];
         if (std::getenv("SM64DS_GFX2D_PREINTRO"))
             data_0209caa0[8] &= ~0x80;
-        else
-            data_0209caa0[8] |= 0x80;
         Stage::LoadGraphics2D(false, data_0209f2f8);
         data_0209caa0[8] = saved;
         std::printf("[sub] Stage::LoadGraphics2D(0, %d) done, layer mask "
