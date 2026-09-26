@@ -590,10 +590,11 @@ extern "C" void _ZN9FaderWipe14LoadAndSetFileEt(void *thiz, unsigned short fileI
    the in-motion fader step every frame, exactly as src/func_02019390.c says;
    every other block this port can hold answers 1 (the thirty-two minigame
    blocks through dScMgBase_c's forwarder, scene 6's func_ov102_0214d1b0, the
-   Stage's dGraph_c body), and a level holds no block (Stage::InitResources'
-   store is not replayed; the title's CleanupResources nulls it before the
-   handoff), so a level takes the full arm every frame, as the DS does with the
-   Stage's block. func_0202345c steps data_0209f1e4, which only the soft-reset
+   Stage's dGraph_c body), and on a level the block is the Stage's own
+   (hal/level_boot.cpp makes it current at Stage::InitResources:284's point
+   and clears it at Stage::CleanupResources:77's, run linkfull lane K7GC2),
+   whose word 0 is that `return 1`, so a level takes the full arm every frame,
+   as the DS does with the Stage's block. func_0202345c steps data_0209f1e4, which only the soft-reset
    branch of dScene_c::BeforeBehavior ever sets; that latch never rises on this
    port (func_02023498 is not linked), so it is the ROM's null test here.
 
