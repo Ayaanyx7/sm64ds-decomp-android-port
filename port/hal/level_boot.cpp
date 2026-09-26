@@ -3169,8 +3169,9 @@ void *port_stage_a_boot(void *mc, int spawn)
    with mode 0 and the bit clear starts the opening). Deriving from the bit
    alone would fire the opening in all of them. The arm is set only by
    port_level_entry_latch (hal/level_change.cpp), which only the title bridge
-   and the VS start call -- so a level boot that names its own level cannot
-   reach it.
+   and the VS start call, and by port_level_scene_crossing's StartFile handoff
+   (the same file-select entry, after a Game Over; run linkfull, lane
+   GOVERCUT1) -- so a level boot that names its own level cannot reach it.
    (run rel0215 lane boot-title: that last clause used to read "so the default
    boot cannot reach it", and the default is now the title, which DOES reach
    it. The protection is unchanged and the sentence above is its real form:
@@ -3254,9 +3255,11 @@ static int g_intro_armed;
    a default that fires an opening in forty-six level selftests would be a
    disaster and it cannot happen here. This function is only ever consulted
    from port_intro_wants_play below, which returns 0 before reaching it unless
-   g_intro_armed is set, and g_intro_armed is set by exactly one caller --
-   port_level_entry_latch in hal/level_change.cpp, which only a title crossing
-   and the VS start reach. A direct SM64DS_LEVEL boot never arms, so it never
+   g_intro_armed is set, and g_intro_armed is set by two callers in
+   hal/level_change.cpp -- port_level_entry_latch, which only a title crossing
+   and the VS start reach, and port_level_scene_crossing when a scene hands the
+   game back through StartFile (lane GOVERCUT1: the file select or CONTINUE
+   after a Game Over). A direct SM64DS_LEVEL boot never arms, so it never
    asks. The VS start does arm, and is then refused by the ROM's own first
    precondition below (data_0209f2d8 != 0: PrepareVsMode writes mode 1), which
    is measured rather than reasoned in this lane's proof runs. */
@@ -3267,7 +3270,8 @@ extern "C" int port_intro_suppressed(void)
     return port_boot_skip_intro();
 }
 
-/* Armed by the title bridge's own latch, for the next level boot only. */
+/* Armed by the title bridge's own latch, or by the level-to-scene crossing's
+   StartFile handoff (hal/level_change.cpp), for the next level boot only. */
 extern "C" void port_intro_arm_for_entry(void)
 {
     g_intro_armed = 1;
