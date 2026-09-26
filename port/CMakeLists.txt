@@ -24057,6 +24057,29 @@ foreach(_tw31loopin2 walk_window walk_window_hires smoke_player)
 endforeach()
 target_sources(smoke_player PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/hal/b5input_globals.cpp")
 
+# ===========================================================================
+# K1LOOP (run linkfull, lane K1LOOP): THE ROM'S ACTOR FRAME AT PHASE 4
+# ===========================================================================
+#
+# port/slice_w32_k1loop.txt carries func_02044120 (the ROM's phase-4 actor
+# frame, called by hal/actor_registry.cpp's port_actor_frame from both host
+# loops) and __sinit_02075154 (the five list heads, bound in
+# hal/ctor_runner.cpp's table). hal/actor_registry.cpp and hal/ctor_runner.cpp
+# are compiled by all three hosting targets, so all three take the slice (a
+# target that compiles a caller without its callee answers LNK2019).
+port_read_lines("${CMAKE_CURRENT_SOURCE_DIR}/slice_w32_k1loop.txt" SLICE_W32_K1LOOP_LINES)
+set(SLICE_W32_K1LOOP_SOURCES "")
+foreach(line IN LISTS SLICE_W32_K1LOOP_LINES)
+    string(STRIP "${line}" line)
+    if(line MATCHES "^#" OR line STREQUAL "")
+        continue()
+    endif()
+    list(APPEND SLICE_W32_K1LOOP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../${line}")
+endforeach()
+foreach(_tw32k1loop walk_window walk_window_hires smoke_player)
+    target_sources(${_tw32k1loop} PRIVATE ${SLICE_W32_K1LOOP_SOURCES})
+endforeach()
+
 # XREL1 (run linkfull): EVERY OVERLAY MOUNT DEPENDS ON THE CONFIG IT READS.
 #
 # tools/ovdata.py builds each mount out of its overlay's config/arm9/overlays/

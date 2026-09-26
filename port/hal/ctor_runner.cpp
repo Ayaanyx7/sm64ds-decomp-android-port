@@ -392,6 +392,7 @@ void __sinit_020750b8(void);   /* C1b */
 void __sinit_020750ec(void);   /* C1b */
 void __sinit_0207511c(void);   /* C1b */
 void __sinit_02075150(void);
+void __sinit_02075154(void);   /* K1LOOP: the five list heads */
 
 /* The two arm9 fader statics rung C1c's initialiser constructs, hosted by
    hal/auto_bss.cpp (data_0209f5d0, 12 bytes at the ROM span) and by
@@ -687,7 +688,14 @@ void ctor_face(const char *name, const char *why)
     }
 
 CTOR_FACE(02074e0c, "func_0201aa18 -> func_0201aad4 -> func_0201aac8 is an argument-dropping tail-call veneer chain into func_02059ba0; a PORT_HOST_ABI question, not a linkage one")
-CTOR_FACE(02075154, "data_02099f48..data_02099f70 are hosted nowhere -- five mwcc pointer-to-member pairs -- and hal/actor_registry.cpp:412 already seats the same five list callbacks with host wrappers, LATER in the boot, so linking this would write the heads at Entry and have every word overwritten")
+/* __sinit_02075154 IS TAKEN (run linkfull, lane K1LOOP). Its face read
+   "data_02099f48..data_02099f70 are hosted nowhere -- five mwcc
+   pointer-to-member pairs -- and hal/actor_registry.cpp already seats the same
+   five list callbacks with host wrappers, LATER in the boot". Both halves are
+   gone: unmatched/func_02043fdc_hostcopy.cpp hosts the five records (each
+   {the list's __fastcall face, 0}, the pair PMF3 proved), and
+   port_actor_lists_seat only checks the heads now. The ROM's body is the last
+   word of the table and fills the five list heads func_02044120 walks. */
 
 #undef CTOR_FACE
 
@@ -729,7 +737,7 @@ const CtorWord kCtorTable[] = {
     { 0x020750ec, __sinit_020750ec, "__sinit_020750ec", 1 },
     { 0x0207511c, __sinit_0207511c, "__sinit_0207511c", 1 },
     { 0x02075150, __sinit_02075150,   "__sinit_02075150", 1 },
-    { 0x02075154, ctor_face_02075154, "__sinit_02075154", 0 },
+    { 0x02075154, __sinit_02075154,   "__sinit_02075154", 1 },
 };
 const unsigned kCtorWords = sizeof kCtorTable / sizeof kCtorTable[0];
 

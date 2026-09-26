@@ -899,25 +899,39 @@ static void port_list_node(PortListFn fn, void *actor, const int *list,
     port_fader_watch(actor);
 }
 
+/* THE LIST CENSUS (run linkfull, lane K1LOOP): one host counter per list,
+   bumped by the list's own face on every node the matched walk hands it, in
+   g_pmf3_list_cells order (0 scene tree, 1 init, 2 behaviour, 3 render,
+   4 cleanup). hal/actor_registry.cpp reads and clears it once per frame, so
+   "every node on every list was dispatched once this frame" is a number in
+   the log whichever shape drove the frame (func_02044120 whole, or the host
+   split). Host storage, outside the save-state bracket. */
+extern "C" unsigned g_k1_list_disp[5];
+unsigned g_k1_list_disp[5];
+
 static int g_list_idx_init, g_list_idx_beh, g_list_idx_ren, g_list_idx_cln;
 static void __fastcall pmf_face_func_0204335c(void *actor, void *dead_edx)
 {   /* data_020a4b88, the init Process */
     (void)dead_edx;
+    ++g_k1_list_disp[1];
     port_list_node(func_0204335c, actor, data_020a4b88, &g_list_idx_init);
 }
 static void __fastcall pmf_face_func_02043288(void *actor, void *dead_edx)
 {   /* data_020a4b78, the behaviour Process */
     (void)dead_edx;
+    ++g_k1_list_disp[2];
     port_list_node(func_02043288, actor, data_020a4b78, &g_list_idx_beh);
 }
 static void __fastcall pmf_face_func_0204322c(void *actor, void *dead_edx)
 {   /* data_020a4b98, the render Process */
     (void)dead_edx;
+    ++g_k1_list_disp[3];
     port_list_node(func_0204322c, actor, data_020a4b98, &g_list_idx_ren);
 }
 static void __fastcall pmf_face_func_020432e4(void *actor, void *dead_edx)
 {   /* data_020a4ba8, the cleanup Process */
     (void)dead_edx;
+    ++g_k1_list_disp[4];
     port_list_node(func_020432e4, actor, data_020a4ba8, &g_list_idx_cln);
 }
 
@@ -926,6 +940,7 @@ static void __fastcall pmf_face_func_020432e4(void *actor, void *dead_edx)
 static void __fastcall pmf_face_func_02043880(void *actor, void *dead_edx)
 {
     (void)dead_edx;
+    ++g_k1_list_disp[0];
     port_dispatch_guarded(func_02043880, actor);
 }
 
@@ -941,3 +956,35 @@ extern "C" void (__fastcall *const g_pmf3_list_cells[5])(void *, void *) = {
 };
 
 }
+
+/* THE FIVE RECORDS __sinit_02075154 COPIES (run linkfull, lane K1LOOP).
+   arm9 .data, eight bytes each: a nonvirtual mwcc pointer-to-member
+   {code, this-adjust} whose code word the ROM relocates to a Process wrapper
+   and whose adjustment is a plain 0 (config/arm9/relocs.txt :13804-13808, one
+   relocation per record, on word 0; the cartridge's bytes read the same):
+
+       0x02099f48  {func_02043288, 0}  -> data_020a4b78, behaviour
+       0x02099f50  {func_020432e4, 0}  -> data_020a4ba8, cleanup
+       0x02099f60  {func_02043880, 0}  -> data_020a4b6c, the scene tree
+       0x02099f68  {func_0204322c, 0}  -> data_020a4b98, render
+       0x02099f70  {func_0204335c, 0}  -> data_020a4b88, init
+
+   The code word is bound to the same __fastcall face the seat table above
+   names: the port's rule for a relocated code word in hosted data, and PMF3
+   proved the pair itself (MSVC's /vmg /vmm member pointer is these eight
+   bytes; the matched walks call it with the actor in ECX). With the records
+   hosted, the ROM's own sinit runs at Entry (hal/ctor_runner.cpp) and fills
+   the five list heads the way the cartridge does; hal/actor_registry.cpp's
+   port_actor_lists_seat, which wrote the same words by hand, only checks them
+   now. Inside the save-state bracket: ROM data words, and
+   port/tools/dsstate_guard.py asks every hosted data_ symbol to be there. */
+#include "hal/dsstate_seg.h"
+DSSTATE_BEGIN
+extern "C" {
+void *data_02099f48[2] = { (void *)pmf_face_func_02043288, 0 };
+void *data_02099f50[2] = { (void *)pmf_face_func_020432e4, 0 };
+void *data_02099f60[2] = { (void *)pmf_face_func_02043880, 0 };
+void *data_02099f68[2] = { (void *)pmf_face_func_0204322c, 0 };
+void *data_02099f70[2] = { (void *)pmf_face_func_0204335c, 0 };
+}
+DSSTATE_END
