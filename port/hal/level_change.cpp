@@ -1283,8 +1283,9 @@ extern "C" int port_level_entry_latch(void)
 
     /* ---- ARM THE OPENING -------------------------------------------------
      * This function is the ONE thing only the title bridge calls, which makes
-     * it the honest place to say "this entry came off a save-file pick". The
-     * seam it arms (hal/level_boot.cpp, port_intro_wants_play) then applies the
+     * it the honest place to say "this entry came off a save-file pick" (the
+     * other such entry, StartFile after the level-to-scene crossing, arms the
+     * same seam in port_level_scene_crossing below). The seam it arms (hal/level_boot.cpp, port_intro_wants_play) then applies the
      * ROM's own rule -- game mode 0, flags2 bit 7 clear -- and the ROM's own
      * Stage::LoadClsnAndObjects decides. Arming is not deciding: a used file,
      * or a suppressed entry, still answers no.
@@ -2360,6 +2361,23 @@ static int port_level_scene_crossing(void)
                      "frame %d: level %d, entrance %u (the ROM's own StartFile / "
                      "LoadLevelNoReturn); the level boots into a new Stage\n", f,
                      (int)data_02092110, (unsigned)data_0209f268);
+        /* THE OPENING GATE IS THE ROM'S ON THIS ENTRY TOO (run linkfull, lane
+           GOVERCUT1). What handed the game back is StartFile (src/StartFile.c,
+           0x0202ae88): the title's file select after QUIT, or func_0202ae74's
+           StartFile(1, 0) after CONTINUE. That is the entry the title bridge's
+           port_level_entry_latch arms the intro seam for, and on the cartridge
+           Stage::LoadClsnAndObjects (ov002 0x020fe190, src :78-100) then reads
+           the picked file's own flags2 bit 7 -- which the file select has just
+           copied into data_0209caa0 (dScDSMT_c::InitResources ->
+           func_ov007_020cc600 -> func_02013c84; a new file's record carries
+           flags2 0x08, bit 7 clear) -- and starts the opening when it is clear.
+           Unarmed, hal/level_boot.cpp's boot writes the bit SET over the file's
+           own value before that read, and a new file skipped the opening
+           (measured: "flags2 bit7 0 | armed 0" at this boot, then the write in
+           port_stage_boot_body). Arming decides nothing: the seam still answers
+           no for a used file (CONTINUE reads bit 7 set), for SM64DS_SKIP_INTRO,
+           and for a mode other than 0; the ROM's gate decides the rest. */
+        port_intro_arm_for_entry();
         return 1;
     }
     std::fprintf(stderr, "[cross] %s at crossing frame %d (pending scene %u, "
