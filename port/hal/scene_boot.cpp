@@ -599,6 +599,11 @@ extern "C" int port_graph_block_verdict(void);
 void port_actor_tick(void);          /* phases 4/2/3 */
 void port_actor_render(void);        /* phase 5 */
 void port_actor_scene_pass(void);    /* phase 1 */
+/* phase 4 whole: func_02044120 and the frame's account (lane K1LOOP) */
+void port_actor_frame(int level_camera);
+void port_actor_frame_begin(void);
+void port_actor_frame_end(int frame, const char *loop);
+int port_actor_frame_split_forced(void);
 /* THE 16:9 OBJECT-CULL SEAM, hal/camera_bridges.cpp. Declared unconditionally:
    the aspect is a RUNTIME choice now, not a compile tier, so there is no tier to
    guard on. The widen call below is guarded on ntr::widescreen instead, and the
@@ -7734,8 +7739,30 @@ extern "C" void port_scene_tick(int frame, int tick_game)
                 std::fflush(stdout);
             }
         }
+        /* PHASE 4 IS THE ROM'S func_02044120 (run linkfull, lane K1LOOP): all
+           five walks at the ROM's point, right after phase 3's scene request
+           above. Its render walk submits this frame's geometry here, as on the
+           DS, so the host geometry buffer is reset BEFORE it (on every
+           ticking frame, NO_RENDER included: the walk submits either way) and
+           the rasteriser below consumes it; the render block then neither
+           resets nor walks, and the scene tree is not walked again after it.
+           A frame that does not tick (tick_game 0) keeps the host split's
+           render-only frame, and SM64DS_K1_SPLIT=1 puts the whole split back
+           for the census A/B. port_actor_frame(0): a scene's Camera slots are
+           left as they were. */
+        port_actor_frame_begin();
+        const int k1_rom = tick_game && !port_actor_frame_split_forced();
+        if (k1_rom) {
+            if (trace) std::fprintf(stderr, "[scene-trace] f%d gx_reset\n", frame);
+            ntr::gx_reset();
+            if (trace) std::fprintf(stderr, "[scene-trace] f%d actor_frame\n", frame);
+            hal_widen_probe_scene_frame(frame, "pre ");
+        }
         if (tick_game) {
-            port_actor_tick();
+            if (k1_rom)
+                port_actor_frame(0);
+            else
+                port_actor_tick();
             /* AFTER the actor phases, so it reports the state the frame ended
                in rather than the one it started in. */
             port_title_state_trace(frame);
@@ -7808,11 +7835,13 @@ extern "C" void port_scene_tick(int frame, int tick_game)
                unbuffered, so a HANG (not a fault, which the probe already
                catches) can be attributed without a debugger. Each line goes
                out before the step it names. */
-            if (trace) std::fprintf(stderr, "[scene-trace] f%d gx_reset\n", frame);
-            ntr::gx_reset();
-            if (trace) std::fprintf(stderr, "[scene-trace] f%d actor_render\n", frame);
-            hal_widen_probe_scene_frame(frame, "pre ");
-            port_actor_render();
+            if (!k1_rom) {   /* a ROM actor frame did both at phase 4 */
+                if (trace) std::fprintf(stderr, "[scene-trace] f%d gx_reset\n", frame);
+                ntr::gx_reset();
+                if (trace) std::fprintf(stderr, "[scene-trace] f%d actor_render\n", frame);
+                hal_widen_probe_scene_frame(frame, "pre ");
+                port_actor_render();
+            }
             /* WIDESCREEN OBJECT CULL, THE SCENE PATH'S HALF, gated on the
                RUNTIME aspect (ntr::widescreen) rather than a compile tier.
                tests/walk_window.cpp
@@ -7900,8 +7929,9 @@ extern "C" void port_scene_tick(int frame, int tick_game)
             port_title_attract_probe(frame, "rend");
         if (tick_game)
             t3w_tick(frame, "rend");
-        if (tick_game)
+        if (tick_game && !k1_rom)   /* a ROM actor frame's last walk */
             port_actor_scene_pass();
+        port_actor_frame_end(frame, "scene");
 
         /* THE HOSTED ARM7, ONE TICK PER FRAME -- drain the sound queue and
            feed the mixer, exactly as the level loop does in

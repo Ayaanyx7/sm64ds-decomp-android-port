@@ -1563,6 +1563,16 @@ void port_particle_frame(void);      /* Stage::Render: SysTracker::Update */
 void port_particle_render(void);     /* GraphCallback1: Particle::RenderAll */
 void port_particle_counts(int *systems, int *particles);
 void port_actor_scene_pass(void);    /* phase 1: scene-tree housekeeping */
+/* THE ROM'S WHOLE ACTOR FRAME (run linkfull, lane K1LOOP; hal/actor_registry):
+   func_02044120 at phase 4, and the per-frame account that says each list was
+   walked once. The three split calls above are what a frame that is not the
+   ROM's still makes. */
+void port_actor_frame(int level_camera);
+void port_actor_frame_begin(void);
+void port_actor_frame_end(int frame, const char *loop);
+int port_actor_frame_split_forced(void);
+/* the host rig's seat on Camera::Render's face (hal/camera_bridges.cpp) */
+extern void (*port_level_camera_render_hook)(void *cam);
 void port_actor_census(void);
 void port_actor_lists_probe(void);
 /* the [lvl-perf] level-entry spans (hal/level_boot.cpp). The harness owns the
@@ -3758,6 +3768,38 @@ static void fc_push_view(void *cam, const int *eye, const int *at)
         *(int *)((char *)cam + 0x100), data_0209ee90[0x44 / 4], 1, 0);
     _ZN3G3i7LookAt_EPK7Vector3S2_S2_bP9Matrix4x3(e, data_02086efc, a, 1, mat);
     _Z13CopyToViewMatPK9Matrix4x3(mat);
+}
+
+/* THE RIG'S SEAT ON THE ROM'S CAMERA::RENDER (run linkfull, lane K1LOOP). On a
+   frame the level loop hands to the ROM's func_02044120, Camera::Render runs
+   at the head of the render walk (render priority 0) through the Camera's
+   slot-9 face, and this runs straight after it (hal/camera_bridges.cpp
+   port_level_camera_render_hook) -- the three host statements that followed
+   the by-hand hal_camera_render, in the same order, still ahead of every
+   other Render: the analog pivot's step (it only has to follow the Player's
+   Behavior, which the behaviour walk has run), the rig's view re-push in the
+   analog and free modes (stood down during a cutscene, the fc48 gate), and
+   the widescreen widen of the Clipper Camera::Render has just seeded. Frames
+   the ROM does not walk make the old hand calls instead and never reach it. */
+static char *g_k1_player;       /* the level loop's player, set per ROM frame */
+static void k1_level_camera_render_hook(void *cam)
+{
+    static int no_cutscene_cam = -1;
+    if (no_cutscene_cam < 0)
+        no_cutscene_cam = getenv("SM64DS_NO_CUTSCENE_CAM") ? 1 : 0;
+    const int cutscene_cam = !no_cutscene_cam && data_0209fc48 != 0;
+    if (cam_mode == CAM_ANALOG && !rb_replaying() && g_k1_player)
+        an_step_pivot(g_k1_player);
+    if (cam_mode != CAM_DS && !cutscene_cam) {
+        int fceye[3];
+        const int *pivot = cam_mode == CAM_ANALOG
+                               ? an_pivot
+                               : (const int *)((char *)cam + 0x80);
+        fc_eye(pivot, fceye);
+        fc_push_view(cam, fceye, pivot);
+    }
+    if (ntr::widescreen)
+        hal_camera_widen_frustum();
 }
 
 /* ---- THE DEBUG MENU (port mod) ----------------------------------------
@@ -11279,6 +11321,10 @@ int main(void)
         }
         double t_frame, t_phase;
         int game_ticked = 1;   /* cleared when a tick is skipped */
+        /* 1 = this frame's actor work is the ROM's func_02044120 at phase 4
+           (lane K1LOOP): decided at the phase-4 point below, read by the
+           camera block, the render block and the scene-tree point. */
+        int k1_rom = 0;
         while (W.PeekMessageA_(&msg, 0, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) return 0;
             W.TranslateMessage_(&msg);
@@ -14500,6 +14546,25 @@ int main(void)
            NOTHING BELOW MOVES IN THIS RUNG. The line under this comment is the
            host loop's, unchanged, and it stays the host loop's behaviour on
            both sides of rung D5's knob. */
+        /* PHASE 4 IS THE ROM'S func_02044120 (run linkfull, lane K1LOOP), on
+           every frame that can be: a real boot's spawned actors, the game's own
+           Camera, no F5 freeze (the menu keeps its host frame: the D4 ruling
+           above is about SM64DS_ROM_LOOP's flip and this keeps today's redraw),
+           no rollback replay (parked), no SM64DS_NO_ACTORS A/B, and not a
+           selftest's frame 0, whose geometry probe below resets the buffer on
+           both sides of its own draws. Every other frame walks the host split
+           exactly as before. port_actor_frame_begin sets the frame's account
+           apart from the teardown convergence that may already have walked the
+           dying level's lists at phase 3 (hal/level_change.cpp). */
+        port_actor_frame_begin();
+        {
+            static int k1_no_actors = -1;
+            if (k1_no_actors < 0)
+                k1_no_actors = getenv("SM64DS_NO_ACTORS") ? 1 : 0;
+            k1_rom = boot_spawns && !menu_on && real_camera && !k1_no_actors &&
+                     !rb_skip_actor_render() && !(selftest && frame == 0) &&
+                     !port_actor_frame_split_forced();
+        }
         if (menu_on) {
             game_ticked = 0;
         } else if (boot_spawns) {
@@ -14573,7 +14638,26 @@ int main(void)
             port_vs_match_end_hold();
             {
                 const double rb_t = rb_probe_mode() ? rb_now_ms() : 0.0;
-                port_actor_tick();
+                if (k1_rom) {
+                    /* src/func_020197b8.c phase 4: `func_02044120();`, all five
+                       walks. Its render walk (list 5) submits this frame's
+                       geometry now, as on the DS, so the host geometry frame
+                       opens HERE rather than in the render block below: the
+                       buffer reset (the DS's is empty after the previous swap),
+                       the light, and the slot-9 mark stage9_rendered() reads.
+                       The Camera renders first in that walk (render priority 0)
+                       and the rig rides its face (k1_level_camera_render_hook);
+                       the rasteriser below consumes what the walk submitted. */
+                    stage9_mark();
+                    ntr::gx_reset();
+                    ntr::gx_set_light(0, -0.4f, -0.6f, -0.7f, 0x7FFF);
+                    ntr::gx_enable_lights(0x1);
+                    g_k1_player = c;
+                    port_level_camera_render_hook = k1_level_camera_render_hook;
+                    port_actor_frame(1);
+                } else {
+                    port_actor_tick();
+                }
                 if (rb_probe_mode()) rb_note(RB_ACTOR_TICK, rb_now_ms() - rb_t);
             }
             port_vs_stars_probe(frame);        /* TEMPORARY: SM64DS_VS_STARS */
@@ -14968,10 +15052,15 @@ int main(void)
             no_cutscene_cam = getenv("SM64DS_NO_CUTSCENE_CAM") ? 1 : 0;
         const int cutscene_cam = !no_cutscene_cam && data_0209fc48 != 0;
         /* the analog rig's pivot is stepped here, after the tick moved Mario
-           and before anything reads it */
-        if (cam_mode == CAM_ANALOG && !rb_replaying()) an_step_pivot(c);
+           and before anything reads it. On a ROM actor frame (k1_rom) the
+           behaviour walk has run Camera::Behavior at its own priority and
+           the pivot was stepped on Camera::Render's face, so neither hand
+           call is made: the heading override and the echo below still are,
+           after the Camera's Behavior as before. */
+        if (cam_mode == CAM_ANALOG && !rb_replaying() && !k1_rom) an_step_pivot(c);
         if (real_camera) {
-            hal_camera_behavior(cam);
+            if (!k1_rom)
+                hal_camera_behavior(cam);
             /* THE ONE THING THE RIG OVERRIDES BESIDES THE VIEW: the heading
                the walk steers by. Camera::Behavior has just put its own into
                the local comms record; in analog and in freecam the rig's
@@ -15474,16 +15563,22 @@ int main(void)
             }
         }
 
-        /* render: camera behind and above Mario, looking at him */
+        /* render: camera behind and above Mario, looking at him. On a ROM
+           actor frame (k1_rom) the geometry frame was opened at phase 4 and
+           the render walk has already submitted into it (the Camera's Render
+           and the rig first, then the Stage and every actor): nothing here
+           may reset it. */
         ph_begin(&t_phase);
-        ntr::gx_reset();
-        /* the real Camera writes CLEAR_COLOR itself, out of its own
-           0x10c..0x10f bytes -- which hold exactly this value */
-        if (!real_camera)
-            NTR_MMIO(uint32_t, 0x04000580) =
-                0u | (0u << 8) | (255u << 16) | (191u << 24);
-        ntr::gx_set_light(0, -0.4f, -0.6f, -0.7f, 0x7FFF);
-        ntr::gx_enable_lights(0x1);
+        if (!k1_rom) {
+            ntr::gx_reset();
+            /* the real Camera writes CLEAR_COLOR itself, out of its own
+               0x10c..0x10f bytes -- which hold exactly this value */
+            if (!real_camera)
+                NTR_MMIO(uint32_t, 0x04000580) =
+                    0u | (0u << 8) | (255u << 16) | (191u << 24);
+            ntr::gx_set_light(0, -0.4f, -0.6f, -0.7f, 0x7FFF);
+            ntr::gx_enable_lights(0x1);
+        }
         float px = *(int *)(c + 0x5c) / 4096.0f;
         float py = *(int *)(c + 0x60) / 4096.0f;
         float pz = *(int *)(c + 0x64) / 4096.0f;
@@ -15633,46 +15728,53 @@ int main(void)
            stage9_rendered() would read TRUE from some earlier frame's dispatch,
            and the level would not be drawn at all. One line above both arms is
            the whole fix. */
-        stage9_mark();
+        if (!k1_rom)            /* a ROM actor frame marked at phase 4 */
+            stage9_mark();
         if (real_camera) {
-            /* THE CAMERA'S OWN FRAME. Render builds the projection from
-               the mode preset (PerspectiveW_ -> MTX_LOAD_4x4) and the view
-               matrix through LookAt_, then View::Render -> CopyToViewMat
-               parks it in data_0209b3ec and its inverse in data_0209b41c.
-               Model::Render composes every model matrix with data_0209b3ec
-               in software, so THAT is where the camera reaches the raster,
-               not the GX position stack. */
-            hal_camera_render(cam);
-            /* the rig's view goes on top of the camera's own, not instead of
-               it: Render still seeds the Clipper, writes CLEAR_COLOR and
-               keeps the actor's own state moving, and then the rig reloads
-               the projection and the view matrix from its own eye. Nothing
-               downstream can tell the difference -- it is the same three ROM
-               calls, with different numbers.
-               ANALOG orbits Mario (the eased pivot); FREECAM orbits the Camera
-               actor's own look-at, which is what made it free of him.
-               During a cutscene (cutscene_cam) the rig does NOT reload the
-               view: hal_camera_render has just parked the script-driven view in
-               data_0209b3ec, and leaving it there is what makes the star-get
-               fly-around visible instead of overwritten. */
-            if (cam_mode != CAM_DS && !cutscene_cam) {
-                int fceye[3];
-                const int *pivot = cam_mode == CAM_ANALOG
-                                       ? an_pivot
-                                       : (const int *)((char *)cam + 0x80);
-                fc_eye(pivot, fceye);
-                fc_push_view(cam, fceye, pivot);
+            if (!k1_rom) {
+                /* THE CAMERA'S OWN FRAME. Render builds the projection from
+                   the mode preset (PerspectiveW_ -> MTX_LOAD_4x4) and the view
+                   matrix through LookAt_, then View::Render -> CopyToViewMat
+                   parks it in data_0209b3ec and its inverse in data_0209b41c.
+                   Model::Render composes every model matrix with data_0209b3ec
+                   in software, so THAT is where the camera reaches the raster,
+                   not the GX position stack.
+                   ON A ROM ACTOR FRAME (k1_rom) none of this block runs: the
+                   render walk at phase 4 dispatched Camera::Render at the head of
+                   list 5 and the three host statements below rode its face
+                   (k1_level_camera_render_hook, the same statements). */
+                hal_camera_render(cam);
+                /* the rig's view goes on top of the camera's own, not instead of
+                   it: Render still seeds the Clipper, writes CLEAR_COLOR and
+                   keeps the actor's own state moving, and then the rig reloads
+                   the projection and the view matrix from its own eye. Nothing
+                   downstream can tell the difference -- it is the same three ROM
+                   calls, with different numbers.
+                   ANALOG orbits Mario (the eased pivot); FREECAM orbits the Camera
+                   actor's own look-at, which is what made it free of him.
+                   During a cutscene (cutscene_cam) the rig does NOT reload the
+                   view: hal_camera_render has just parked the script-driven view in
+                   data_0209b3ec, and leaving it there is what makes the star-get
+                   fly-around visible instead of overwritten. */
+                if (cam_mode != CAM_DS && !cutscene_cam) {
+                    int fceye[3];
+                    const int *pivot = cam_mode == CAM_ANALOG
+                                           ? an_pivot
+                                           : (const int *)((char *)cam + 0x80);
+                    fc_eye(pivot, fceye);
+                    fc_push_view(cam, fceye, pivot);
+                }
+                /* WIDESCREEN: widen the object-cull frustum to match the Hor+ 3D
+                   field, AFTER the camera Render just seeded the global Clipper
+                   (func_0200d954 -> Func_020156DC) and BEFORE the actor buckets test
+                   it, so ambient actors at the new side margins are no longer culled
+                   as off-screen. Host-side, gated on the RUNTIME toggle now (not the
+                   compile tier): with widescreen off the clipper is left exactly as
+                   the ROM seeded it. See hal_camera_widen_frustum in
+                   hal/camera_bridges.cpp. */
+                if (ntr::widescreen)
+                    hal_camera_widen_frustum();
             }
-            /* WIDESCREEN: widen the object-cull frustum to match the Hor+ 3D
-               field, AFTER the camera Render just seeded the global Clipper
-               (func_0200d954 -> Func_020156DC) and BEFORE the actor buckets test
-               it, so ambient actors at the new side margins are no longer culled
-               as off-screen. Host-side, gated on the RUNTIME toggle now (not the
-               compile tier): with widescreen off the clipper is left exactly as
-               the ROM seeded it. See hal_camera_widen_frustum in
-               hal/camera_bridges.cpp. */
-            if (ntr::widescreen)
-                hal_camera_widen_frustum();
             /* THE ACTOR RENDER BUCKET GOES HERE. Processing list 5 is the
                game's own render pass -- func_0204322c over slots 9/10/11, in
                render-priority order -- and everything on it is ROM code working
@@ -15714,11 +15816,16 @@ int main(void)
                camera arms -- see stage9_mark's own call site. */
             if (boot_spawns && !no_actors) {
                 size_t before = 0, after = 0;
-                if (selftest) ntr::gx_polygons(before);
+                /* a ROM actor frame's buffer opened empty at phase 4 and holds
+                   exactly what its render walk submitted, so `before` is 0 */
+                if (selftest && !k1_rom) ntr::gx_polygons(before);
                 /* the tick-only re-sim (hal/rollback.cpp): a replayed frame
                    skips the actors' Render bodies; status/ROLLBACK_SHIP.md
-                   has the audit that says they write nothing a tick reads */
-                if (rb_skip_actor_render()) port_actor_render_replay();
+                   has the audit that says they write nothing a tick reads.
+                   A ROM actor frame (k1_rom) walked list 5 inside
+                   func_02044120 at phase 4: nothing to walk here. */
+                if (k1_rom) {
+                } else if (rb_skip_actor_render()) port_actor_render_replay();
                 else
                 port_actor_render();
                 /* THE PARTICLE SIMULATION GOES HERE, which is where
@@ -16106,12 +16213,15 @@ int main(void)
             func_ov001_020aaf40();
         /* phase 1, which is where func_02044120 ends: the scene tree's own
            housekeeping -- priority re-sorts, parent flag propagation, and the
-           deferred list insertions for anything that spawned mid-phase. */
-        if (boot_spawns) {
+           deferred list insertions for anything that spawned mid-phase. A ROM
+           actor frame (k1_rom) ran it as func_02044120's last walk. */
+        if (boot_spawns && !k1_rom) {
             const double rb_t = rb_probe_mode() ? rb_now_ms() : 0.0;
             port_actor_scene_pass();
             if (rb_probe_mode()) rb_note(RB_SCENEPASS, rb_now_ms() - rb_t);
         }
+        /* the frame's account: one shape, each list once (lane K1LOOP) */
+        port_actor_frame_end(frame, "level");
         size_t tris_before = 0;
         if (selftest) ntr::gx_polygons(tris_before);
         /* run mg16 lane MP3: DRAW EVERY PLAYER, not just the local one.
