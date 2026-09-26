@@ -1,5 +1,16 @@
 // Host file system: the card layer under SharedFilePtr.
 //
+// ON THE GAME TARGETS THE SEAM IS GONE (run linkfull, lane FILEB). walk_window,
+// walk_window_hires and smoke_player compile this file with
+// SM64DS_SFP_LOAD_ROM and link src/_ZN13SharedFilePtr4LoadEv.cpp
+// (port/slice_w32_fileb.txt): the ROM's own Load reads an archive member out
+// of the NARC the ROM's LoadArchive mounted and a loose file through FS off
+// the card (hal/fs_names.cpp's image). What this file still does for them is
+// the catalog, the host DecompressLZ16, and the mods' half of the card: every
+// file a mod claims is served out of the card's patched range, an archive
+// member inside a rebuilt copy of its NARC (port_fs_card_patches below). The
+// seam described next is what the narrow smoke_* harnesses still link.
+//
 // SEAM LEVEL: SharedFilePtr::Load(). Everything above it -- LoadFile's
 // refcounting, Release, func_02017c24, func_02017e0c, and every
 // Model/Animation/Collider LoadFile -- is portable src/ and runs verbatim.
@@ -165,9 +176,17 @@ u32 (*port_fs_mod_filter)(unsigned fileID, u8 **data, u32 size);
    the ROM is wrapped back into an LZ77 stream (literal runs, which every LZ77
    reader decodes to the same bytes), so the ROM's loaders take the same
    decompress-into-a-fresh-block arm they take for the stock file and the
-   block they hand back has the stock file's allocation shape. Archive members
-   are not placed here: no mod claims one that the ROM loaders read (the
-   member mods ride SharedFilePtr::Load, which still serves them itself). */
+   block they hand back has the stock file's allocation shape.
+
+   ARCHIVE MEMBERS (run linkfull, lane FILEB). Since the game targets link the
+   ROM's SharedFilePtr::Load, a member is read out of the NARC the ROM's
+   LoadArchive mounted, and the mount reads the NARC off the card. So a claimed
+   member is served the same way a claimed loose file is, one level up: its
+   NARC is rebuilt with the member's served bytes in place (LZ77-wrapped when
+   the stock member carries the magic, every later member's BTAF entry moved
+   by the growth) and the card serves the rebuilt NARC for the NARC's own FAT
+   id. A claim whose served bytes equal the stock file's is dropped, so a mod
+   that changes nothing moves nothing. */
 extern "C" {
 void (*port_fs_mod_claims)(void (*claim)(unsigned fileID));
 }
@@ -179,6 +198,7 @@ struct fs_cache_entry;
 extern "C" {
 static int fs_patch_trace(void);
 static void fs_patch_claim(unsigned fid);
+static void fs_patch_members(void);
 }
 
 /* "LZ77" + a type-0x10 stream of literal runs: one flag byte of zeros, then
@@ -214,6 +234,7 @@ extern "C" void port_fs_card_patches(void (*emit)(unsigned, const u8 *, u32))
     catalog_load();
     g_patch_emit = emit;
     port_fs_mod_claims(fs_patch_claim);
+    fs_patch_members();
     g_patch_emit = 0;
 }
 
@@ -649,33 +670,92 @@ static int fs_patch_trace(void)
     return v;
 }
 
-/* One claimed loose file into the patched range: the bytes the Load seam
-   would serve for it, wrapped the way the cartridge holds the stock file.
-   Archive members are the Load seam's alone (see the header of this block),
-   so a claim on one is said and dropped rather than half-served. */
+/* The bytes a claimed file is served as: the file the map names (a loose file
+   or an archive member), decoded, through the filter chain -- exactly what the
+   host Load seam serves the narrow harnesses. *changed says whether that
+   differs from the stock file's own decoded bytes. 1 on success. */
+static int fs_patch_served(unsigned fid, struct fs_cache_entry *e, int *changed)
+{
+    unsigned src = fid;
+    u8 *stock = 0;
+    u32 stock_len = 0;
+    int ok;
+
+    memset(e, 0, sizeof *e);
+    if (port_fs_mod_map)
+        src = port_fs_mod_map(fid);
+    if (src < 0x8000 && (src >= MAX_FILES || g_paths[src][0] == 0))
+        return 0;
+    ok = src >= 0x8000 ? port_fs_archive_fill(e, src) : fs_cache_fill(e, src);
+    if (!ok)
+        return 0;
+    if (src == fid) {
+        stock_len = e->size;
+        stock = (u8 *)malloc(stock_len ? stock_len : 1);
+        if (stock)
+            memcpy(stock, e->data, stock_len);
+    }
+    if (port_fs_mod_filter)
+        e->size = port_fs_mod_filter(fid, &e->data, e->size);
+    *changed = src != fid || !stock || e->size != stock_len ||
+               memcmp(e->data, stock, stock_len) != 0;
+    free(stock);
+    return 1;
+}
+
+/* The claimed archive members, held until every claim is in so each NARC is
+   rebuilt once (fs_patch_members, further down). */
+enum { FS_MEMBER_CLAIMS = 256 };
+static struct { unsigned fid; u8 *data; u32 size; } g_member[FS_MEMBER_CLAIMS];
+static unsigned g_nmember;
+
+/* One claimed file into the patched range. A loose file goes in whole,
+   wrapped the way the cartridge holds the stock file; an archive member waits
+   for its NARC's rebuild. Two mods claiming one id serve it once (the filter
+   chain already runs both). */
 static void fs_patch_claim(unsigned fid)
 {
+    static u8 seen[MAX_FILES];
     struct fs_cache_entry e;
-    unsigned src = fid;
     char path[PATH_MAX_ * 2];
     FILE *f;
-    int lz = 0;
+    int lz = 0, changed = 0;
     u8 head[4];
     u8 *served;
     u32 served_len = 0;
+    unsigned i;
 
     if (!g_patch_emit)
         return;
-    if (fid >= MAX_FILES || g_paths[fid][0] == 0) {
-        fprintf(stderr, "[mods] a mod claimed file id %u for the card, and it "
-                "is %s; the ROM loaders read it unmodified\n", fid,
-                fid >= 0x8000 ? "an archive member (served by SharedFilePtr"
-                                "::Load only)" : "not in the catalog");
+    if (fid >= 0x8000) {
+        for (i = 0; i < g_nmember; ++i)
+            if (g_member[i].fid == fid)
+                return;
+        if (g_nmember == FS_MEMBER_CLAIMS) {
+            fprintf(stderr, "[mods] more than %d archive members claimed; "
+                    "member %u keeps the cartridge's bytes\n",
+                    FS_MEMBER_CLAIMS, fid);
+            return;
+        }
+        if (!fs_patch_served(fid, &e, &changed))
+            return;
+        if (!changed) {
+            free(e.data);
+            return;
+        }
+        g_member[g_nmember].fid = fid;
+        g_member[g_nmember].data = e.data;
+        g_member[g_nmember].size = e.size;
+        ++g_nmember;
         return;
     }
-    if (port_fs_mod_map)
-        src = port_fs_mod_map(fid);
-    if (src >= MAX_FILES || g_paths[src][0] == 0)
+    if (fid >= MAX_FILES || g_paths[fid][0] == 0) {
+        fprintf(stderr, "[mods] a mod claimed file id %u for the card, and it "
+                "is not in the catalog; the ROM loaders read it unmodified\n",
+                fid);
+        return;
+    }
+    if (seen[fid]++)
         return;
     /* the STOCK file's shape decides the wrapping, not the substitute's */
     snprintf(path, sizeof path, "%s/extracted/dsd/files/%s", asset_root(),
@@ -685,11 +765,12 @@ static void fs_patch_claim(unsigned fid)
         lz = fread(head, 1, 4, f) == 4 && memcmp(head, "LZ77", 4) == 0;
         fclose(f);
     }
-    memset(&e, 0, sizeof e);
-    if (!fs_cache_fill(&e, src))
+    if (!fs_patch_served(fid, &e, &changed))
         return;
-    if (port_fs_mod_filter)
-        e.size = port_fs_mod_filter(fid, &e.data, e.size);
+    if (!changed) {
+        free(e.data);
+        return;
+    }
     if (lz) {
         served = fs_lz77_wrap(e.data, e.size, &served_len);
     } else {
@@ -702,11 +783,23 @@ static void fs_patch_claim(unsigned fid)
     if (fs_patch_trace())
         fprintf(stderr, "fs: card patch id=%u (%s) %u bytes served%s%s\n", fid,
                 g_paths[fid], e.size, lz ? ", LZ77-wrapped" : "",
-                src != fid ? " (mapped)" : "");
+                port_fs_mod_map && port_fs_mod_map(fid) != fid ? " (mapped)" : "");
     free(served);
     free(e.data);
 }
 
+/* SharedFilePtr::Load -- the seam. Same contract as 0x02017c54. */
+struct SharedFilePtrC { u16 fileID; u8 numRefs; void *filePtr; };
+
+/* The host Load and the hand-out below it: the narrow harnesses' only since
+   run linkfull lane FILEB. The game targets compile this file with
+   SM64DS_SFP_LOAD_ROM and link the ROM's Load (port/slice_w32_fileb.txt), so
+   the decoded-file cache above is not reached there either: an archive member
+   comes out of the resident mount and a loose file out of hal/fs_names.cpp's
+   card cache, the two places the jump hitch could come back through. The
+   load meter's counters stay defined (tests/walk_window.cpp's
+   SM64DS_JUMP_PROBE reads them) and stay 0 there. */
+#ifndef SM64DS_SFP_LOAD_ROM
 /* hand the caller its own buffer, allocated the way the uncached path did */
 static void *fs_hand_out(const struct fs_cache_entry *e)
 {
@@ -716,9 +809,6 @@ static void *fs_hand_out(const struct fs_cache_entry *e)
         memcpy(dst, e->data, e->size);
     return dst;
 }
-
-/* SharedFilePtr::Load -- the seam. Same contract as 0x02017c54. */
-struct SharedFilePtrC { u16 fileID; u8 numRefs; void *filePtr; };
 
 // PORT_HOST_ABI: DS card hardware (overlay-file table, card streaming,
 //   CP15 flushes); the HAL reimplements the contract. See SEAM LEVEL in the
@@ -802,6 +892,7 @@ void *_ZN13SharedFilePtr4LoadEv(struct SharedFilePtrC *self)
         self->filePtr = dst;
     return dst;
 }
+#endif /* SM64DS_SFP_LOAD_ROM */
 
 // ---- the LOAD-AT pair (gate 24) ------------------------------------------
 //
@@ -851,6 +942,149 @@ static const u8 *port_fs_archive_slice(unsigned fileID, u32 *len_out)
         return img + start;
     }
     return 0;
+}
+
+static u32 fs_rd32(const u8 *p)
+{
+    return p[0] | p[1] << 8 | p[2] << 16 | (u32)p[3] << 24;
+}
+
+static void fs_wr32(u8 *p, u32 v)
+{
+    p[0] = (u8)v; p[1] = (u8)(v >> 8); p[2] = (u8)(v >> 16); p[3] = (u8)(v >> 24);
+}
+
+/* Archive i rebuilt with its claimed members' served bytes, handed to the
+   card as the bytes of the NARC's own FAT file (see ARCHIVE MEMBERS at the
+   top of this file). The layout is the stock one moved, never re-planned:
+   members are laid down in the order the stock image holds them, the stock
+   gap before each one is kept, a served member is padded to four bytes with
+   0xFF, and every later member moves by what the served ones grew. An
+   archive with nothing claimed is left alone. */
+static void fs_patch_narc(int ai)
+{
+    const struct port_arc_entry *e = &port_archive_map[ai];
+    u8 *a = port_fs_archive_image(ai, e);
+    const long alen = g_arc_len[ai];
+    u8 *btaf, *btnf, *gmif, *img, *out, *fat_out;
+    u32 btaf_size, btnf_size, data_len, pre, cap, cur = 0, prev_end = 0;
+    u32 *order = 0;
+    u16 nfiles;
+    unsigned narc_id = 0, nserved = 0, i, k;
+
+    for (k = 0; k < g_nmember; ++k)
+        if (g_member[k].fid >= e->base && g_member[k].fid < e->end)
+            break;
+    if (k == g_nmember)
+        return;
+    for (i = 1; i < MAX_FILES; ++i)
+        if (strcmp(g_paths[i], e->narc) == 0) {
+            narc_id = i;
+            break;
+        }
+    if (!a || alen < 0x18 || memcmp(a, "NARC", 4) != 0 || !narc_id) {
+        fprintf(stderr, "[mods] %s cannot be rebuilt; its claimed members keep "
+                "the cartridge's bytes\n", e->narc);
+        return;
+    }
+    btaf = a + 0x10;
+    btaf_size = fs_rd32(btaf + 4);
+    nfiles = (u16)(btaf[8] | btaf[9] << 8);
+    btnf = btaf + btaf_size;
+    btnf_size = fs_rd32(btnf + 4);
+    gmif = btnf + btnf_size;
+    img = gmif + 8;
+    data_len = fs_rd32(gmif + 4) - 8;
+    pre = (u32)(img - a);
+    cap = (u32)alen;
+    for (k = 0; k < g_nmember; ++k)
+        if (g_member[k].fid >= e->base && g_member[k].fid < e->end)
+            cap += g_member[k].size + g_member[k].size / 8 + 16;
+    out = (u8 *)malloc(cap);
+    order = (u32 *)malloc((nfiles ? nfiles : 1) * sizeof *order);
+    if (!out || !order) {
+        free(out);
+        free(order);
+        return;
+    }
+    memcpy(out, a, pre);
+    fat_out = out + (btaf - a) + 12;
+    /* the stock data order: member indices sorted by their stock start */
+    for (i = 0; i < nfiles; ++i)
+        order[i] = i;
+    for (i = 1; i < nfiles; ++i) {
+        u32 v = order[i], vs = fs_rd32(btaf + 12 + v * 8), j = i;
+        while (j > 0 && fs_rd32(btaf + 12 + order[j - 1] * 8) > vs) {
+            order[j] = order[j - 1];
+            --j;
+        }
+        order[j] = v;
+    }
+    for (i = 0; i < nfiles; ++i) {
+        const u32 m = order[i];
+        const u32 st = fs_rd32(btaf + 12 + m * 8), en = fs_rd32(btaf + 12 + m * 8 + 4);
+        const unsigned fid = e->base + m;
+        const u8 *bytes = img + st;
+        u8 *wrapped = 0;
+        u32 len = en - st, gap = st > prev_end ? st - prev_end : 0;
+        int served = 0;
+        for (k = 0; k < g_nmember; ++k)
+            if (g_member[k].fid == fid) {
+                if (len > 8 && memcmp(img + st, "LZ77", 4) == 0) {
+                    wrapped = fs_lz77_wrap(g_member[k].data, g_member[k].size,
+                                           &len);
+                    bytes = wrapped;
+                } else {
+                    bytes = g_member[k].data;
+                    len = g_member[k].size;
+                }
+                served = bytes != 0;
+                if (!served) {
+                    bytes = img + st;
+                    len = en - st;
+                }
+                break;
+            }
+        memcpy(out + pre + cur, img + prev_end, gap);
+        cur += gap;
+        fs_wr32(fat_out + m * 8, cur);
+        memcpy(out + pre + cur, bytes, len);
+        cur += len;
+        fs_wr32(fat_out + m * 8 + 4, cur);
+        prev_end = en;
+        if (served) {
+            ++nserved;
+            while (cur & 3)
+                out[pre + cur++] = 0xFF;
+            prev_end = (en + 3) & ~3u;
+        }
+        free(wrapped);
+    }
+    if (data_len > prev_end) {
+        memcpy(out + pre + cur, img + prev_end, data_len - prev_end);
+        cur += data_len - prev_end;
+    }
+    fs_wr32(out + (gmif - a) + 4, cur + 8);
+    fs_wr32(out + 8, pre + cur);
+    if (nserved)
+        g_patch_emit(narc_id, out, pre + cur);
+    if (fs_patch_trace())
+        fprintf(stderr, "fs: card patch id=%u (%s) rebuilt with %u modded "
+                "member(s): %ld -> %u bytes\n", narc_id, e->narc, nserved,
+                alen, pre + cur);
+    free(order);
+    free(out);
+}
+
+/* Every claimed member's NARC, rebuilt once, after the last claim. */
+static void fs_patch_members(void)
+{
+    unsigned k;
+    for (int ai = 0; ai < 13; ++ai)
+        fs_patch_narc(ai);
+    for (k = 0; k < g_nmember; ++k)
+        free(g_member[k].data);
+    g_nmember = 0;
 }
 
 /* ONE ARCHIVE MEMBER'S BYTES, BY ITS INTERIOR FILE ID, for a host layer that
