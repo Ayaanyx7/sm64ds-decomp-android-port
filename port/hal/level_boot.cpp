@@ -3677,6 +3677,36 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
 
        Unconditional, as the ROM's line is: a boot that spawns nothing still
        gets a world with no stale freeze request in it. */
+    /* THE STAGE'S GRAPHICS BLOCK, MADE CURRENT WHERE Stage::InitResources
+       MAKES IT CURRENT (run linkfull, lane K7GC2): the first of the four ROM
+       lines quoted above, src/_ZN5Stage13InitResourcesEv.cpp:284,
+
+           data_0209d4a8 = (void*)&data_0209f3c4;
+
+       immediately above the freeze-word clear below, which is its ROM
+       neighbour. data_0209f3c4 is the Stage's graph-callback block: the
+       linked __sinit_02074e84 (hal/ctor_runner.cpp, rung C1d) gives it
+       data_02092188 as its vptr, and Minimap::Behavior's UpdateMinimap fills
+       the matrix and the reference point behind it (hal/sub_actors.cpp).
+       data_0209d4a8 is the one pointer the frame's dispatchers read: the beat
+       at func_02019144's head (hal/scene_boot.cpp, port_graph_block_beat)
+       calls its slot 2, Stage::GraphCallback2, the bottom-screen minimap's
+       BG3 affine, and the ROM's frame phase 2 (func_02019390, hal/
+       fader_wipes.cpp) its slot 0, dGraph_c's `return 1`, which takes the
+       same full arm a null block does.
+
+       THIS COPY OF InitResources NEVER MADE THE STORE, so the block was not
+       current on any level frame (data_0209d4a8 read 0 at every player tick
+       measured, run linkfull lane SEATS3) and a hand copy of the callback
+       stood in for the dispatch. The clear that pairs with it is
+       Stage::CleanupResources:77, `data_0209d4a8 = 0`, in
+       port_level_reset_host below; the Game Over crossing runs the ROM's own
+       CleanupResources, which makes it itself. */
+    {
+        extern unsigned char data_0209d4a8[4];   /* hal/w8a_stage_storage.cpp */
+        extern unsigned char data_0209f3c4[4];   /* hal/sub_actors.cpp */
+        *(void **)data_0209d4a8 = (void *)data_0209f3c4;
+    }
     data_0209b454[0] = 0;
 
     /* AND ITS NEIGHBOUR TWO LINES DOWN, src/ResetKuppaScript.c, which
@@ -6254,6 +6284,17 @@ extern "C" void port_level_reset_host(void)
     {
         extern signed char data_02092120;
         data_02092120 = -1;
+    }
+
+    /* NO GRAPHICS BLOCK IS CURRENT once the level is gone (run linkfull, lane
+       K7GC2): Stage::CleanupResources:77, `data_0209d4a8 = 0`, the pair of
+       the store port_stage_boot_body makes at InitResources:284. The star
+       select and every other scene the level change runs between here and
+       the next boot then see no block, as on the cartridge, and the Stage's
+       minimap affine is not dispatched over them. */
+    {
+        extern unsigned char data_0209d4a8[4];   /* hal/w8a_stage_storage.cpp */
+        *(void **)data_0209d4a8 = 0;
     }
 
     /* Stage::CleanupResources:107-108, the teardown half of the archive lines
