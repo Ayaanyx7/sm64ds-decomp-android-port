@@ -3084,3 +3084,44 @@ of them measured to differ between routes after the reset: GX::DisableAllBanks
 before SetVramBanks, Initialise3dGraphics(0x1F), GX::DispOn,
 InitialiseVramGlobals, BG1CNT_A = 0x1f1c, and the DISPCNT layer-bit stores
 (the port publishes the two masks every frame instead).
+
+21. LANE GOVERCUT1 (run linkfull): THE OPENING AFTER A GAME OVER, THE ROM'S
+    GATE ON THE CROSSING'S FILE-SELECT ENTRY
+------------------------------------------------------------------------------
+
+After GAME OVER -> QUIT -> title -> a NEW file (section 19's crossing, with
+section 20's reset), the castle grounds came up with the HUD at once. The
+cartridge plays the opening there, as it does after a fresh boot.
+
+WHAT DECIDES IT ON THE CARTRIDGE: nothing is armed. StartFile (0x0202ae88)
+writes game mode 0 and requests level 1; Stage::LoadClsnAndObjects (ov002
+0x020fe190, src :78-100) sets intro when the mode is 0, the file's flags2
+bit 7 (data_0209caa0+8, "the opening has been seen") is clear and
+ContinueKuppaScriptIfNecessary returns 0, then declines the HUD (actor 0x14e)
+and calls StartIntroCutscene (0x0200eedc). The flag is the picked file's own:
+the file select copies its record into data_0209caa0 (measured with a write
+watch: dScDSMT_c::InitResources -> func_ov007_020b066c -> func_ov007_020cc600
+-> func_02013c84), and a new file's record carries flags2 0x08, bit 7 clear.
+
+WHAT THE PORT DID: hal/level_boot.cpp's boot writes flags2 bit 7 SET on every
+boot the intro seam was not armed for (that is what keeps the direct
+SM64DS_LEVEL boots out of the opening). Only the title bridge's
+port_level_entry_latch armed it. The crossing hands its StartFile request to
+the ordinary level-change apply, so the boot read "flags2 bit7 0 | armed 0"
+and overwrote the file's value before the ROM's gate read it.
+
+WHAT CHANGED: port_level_scene_crossing arms the same one-shot seam when a
+scene hands the game back through StartFile (hal/level_change.cpp). Nothing
+is decided there: CONTINUE (func_0202ae74's StartFile(1, 0)) reads bit 7 set
+and the seam answers no, as does SM64DS_SKIP_INTRO or a mode other than 0.
+
+MEASURED (R11's QUIT route with the opening gate's input): the level-1 player
+stream after the crossing equals a fresh boot's opening frame for frame over
+4000 frames (the opening's own level change at +2474, bit 7 0 -> 1 at +3444,
+363 distinct positions); CONTINUE's lines and pictures are unchanged.
+
+LEFT AS FOUND: at +1800 (the opening's character scene) the bottom-screen
+inset differs between the two routes in sprite positions only (engine B
+registers equal, sub OAM entries 16-37 moved); on both routes those sprites
+show the file select's leftover letters. That is the opening's bottom screen,
+not this crossing, and is reported for its own lane.
