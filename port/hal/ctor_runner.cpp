@@ -183,15 +183,17 @@
  * block sets out: a hand-built mangling that is one letter off is a directive
  * that never fires and never says so.
  *
- * NOTHING IN THIS BUILD DISPATCHES WHAT C1d WRITES. data_0209f3c4's first word
- * becomes &data_02092188 (the Stage's graph-callback table,
- * hal/arm9_tables_link100.cpp section 3, all four slots seated). The only
- * reader of that vptr is func_02019144, through data_0209d4a8 -- and
- * data_0209d4a8 is null in this port: hal/w8a_stage_storage.cpp hosts it and
- * says nothing seats it, src/func_02019144.c guards the dispatch with
- * `if (p != 0)`, and the two TUs that do write it (_ZN7dScMB_c13InitResourcesEv,
- * _ZN11dScMgBase_c9Virtual84Ev) write a DIFFERENT object. data_0209f43c gets the ROM's
- * own 4:3 seed (0x1555, 0xe38, 0x1000, 0x01388000) at Entry, which
+ * WHAT C1d WRITES IS DISPATCHED ON EVERY LEVEL FRAME NOW (run linkfull, lane
+ * K7GC2). data_0209f3c4's first word becomes &data_02092188 (the Stage's
+ * graph-callback table, hal/arm9_tables_link100.cpp section 3, all four slots
+ * seated and the table registered with the frame beat). Its readers go through
+ * data_0209d4a8, which hal/level_boot.cpp points at data_0209f3c4 on every Stage
+ * build, at Stage::InitResources:284's point, and clears at
+ * Stage::CleanupResources:77's: the beat at func_02019144's head calls slot 2,
+ * Stage::GraphCallback2 (the minimap's BG3 affine), and frame phase 2
+ * (func_02019390) calls slot 0. When this rung landed nothing seated that
+ * pointer, so the vptr stored here had no reader yet. data_0209f43c gets the
+ * ROM's own 4:3 seed (0x1555, 0xe38, 0x1000, 0x01388000) at Entry, which
  * Camera::Render re-seeds through the same Clipper::Func_020156DC on every
  * frame anyway -- so the seed is the ROM's own value at the ROM's own point,
  * not a new one.
