@@ -1080,6 +1080,214 @@ void scan_ref(SubFramebuffer &fb, uint32_t dispcnt, const uint8_t *skip,
     }
 }
 
+/* ---- THE FAST SCAN-OUT -------------------------------------------------------
+ *
+ * The same picture as scan_ref, drawn a line at a time instead of a pixel at a
+ * time. What moves out of the per-pixel loop, and why each is the same answer:
+ *
+ *   - THE STANDARD BG PALETTE is expanded once a frame (pal32) instead of once a
+ *     pixel. Every standard-palette read in sample_bg is bgr555(rd16(kPlttBase +
+ *     index * 2)) with index 0..255, and nothing writes palette memory during a
+ *     scan-out, so pal32[index] is that value.
+ *   - EACH ENABLED BG IS SAMPLED A WHOLE LINE AT A TIME (sample_line), with its
+ *     kind decided once per line and the y-only terms computed once per line.
+ *     The per-pixel arithmetic is sample_bg's, term for term; the affine sums
+ *     are regrouped as (ref + P*y) + P*x, which is the same integer (no term can
+ *     overflow: 28-bit reference, 16-bit P times at most 255). sample_bg only
+ *     reads memory, so sampling a layer where a nearer one covers it changes
+ *     nothing; every address it forms is inside the VRAM reservation.
+ *   - THE PRIORITY WALK uses per-frame lists of the enabled BGs at each
+ *     priority, in index order -- the same visit order as the four nested tests,
+ *     with the disabled and other-priority layers already skipped.
+ *   - THE WINDOW MASK is 0x3F without a call when no window is on.
+ *
+ * The resolve, the colour-effect unit and master brightness are the reference's
+ * own functions. SM64DS_TWOD_VERIFY=1 compares this against scan_ref every frame;
+ * SM64DS_TWOD_OLD=1 draws through scan_ref alone (timing A/B on one binary). */
+inline bool tile_px(const BgLayer &c, const uint32_t *pal32, uint32_t tile,
+                    int fx, int fy, uint16_t se, uint32_t &out)
+{
+    uint32_t index;
+    if (c.bpp8) {
+        index = rd8(c.chars + tile * 64 + fy * 8 + fx);
+        if (index == 0) return false;
+        if (c.ext) {
+            out = bgr555(rd16(c.ext + (((se >> 12) & 0xF) * 256 + index) * 2));
+            return true;
+        }
+    } else {
+        const uint8_t pair = rd8(c.chars + tile * 32 + fy * 4 + (fx >> 1));
+        index = (fx & 1) ? (pair >> 4) : (pair & 0xF);
+        if (index == 0) return false;
+        index += ((se >> 12) & 0xF) * 16;
+    }
+    out = pal32[index];
+    return true;
+}
+
+/* One BG line: col[x] and ok[x] are sample_bg(c, x, y)'s out and return. */
+void sample_line(const BgLayer &c, int y, const uint32_t *pal32, uint32_t *col,
+                 uint8_t *ok)
+{
+    if (c.kind == BG_TEXT) {
+        const int py = (y + c.vofs) & (c.map_h * 8 - 1);
+        const int ty = py >> 3, fy0 = py & 7;
+        const int blocks_w = c.map_w >> 5;
+        const uint32_t rowbase =
+            c.screen + ((ty >> 5) * blocks_w) * 0x800 + (ty & 31) * 32 * 2;
+        const int wm = c.map_w * 8 - 1;
+        for (int x = 0; x < 256; ++x) {
+            const int px = (x + c.hofs) & wm;
+            const int tx = px >> 3;
+            const uint16_t se = rd16(rowbase + (tx >> 5) * 0x800 + (tx & 31) * 2);
+            int fx = px & 7, fy = fy0;
+            if (se & 0x400) fx = 7 - fx;
+            if (se & 0x800) fy = 7 - fy;
+            ok[x] = tile_px(c, pal32, se & 0x3FF, fx, fy, se, col[x]) ? 1 : 0;
+        }
+        return;
+    }
+    const int bx = c.refx + c.pb * y, by = c.refy + c.pd * y;
+    if (c.kind == BG_BITMAP_256 || c.kind == BG_BITMAP_DIRECT) {
+        for (int x = 0; x < 256; ++x) {
+            int px = (bx + c.pa * x) >> 8;
+            int py = (by + c.pc * x) >> 8;
+            if (c.wrap) {
+                px &= c.map_w - 1;
+                py &= c.map_h - 1;
+            } else if (px < 0 || px >= c.map_w || py < 0 || py >= c.map_h) {
+                ok[x] = 0;
+                continue;
+            }
+            const uint32_t at = (uint32_t)py * (uint32_t)c.map_w + (uint32_t)px;
+            if (c.kind == BG_BITMAP_DIRECT) {
+                const uint16_t v = rd16(c.screen + at * 2);
+                ok[x] = (v & 0x8000) ? 1 : 0;
+                if (ok[x]) col[x] = bgr555(v);
+            } else {
+                const uint8_t i8 = rd8(c.screen + at);
+                ok[x] = i8 ? 1 : 0;
+                if (ok[x]) col[x] = pal32[i8];
+            }
+        }
+        return;
+    }
+    /* BG_AFFINE and BG_EXT_AFFINE */
+    const int tw = c.map_w >> 3;
+    for (int x = 0; x < 256; ++x) {
+        int px = (bx + c.pa * x) >> 8;
+        int py = (by + c.pc * x) >> 8;
+        if (c.wrap) {
+            px &= c.map_w - 1;
+            py &= c.map_h - 1;
+        } else if (px < 0 || px >= c.map_w || py < 0 || py >= c.map_h) {
+            ok[x] = 0;
+            continue;
+        }
+        uint16_t se;
+        uint32_t tile;
+        int fx = px & 7, fy = py & 7;
+        if (c.kind == BG_AFFINE) {
+            tile = rd8(c.screen + (py >> 3) * tw + (px >> 3));
+            se = 0;
+        } else {
+            se = rd16(c.screen + ((py >> 3) * tw + (px >> 3)) * 2);
+            tile = se & 0x3FF;
+            if (se & 0x400) fx = 7 - fx;
+            if (se & 0x800) fy = 7 - fy;
+        }
+        ok[x] = tile_px(c, pal32, tile, fx, fy, se, col[x]) ? 1 : 0;
+    }
+}
+
+void scan_fast(SubFramebuffer &fb, uint32_t dispcnt, const uint8_t *skip,
+               ObjPixel (*obj)[256], uint8_t (*objwin)[256])
+{
+    const unsigned disp_mode = (dispcnt >> 16) & 3;
+    const bool forced_blank = (dispcnt >> 7) & 1;
+
+    Bright br;
+    {
+        const uint16_t mb = rd16(kRegBase + 0x6C);
+        br.factor = mb & 0x1F;
+        if (br.factor > 16) br.factor = 16;
+        br.mode = (mb >> 14) & 3;
+    }
+
+    if (disp_mode == 0 || forced_blank) {
+        // Display off is white on a DS panel, not black.
+        for (int y = 0; y < SUB_H; ++y)
+            for (int x = 0; x < SUB_W; ++x) fb.px[y][x] = 0xFFFFFFFFu;
+        return;
+    }
+
+    BgLayer bgs[4];
+    for (int i = 0; i < 4; ++i) read_bg(bgs[i], i, dispcnt);
+
+    Windows win;
+    read_windows(dispcnt, win);
+
+    raster_obj(dispcnt, skip, obj, objwin);
+
+    uint32_t pal32[256];
+    for (int i = 0; i < 256; ++i) pal32[i] = bgr555(rd16(kPlttBase + i * 2));
+    const uint32_t backdrop = pal32[0];
+    const Blend bld = read_blend();
+
+    int order[4][4], norder[4] = {0, 0, 0, 0};
+    for (int prio = 0; prio < 4; ++prio)
+        for (int bg = 0; bg < 4; ++bg)
+            if (bgs[bg].kind != BG_OFF && bgs[bg].prio == prio)
+                order[prio][norder[prio]++] = bg;
+
+    uint32_t lcol[4][256];
+    uint8_t lok[4][256];
+    for (int y = 0; y < SUB_H; ++y) {
+        for (int bg = 0; bg < 4; ++bg)
+            if (bgs[bg].kind != BG_OFF)
+                sample_line(bgs[bg], y, pal32, lcol[bg], lok[bg]);
+        const ObjPixel *orow = obj[y];
+        for (int x = 0; x < SUB_W; ++x) {
+            const unsigned mask = win.any ? window_mask(win, x, y, objwin) : 0x3Fu;
+            uint32_t col[2] = {backdrop, backdrop};
+            int id[2] = {5, 5};
+            bool semi = false;
+            int found = 0;
+            const ObjPixel &o = orow[x];
+            for (int prio = 0; prio < 4 && found < 2; ++prio) {
+                if (o.hit && o.prio == prio && (mask & 0x10)) {
+                    if (!found) semi = o.semi;
+                    col[found] = o.color; id[found] = 4; ++found;
+                    if (found >= 2) break;
+                }
+                for (int k = 0; k < norder[prio] && found < 2; ++k) {
+                    const int bg = order[prio][k];
+                    if (!(mask & (1u << bg))) continue;
+                    if (lok[bg][x]) {
+                        col[found] = lcol[bg][x]; id[found] = bg; ++found;
+                    }
+                }
+            }
+            const uint32_t c = found ? blend_apply(bld, mask, col[0], id[0], semi,
+                                                   col[1], id[1])
+                                     : backdrop;
+            fb.px[y][x] = apply_bright(c, br);
+        }
+    }
+}
+
+/* SM64DS_TWOD_OLD=1: draw through scan_ref only, the shipped scan-out, so a
+   timing before / after is one binary and one run shape. */
+int twod_old_on()
+{
+    static int v = -1;
+    if (v < 0) {
+        const char *e = std::getenv("SM64DS_TWOD_OLD");
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v;
+}
+
 /* ---- SM64DS_TWOD_VERIFY=1: the old scan-out beside the new, every frame -------
  *
  * The reference draws into its own framebuffer and its own OBJ buffers, from the
@@ -1164,7 +1372,10 @@ void ppu_scanout_sub(SubFramebuffer &fb)
         obj_decide(dispcnt, skip);
     else
         std::memset(skip, 0, sizeof skip);
-    scan_ref(fb, dispcnt, skip, g_obj, g_objwin);
+    if (twod_old_on())
+        scan_ref(fb, dispcnt, skip, g_obj, g_objwin);
+    else
+        scan_fast(fb, dispcnt, skip, g_obj, g_objwin);
     if (twod_verify_on()) twod_verify_sub(fb, dispcnt, skip);
 }
 
