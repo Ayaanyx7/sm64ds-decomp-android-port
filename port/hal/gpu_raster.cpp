@@ -98,6 +98,7 @@
 
 #include <windows.h>
 #include <d3d11.h>
+#include <emmintrin.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -647,6 +648,78 @@ std::vector<float>    g_rbc_dp0, g_rbc_dp1;
 double    g_rbt_ms[2], g_rbt_wait[2];
 long long g_rbt_n[2];
 
+/* THE COPY INTO THE CPU BUFFERS, SIXTEEN PIXELS AT A TIME where it can. The
+   coverage bit is bit 7 of the id byte, which is exactly the bit SSE2's byte
+   movemask collects, so one load and one movemask say whether a run of
+   sixteen pixels is all covered (a course: nearly every run), all empty (the
+   clear around a menu's model) or mixed. An all-covered run is written with
+   whole-register stores, an empty one is skipped, and a mixed one and the
+   ragged end of a row take the one-pixel loop. Every store writes the value
+   the one-pixel loop writes -- the colour with its alpha forced to 0xFF, a
+   coverage byte of 1, the low six bits of the id, the depth times two (one
+   IEEE single multiply either way) -- so the buffers come out byte for byte
+   the same; SM64DS_RENDERER_RBCHECK=1 compares them with the one-pixel loop
+   on every frame. */
+void copy_box(const ntr::GxGpuFrame *f, int bx0, int by0, int bx1, int by1,
+              const D3D11_MAPPED_SUBRESOURCE &mc,
+              const D3D11_MAPPED_SUBRESOURCE &mi,
+              const D3D11_MAPPED_SUBRESOURCE &md)
+{
+    const __m128i alpha = _mm_set1_epi32((int)0xFF000000u);
+    const __m128i ones = _mm_set1_epi8(1);
+    const __m128i low6 = _mm_set1_epi8(0x3F);
+    const __m128 two = _mm_set1_ps(kDepthUnscale);
+    const bool want_id = f->want_attrid != 0;
+    for (int y = by0; y < by1; ++y) {
+        const uint32_t *crow =
+            (const uint32_t *)((const unsigned char *)mc.pData + (size_t)y * mc.RowPitch);
+        const unsigned char *irow =
+            (const unsigned char *)mi.pData + (size_t)y * mi.RowPitch;
+        const float *drow = f->want_depth
+            ? (const float *)((const unsigned char *)md.pData + (size_t)y * md.RowPitch)
+            : 0;
+        uint32_t *fbrow = f->fb + (size_t)y * f->stride;
+        uint8_t *cvrow = f->cover + (size_t)y * f->stride;
+        uint8_t *idrow = f->attrid + (size_t)y * f->stride;
+        float *dprow = f->depth + (size_t)y * f->stride;
+        int x = bx0;
+        for (; x + 16 <= bx1; x += 16) {
+            const __m128i ids = _mm_loadu_si128((const __m128i *)(irow + x));
+            const int m = _mm_movemask_epi8(ids);
+            if (m == 0) continue;
+            if (m == 0xFFFF) {
+                for (int q = 0; q < 16; q += 4) {
+                    const __m128i c = _mm_loadu_si128((const __m128i *)(crow + x + q));
+                    _mm_storeu_si128((__m128i *)(fbrow + x + q), _mm_or_si128(c, alpha));
+                    if (drow)
+                        _mm_storeu_ps(dprow + x + q,
+                                      _mm_mul_ps(_mm_loadu_ps(drow + x + q), two));
+                }
+                _mm_storeu_si128((__m128i *)(cvrow + x), ones);
+                if (want_id)
+                    _mm_storeu_si128((__m128i *)(idrow + x), _mm_and_si128(ids, low6));
+                continue;
+            }
+            for (int k = x; k < x + 16; ++k) {
+                const unsigned char idv = irow[k];
+                if (!(idv & 0x80u)) continue;
+                fbrow[k] = 0xFF000000u | (crow[k] & 0x00FFFFFFu);
+                cvrow[k] = 1;
+                if (want_id) idrow[k] = (uint8_t)(idv & 0x3Fu);
+                if (drow) dprow[k] = drow[k] * kDepthUnscale;
+            }
+        }
+        for (; x < bx1; ++x) {
+            const unsigned char idv = irow[x];
+            if (!(idv & 0x80u)) continue;
+            fbrow[x] = 0xFF000000u | (crow[x] & 0x00FFFFFFu);
+            cvrow[x] = 1;
+            if (want_id) idrow[x] = (uint8_t)(idv & 0x3Fu);
+            if (drow) dprow[x] = drow[x] * kDepthUnscale;
+        }
+    }
+}
+
 /* Read the box [bx0,bx1) x [by0,by1) back into the software rasteriser's
    buffers: covered pixels only, which is what keeps every pixel the card did
    not reach exactly as the caller's clear left it. `whole` is the old way,
@@ -710,8 +783,10 @@ int read_back(const ntr::GxGpuFrame *f, int bx0, int by0, int bx1, int by1,
 
     /* NOTHING ON THE CPU SIDE HAS BEEN TOUCHED UNTIL HERE, which is what makes
        a failure above safe: the software pass then draws the frame over
-       buffers that are still exactly as it cleared them. */
-    for (int y = by0; y < by1; ++y) {
+       buffers that are still exactly as it cleared them. The old way keeps
+       its one-pixel loop, which is what RBCHECK compares copy_box against. */
+    if (!whole) copy_box(f, bx0, by0, bx1, by1, mc, mi, md);
+    else for (int y = by0; y < by1; ++y) {
         const uint32_t *crow =
             (const uint32_t *)((const unsigned char *)mc.pData + (size_t)y * mc.RowPitch);
         const unsigned char *irow =
