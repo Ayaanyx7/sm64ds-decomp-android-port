@@ -10992,21 +10992,13 @@ int main(void)
     g_character = *(unsigned char *)(c + 0x6d9) & 3;
     g_character_pending = g_character;
 
-    /* SKIP THE CHARACTER INTRO CUTSCENE, which the other three spawn with and
-       Mario does not. func_ov002_020c4188 is that cutscene's state machine,
-       entered whenever +0x71e is nonzero, and it is built on two things the
-       port does not have: the Message box (func_0201f32c, guarded to a no-op
-       in hal/level_boot.cpp) and the camera-script calls that follow it. With
-       the message guarded it simply faults one step further along, on the
-       object the message was supposed to have made. Zeroing the cutscene id is
-       the honest version of "not hosted": the state machine returns on its
-       first line and the character just plays. No-op for Mario, who arrives
-       with it already 0. */
-    if (*(unsigned char *)(c + 0x71e) && !getenv("SM64DS_INTRO_CUTSCENE")) {
-        fprintf(stderr, "[char] skipping intro cutscene %u (not hosted)\n",
-                (unsigned)*(unsigned char *)(c + 0x71e));
-        *(unsigned char *)(c + 0x71e) = 0;
-    }
+    /* Player+0x71e is the pending one-time message (the course-entry text and
+       the first-power-up hints), and nothing here touches it: the ROM's own
+       func_ov002_020c4188 runs it (src/actors/Player.cpp). This used to zero it
+       as "not hosted", from before the message bank loaded
+       (hal/level_boot.cpp, port_message_archive_seat); since
+       func_ov002_020c43c4 records the save's seen bit before it sets the id,
+       zeroing it lost each hint for good. */
     if (!real_boot) {
         static struct { unsigned short id; unsigned char refs; void *p; } kp;
         _ZN13SharedFilePtr9ConstructEj(&kp, 1941);
@@ -15057,26 +15049,10 @@ int main(void)
                the one Camera::Render published, in the ROM's own scene units,
                and Actor::BeforeBehavior reads exactly those three words to
                place every actor for the Clipper. */
-            /* THE CHARACTER INTRO CUTSCENE IS NOT HOSTED, so hold its id at 0
-               every tick rather than once at startup -- the level-enter sets it
-               AFTER the Player exists, which is why clearing it at spawn did
-               nothing. func_ov002_020c4188 is that cutscene and it is built on
-               the Message box the port does not have; with the message guarded
-               to a no-op it just faults one step further along, on the object
-               the message was supposed to have made. Yoshi enters it every run
-               (Mario never does, Luigi and Wario survive 300 frames without
-               it), so this is the difference between Yoshi being playable and
-               not. Zero means the state machine returns on its first line. */
-            if (*(unsigned char *)(c + 0x71e) && !getenv("SM64DS_INTRO_CUTSCENE")) {
-                static int said;
-                if (!said) {
-                    said = 1;
-                    fprintf(stderr, "[char] intro cutscene %u suppressed "
-                            "(not hosted)\n",
-                            (unsigned)*(unsigned char *)(c + 0x71e));
-                }
-                *(unsigned char *)(c + 0x71e) = 0;
-            }
+            /* Player+0x71e (the pending one-time message) is no longer held at
+               0 here: see the note at the spawn. func_ov002_020c44c4 sets it on
+               the course entry and func_ov002_020c43c4 on a first power-up,
+               and func_ov002_020c4188 opens the box and clears it again. */
             /* THE SAVE-PROMPT FLAG stand-in is retired: Stage::Behavior's own
                arm (src/_ZN5Stage8BehaviorEv.cpp) now runs the ROM's
                Stage::LC_Update (src/_ZN5Stage9LC_UpdateEv.cpp) off this flag,

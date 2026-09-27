@@ -5089,7 +5089,7 @@ extern int data_0209d70c[];            /* the message archive header pointer */
 //
 // Bob-omb Battlefield is the first level the port boots whose own logic opens
 // a TEXT BOX. func_ov002_020c44c4 is the Player's one-shot level-intro check;
-// its switch is on data_0209f2f8, the current level, and `case 7: r4val = 8` is
+// its switch is on data_0209f2f8, the current level, and `case 6: r4val = 7` is
 // Bob-omb Battlefield's tutorial message -- fired when
 // SaveData::CountStarsCollectedInLevel comes back zero, which on a port with
 // a zeroed save block it always does. That runs the message state machine in
