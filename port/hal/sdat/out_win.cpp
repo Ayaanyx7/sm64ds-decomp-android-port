@@ -20,7 +20,8 @@
 // every later call (prepare, write, reset) took under a millisecond. The open
 // used to run on the main thread at the first sound push, so the window sat
 // on its first picture for ~25 s before the title appeared. Now the first
-// push starts the open on a worker and returns at once.
+// push starts the open on a worker, gives it OPEN_GRACE_MS (a normal device
+// is live by then and the run is exactly the old one), and returns.
 //
 // WHILE THE WORKER WAITS, A VIRTUAL DEVICE DRAINS THE RING. It is the same
 // NBUF x OUT_FRAMES ring, refilled by the same loop, and each block counts as
@@ -75,7 +76,7 @@
 
 namespace {
 
-enum { OUT_FRAMES = 1024, NBUF = 4, MIX_MAX = 2048 };
+enum { OUT_FRAMES = 1024, NBUF = 4, MIX_MAX = 2048, OPEN_GRACE_MS = 200 };
 
 sd_s16 g_mix[MIX_MAX * 2];      // scratch at SD_MIX_RATE, stereo interleaved
 
@@ -539,6 +540,16 @@ int sd_out_open(void)
         }
     }
     if (!async) return go_live(open_device(delay));
+    /* THE GRACE. A device that answers in the tens of milliseconds a normal
+       machine takes is waited for, here, for up to OPEN_GRACE_MS: then it is
+       live before the first block is rendered and nothing at all is lost,
+       exactly as when the open ran on this thread. Only a slow device costs
+       the boot this much and then goes to the background. */
+    while (g_async.load(std::memory_order_acquire) == 0 &&
+           now_ms() - g_tFirst < OPEN_GRACE_MS)
+        Sleep(1);
+    const int st = g_async.load(std::memory_order_acquire);
+    if (st != 0) return go_live(st > 0);
     g_opened = 2;
     fprintf(stderr, "[sdat] audio device opening in the background "
                     "(delay %d ms); the ring runs on the real clock until it "
