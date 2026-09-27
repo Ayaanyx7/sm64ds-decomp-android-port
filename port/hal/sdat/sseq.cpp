@@ -1179,6 +1179,15 @@ void sd_seq_set_volume(int p, int v)
     g_pl[p].volume = v < 0 ? 0 : (v > 127 ? 127 : v);
 }
 
+/* PLAYER_PARAM 4, the byte at player +4: the channel priority every note of
+ * this player adds its track's to (0x037FD4E4). sd_seq_start seeds it from
+ * the SDAT record, and the game then sends the same record byte here. */
+void sd_seq_set_priority(int p, int prio)
+{
+    if (p < 0 || p >= SD_PLAYERS || !g_pl[p].active) return;
+    g_pl[p].cpr = prio & 0xff;
+}
+
 /* ONE PLACE THAT KNOWS HOW A SOUNDING VOICE'S PITCH IS MADE UP, the twin of
  * retune_note_vol below and for the same reason.
  *

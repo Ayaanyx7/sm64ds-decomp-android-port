@@ -432,13 +432,27 @@ void exec(const Node *n)
         sd_seq_stop(n->a & 31);
         break;
     case 0x03: {                        // PLAYER_PARAM: b = param, c = value
-        // Param 4 is the 0..127 volume func_0205ad24 sends once at start.
+        // Param 4 is func_0205ad24's, sent once at start (see below).
         // Param 6 is func_0205ad3c's, and it is a different animal: a SIGNED
         // attenuation in tenths of a dB out of the ROM's own table, sent
         // every frame by func_0204fafc for every voice that is sounding. It
         // is the game's 3D distance volume and its fade ramps both.
+        //
+        // PARAM 4 IS THE PLAYER'S CHANNEL PRIORITY, NOT A VOLUME, and this
+        // used to hand it to sd_seq_set_volume. The params are byte offsets
+        // into the ARM7's player record, and SM64DS's PlayerInit
+        // (0x037FD9BC) puts the priority at +4 (0x40), the 0..127 volume at
+        // +5 (0x7f) and this s16 fader at +6; the note-on reads the
+        // allocator priority out of +4 (0x037FD4E4). Its one sender,
+        // func_0205ad24 via func_0204f89c, is fed the SEQ / SEQARC record's
+        // cpr byte (src/func_02051a98.c:72, src/func_02051bd0.c:80), which
+        // is 64, 96, 106 or 127 -- so every sound the game started had its
+        // priority applied to it a second time as a volume, a cut of 0 to
+        // 6 dB that depended on nothing but its steal order. The record's
+        // own volume byte goes to the ARM9 voice (+0x40, func_0204f914) and
+        // reaches the ARM7 inside param 6.
         int slot = n->a & 31;
-        if (n->b == 4) sd_seq_set_volume(slot, n->c);
+        if (n->b == 4) sd_seq_set_priority(slot, n->c);
         else if (n->b == 6) sd_seq_set_volume_db10(slot, n->c);
         else note_param(3, n->b);
         break;
