@@ -2633,6 +2633,16 @@ static int g_ip_deferred;
 static long long g_ip_pace_seen;
 static double g_ip_cost_ms = 4.0;   /* running average blended-picture cost */
 static int g_ip_tick_shown;         /* this tick has put a picture up */
+/* run hunt2 lane SMFIT1, THE FIT RULE (see ip_fit_commit). g_ip_tick_final:
+   the tick's own finished picture (tick N itself) is up, so nothing blended
+   may follow it in this tick, because every blend is behind tick N. */
+static int g_ip_tick_final;
+static int g_ip_tick_blends;        /* blended pictures this tick drew */
+static int g_ip_tick_refused;       /* a slot of this tick had no room for one */
+static double g_ip_plain_ms = 1.0;  /* running average cost of a plain present */
+static int g_ip_cost_stale;         /* g_ip_cost_ms predates the slow fallback */
+static double g_ip_work_ms;         /* running average of a tick's own work */
+static int g_ip_tick_probe;         /* the slow fallback's retry tick */
 static int ip_present_slot(long long t, long long deadline);
 static void ip_flush_deferred(void);
 
@@ -7336,6 +7346,39 @@ static void ip_note(double build_ms, double pres_ms)
     g_ip_sum_replay = g_ip_sum_raster = g_ip_sum_compose = 0;
 }
 
+/* THE COST OF A BLEND, AS THE FIT RULE READS IT (run hunt2 lane SMFIT1): the
+   median of the last IP_COST_N blended pictures, build and present together.
+   A running average was one slow picture away from saying "nothing fits" for
+   seconds: measured, one 100 ms picture (the process preempted, a driver
+   stall) took it from 9.5 to 30 ms, and every slot after that was refused.
+   A median steps over a lone outlier and still follows a real change within
+   half a window. g_ip_cost_min is the smallest of the same window: the slow
+   fallback's probe asks whether the cheapest recent blend fits, so a window
+   filled while the machine was busier than it is now cannot keep the probe
+   from ever trying. A sample after the fallback (g_ip_cost_stale) refills the
+   whole window, since the old samples describe another moment. */
+enum { IP_COST_N = 9 };
+static double g_ip_cost_win[IP_COST_N];
+static int g_ip_cost_n, g_ip_cost_at;
+static double g_ip_cost_min = 4.0;
+static void ip_cost_sample(double ms)
+{
+    if (g_ip_cost_stale || !g_ip_cost_n) {
+        for (int i = 0; i < IP_COST_N; ++i) g_ip_cost_win[i] = ms;
+        g_ip_cost_n = IP_COST_N;
+        g_ip_cost_at = 0;
+        g_ip_cost_stale = 0;
+    } else {
+        g_ip_cost_win[g_ip_cost_at] = ms;
+        g_ip_cost_at = (g_ip_cost_at + 1) % IP_COST_N;
+    }
+    double s[IP_COST_N];
+    for (int i = 0; i < IP_COST_N; ++i) s[i] = g_ip_cost_win[i];
+    qsort(s, IP_COST_N, sizeof s[0], port_pic_cmp);
+    g_ip_cost_ms = s[IP_COST_N / 2];
+    g_ip_cost_min = s[0];
+}
+
 /* One picture: blended when this tick can, the tick's own frame otherwise. */
 static void ip_present_alpha(double alpha)
 {
@@ -7365,8 +7408,9 @@ static void ip_present_alpha(double alpha)
     g_present_fb = was;
     QueryPerformanceCounter(&q2);
     ++g_ip_blended;
+    ++g_ip_tick_blends;
     const double cost = (q2.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
-    g_ip_cost_ms = g_ip_cost_ms * 0.8 + cost * 0.2;
+    ip_cost_sample(cost);
     ip_note((q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart,
             (q2.QuadPart - q1.QuadPart) * 1000.0 / (double)qf.QuadPart);
 }
@@ -7384,16 +7428,26 @@ static int ip_owns_picture(void)
    machine (or a RenderScale) where the raster is slow. So a blended picture
    is only started when the time left before the deadline covers what the
    recent ones cost (an average kept here, plus a quarter millisecond). Otherwise the slot
-   gets the tick's own finished picture -- free, and never behind what is on
-   screen -- if the tick has not been shown at all yet, and nothing at all if
-   it has: the picture already up simply stays one slot longer. */
-static void ip_present_plain_or_skip(int *presented)
+   gets the tick's own finished picture -- a present with no raster, and
+   never behind what is on screen -- once: if the tick has not been shown at
+   all yet, or if only blends of it have been shown and the present still
+   fits (run hunt2 lane SMFIT1: a tick with room for one blend then shows two
+   pictures, the blend and tick N itself, instead of the blend alone for a
+   whole tick). After tick N itself is up the slot shows nothing new: the
+   picture already up simply stays one slot longer. */
+static double ip_left_ms(long long deadline);
+static void ip_present_plain_or_skip(int *presented, long long deadline)
 {
-    if (!g_ip_tick_shown) {
+    if (!g_ip_tick_final &&
+        (!g_ip_tick_shown ||
+         ip_left_ms(deadline) >= g_ip_plain_ms + 0.25)) {
+        const long long t0 = ip_qpc();
         ++g_ip_pictures;
         ++g_ip_plain;
         present();
+        g_ip_plain_ms = g_ip_plain_ms * 0.8 + ip_ms_since(t0) * 0.2;
         g_ip_tick_shown = 1;
+        g_ip_tick_final = 1;
         *presented = 1;
     } else {
         *presented = 0;
@@ -7406,14 +7460,18 @@ static void ip_present_plain_or_skip(int *presented)
    costs the game nothing: that turn simply sleeps less. What it may not do is
    run past the start of the next tick. (`deadline`, the turn's own, is the
    later of the two only when the pacer paces whole ticks.) */
-static int ip_fits(long long deadline)
+static double ip_left_ms(long long deadline)
 {
     LARGE_INTEGER f;
     QueryPerformanceFrequency(&f);
     const long long tick_end = g_ip_tick_t0 + g_ip_tick_len;
     const long long end = tick_end > deadline ? tick_end : deadline;
-    const double left = (end - ip_qpc()) * 1000.0 / (double)f.QuadPart;
-    return left >= g_ip_cost_ms + 0.25;
+    return (end - ip_qpc()) * 1000.0 / (double)f.QuadPart;
+}
+static int ip_fits(long long deadline)
+{
+    return ip_left_ms(deadline) >=
+           (g_ip_tick_probe ? g_ip_cost_min : g_ip_cost_ms) + 0.25;
 }
 
 /* The pacer's extra picture, due at slot time t (QPC), to be finished before
@@ -7426,9 +7484,11 @@ static int ip_present_slot(long long t, long long deadline)
 {
     (void)t;
     if (!ip_owns_picture()) { present(); return 1; }
+    if (g_ip_tick_final) return 0;   /* tick N is up; a blend would step back */
     if (!ip_fits(deadline)) {
         int shown = 0;
-        ip_present_plain_or_skip(&shown);
+        g_ip_tick_refused = 1;
+        ip_present_plain_or_skip(&shown, deadline);
         return shown;
     }
     ip_present_alpha((double)(ip_qpc() - g_ip_tick_t0) / (double)g_ip_tick_len);
@@ -7442,9 +7502,16 @@ static int ip_present_slot(long long t, long long deadline)
    so every blended picture lands on the even grid; unpaced, it is drawn here. */
 static void ip_present_tick(void)
 {
-    if (!ip_owns_picture()) { present(); return; }
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
+    /* the tick's own work, measured to here: the fit line's W */
+    if (g_ip_on > 0 && g_ip_tick_t0 > 0 && now.QuadPart > g_ip_tick_t0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        const double w = (now.QuadPart - g_ip_tick_t0) * 1000.0 / (double)f.QuadPart;
+        g_ip_work_ms = g_ip_work_ms * 0.8 + w * 0.2;
+    }
+    if (!ip_owns_picture()) { present(); return; }
     if (g_ip_pace_seen && now.QuadPart - g_ip_pace_seen < 2 * g_ip_tick_len) {
         g_ip_deferred = 1;
         return;
@@ -7462,7 +7529,82 @@ static void ip_flush_deferred(void)
     g_ip_deferred = 0;
     if (!ip_owns_picture()) { present(); return; }
     int shown = 0;
-    ip_present_plain_or_skip(&shown);
+    ip_present_plain_or_skip(&shown, 0);
+}
+
+/* THE FIT RULE (run hunt2 lane SMFIT1), called once per tick just before the
+   tick's commit; 1 = this tick takes the slow fallback (snap, no snapshots).
+
+   It replaces a fixed rule -- "a blend that costs more than 0.3 of a tick
+   turns blending off, one tick in 128 tries again" -- that turned it off on
+   machines where it fitted. A card-drawn 16:9 picture at RenderScale 3 with
+   edge smoothing costs 8 to 11 ms, just past 0.3 of 33.3 ms; at FrameRate 60
+   a tick needs ONE blend beside its own work (about the same again), so the
+   tick had room for it and still went to repeats most of the time, and one
+   slow picture held it there for seconds because the average only moved on
+   the 1-in-128 retry.
+
+   Whether a picture fits is already decided per picture, with measured
+   numbers, where it is drawn (ip_present_slot: the time left before the
+   tick's end against the measured cost of a blend). So the fallback reads
+   what those decisions came to: a tick that was ready to blend and drew no
+   blend at all counts toward it, a tick that drew one resets it. Sixteen
+   such ticks in a row (about half a second) and the machine truly cannot
+   fit one blend at this setting: the fallback is on and the snapshots stop.
+   While it is on, one tick in 32 (about a second) is ready to blend again
+   and asks whether the cheapest of the last measured blends fits (see
+   ip_cost_sample); if a blend is drawn the fallback is off, and that
+   blend's cost refills the window. Both edges are counted in ticks, so it does not
+   flap from one tick to the next. SM64DS_INTERP_TRACE prints a summary line
+   every 240 ticks; each switch prints one line either way. */
+enum { IP_FIT_ENTER = 16, IP_FIT_PROBE = 32, IP_FIT_WIN = 240 };
+static int ip_fit_commit(void)
+{
+    static int slow, nofit, since, ready_prev;
+    static int w_ticks, w_ready, w_blend, w_slow, w_refused, w_blends;
+    /* the tick that just ended: was it ready to blend, and did it? */
+    if (ready_prev && g_ip_tick_ok && g_ip_rate_ok) {
+        ++w_ready;
+        w_blends += g_ip_tick_blends;
+        if (g_ip_tick_refused) ++w_refused;
+        if (g_ip_tick_blends > 0) {
+            ++w_blend;
+            nofit = 0;
+            if (slow) {
+                slow = 0;
+                fprintf(stderr, "[interp] fit: a blend fits again (%.2f ms "
+                        "beside %.2f ms of tick work in %.2f ms): smooth "
+                        "motion is back on\n", g_ip_cost_ms, g_ip_work_ms,
+                        PORT_VBLANK_MS * port_frame_divider());
+            }
+        } else if (!slow && ++nofit >= IP_FIT_ENTER) {
+            slow = 1;
+            since = 0;
+            g_ip_cost_stale = 1;
+            fprintf(stderr, "[interp] fit: no blend fitted in %d ticks in a "
+                    "row (a blend %.2f ms, the tick's own work %.2f ms, the "
+                    "tick %.2f ms): pictures repeat, and one tick in %d tries "
+                    "again\n", IP_FIT_ENTER, g_ip_cost_ms, g_ip_work_ms,
+                    PORT_VBLANK_MS * port_frame_divider(), IP_FIT_PROBE);
+        }
+    }
+    int this_slow = 0;
+    if (slow) this_slow = (++since % IP_FIT_PROBE) != 0;
+    g_ip_tick_probe = slow && !this_slow;
+    ready_prev = !this_slow;
+    ++w_ticks;
+    if (this_slow) ++w_slow;
+    if (w_ticks >= IP_FIT_WIN) {
+        if (ip_trace())
+            fprintf(stderr, "[interp] fit: %d ticks: %d ready to blend, %d "
+                    "drew a blend (%d blends), %d had a slot with no room, %d "
+                    "in the slow fallback | blend %.2f ms, tick work %.2f ms, "
+                    "plain present %.2f ms\n", w_ticks, w_ready, w_blend,
+                    w_blends, w_refused, w_slow, g_ip_cost_ms, g_ip_work_ms,
+                    g_ip_plain_ms);
+        w_ticks = w_ready = w_blend = w_slow = w_refused = w_blends = 0;
+    }
+    return this_slow;
 }
 
 /* SM64DS_INTERP_PROBE=<k> (with SM64DS_INTERP_PROBE_FROM / _TO, ROM frames):
@@ -16868,16 +17010,11 @@ int main(void)
            split path, under the F5 menu, in the stacked layout or through
            the rollback skip is a SNAP: its extra pictures are this one. */
         if (g_ip_on > 0) {
-            /* TOO SLOW TO HELP: when a blended picture costs more than a
-               third of a tick (measured: a software raster at RenderScale 4,
-               13 to 15 ms), almost no blend fits beside the tick's own work,
-               and the snapshots would only make the tick itself late. Such ticks snap without them; one tick in
-               128 still blends, so the cost is measured again and the pictures
-               come back when the machine or the setting allows. */
-            static unsigned ip_retry;
-            const double tick_ms = PORT_VBLANK_MS * port_frame_divider();
-            const int ip_slow = g_ip_cost_ms > 0.3 * tick_ms &&
-                                (++ip_retry & 127u) != 0;
+            /* TOO SLOW TO HELP is decided by what actually fitted, not by a
+               fixed share of the tick (run hunt2 lane SMFIT1): see
+               ip_fit_commit. A tick in the slow fallback snaps without the
+               snapshots. */
+            const int ip_slow = ip_fit_commit();
             if (!ip_slow) ip_snap(g_ip_p3, fb);
             const int ip_snapit = (menu_on || !k1_rom || stacked || ip_slow ||
                                    rb_skip_render() || rb_resim_skip_render())
@@ -16886,6 +17023,9 @@ int main(void)
             g_ip_tick_ok = ntr::gx_interp_commit(data_0209b3ec, ip_snapit, &ist);
             ++g_ip_serial;
             g_ip_tick_shown = 0;
+            g_ip_tick_final = 0;
+            g_ip_tick_blends = 0;
+            g_ip_tick_refused = 0;
             g_ip_rate_ok = port_frame_rate_target() * port_frame_divider() > 60;
             {
                 LARGE_INTEGER qf;
