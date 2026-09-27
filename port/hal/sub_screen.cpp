@@ -216,6 +216,8 @@ extern void *data_0209f318;      /* the Camera actor */
    data_0209f2d4 is that function's own state word. */
 extern unsigned char data_0209f20c;
 extern unsigned char data_0209f2d4;
+/* and the button LC_Update's case 3 takes on Start: see hal_lc_menu_pad */
+extern unsigned char data_0209f2e0;
 }
 
 namespace {
@@ -1737,18 +1739,22 @@ void swap_geom_for(int w, int h, SwapGeom *o)
 void swap_trace(int w, int h, int frame)
 {
     static int on = -1;
-    static int last[3] = { -1, -1, -1 };
+    static int last[4] = { -1, -1, -1, -1 };
     if (on < 0) on = std::getenv("SM64DS_SWAP_TRACE") ? 1 : 0;
     if (!on) return;
-    const int now[3] = { (int)data_0209f20c, (int)data_0209f2d4, g_swap };
-    if (now[0] == last[0] && now[1] == last[1] && now[2] == last[2]) return;
+    const int now[4] = { (int)data_0209f20c, (int)data_0209f2d4, g_swap,
+                         (int)data_0209f2e0 };
+    if (now[0] == last[0] && now[1] == last[1] && now[2] == last[2] &&
+        now[3] == last[3])
+        return;
     last[0] = now[0];
     last[1] = now[1];
     last[2] = now[2];
-    std::fprintf(stderr, "[compose] f%d f20c=%d f2d4=%d composed=%d picture "
+    last[3] = now[3];
+    std::fprintf(stderr, "[compose] f%d f20c=%d f2d4=%d f2e0=%d composed=%d picture "
                  "%dx%d text 0,%d %dx%d from row %d  plates %d,%d %dx%d "
                  "(%d/%d)  coins 0,%d %dx%d from row %d\n", frame, now[0],
-                 now[1], now[2], w, h, g_sw.ty_dst, w, g_sw.t_h,
+                 now[1], now[3], now[2], w, h, g_sw.ty_dst, w, g_sw.t_h,
                  g_sw.ty_src, g_sw.px, g_sw.py, g_sw.pw, g_sw.ph, g_sw.pnum,
                  g_sw.pden, g_sw.cy_dst, w, g_sw.c_h, g_sw.cy_src);
     std::fflush(stderr);
@@ -3999,6 +4005,94 @@ extern "C" int hal_lc_compose_rows(int *text_r0, int *text_r1,
     *coin_r0 = g_sw.cy_src;
     *coin_r1 = g_sw.cy_src + g_sw.c_h;
     return 1;
+}
+
+/* ---- THE LEVEL-CLEAR MENU FROM A CONTROLLER OR THE KEYBOARD ---------------
+ *
+ * WHAT THE CARTRIDGE DOES. Stage::LC_Update's case 3 (src/_ZN5Stage9LC_
+ * UpdateEv.cpp) answers the menu two ways: a stylus tap on one of the three
+ * touch boxes, or IsButtonInputValid() for the button that is ALREADY chosen,
+ * data_0209f2e0 (0, Save and Continue, from case 0). With the level-clear
+ * flag up, IsButtonInputValid (src/IsButtonInputValid.c) takes only Start or
+ * Select (pressed & 0xc) and answers every other key -- the D-pad and A among
+ * them -- with sound 0xe, the refusal buzz. Nothing in LC_Update ever moves
+ * data_0209f2e0 from a key. So on the DS this menu is touch, plus Start for
+ * the first button.
+ *
+ * WHAT THE PORT ADDS, for a player with a pad or a keyboard and no stylus:
+ * up and down move the choice, A presses it. It is written in the idiom the
+ * cartridge uses where it does take a D-pad cursor, the star select
+ * (src/_ZN12dScStarSel_c8BehaviorEv.cpp, its button arm): the first press
+ * only shows the cursor, later presses move it one step and stop at either
+ * end, and each of those plays sound 0x12e. The cursor is the game's own:
+ * Stage::UpdateMenuButtons(0) puts the chosen plate on BG1 palette 2 and the
+ * other two on palette 1 -- the same call, and so the same look, the
+ * cartridge gives a plate the moment it is tapped.
+ *
+ * AND THE ANSWER IS STILL THE ROM'S. A is handed to LC_Update as Start in
+ * the pressed word. The port's A is its jump binding (pad A, Space), and
+ * that reaches PadData as the DS key word's bit 1 (host_btn_to_raw_keys in
+ * tests/walk_window.cpp: jump is raw 0x0002), so bit 1 is the one turned
+ * into Start (0x0008). It is then the ROM's own `data_0209f2e0 == N &&
+ * IsButtonInputValid()` arm that takes the choice, plays that choice's own
+ * sound and moves the state on. The four direction bits are taken out of the
+ * pressed word while the menu is waiting, so the cursor keys do not also buzz.
+ *
+ * WHEN: the one state the ROM reads the answer in -- the level-clear flag up,
+ * the state word 3, and no wait (data_0209f22c) running, which is exactly when
+ * LC_Update reaches case 3. Called from the frame loop right after the ROM's
+ * own PadData build (func_0203bc7c), before the tick reads it; single player
+ * only. The mouse is untouched: a click is TouchInfo, and case 3 reads that
+ * first. */
+extern "C" {
+extern unsigned char data_0209f2b4;   /* how many buttons the menu has */
+extern unsigned char data_0209f22c;   /* LC_Update's own wait */
+extern unsigned char data_0209f244;   /* the chosen plate's blink */
+extern unsigned char data_020a0e40;   /* the local player's slot */
+extern int data_020a0e58[];           /* PadData[i]: {u16 held, u16 pressed} */
+extern int data_020a0e5a[];           /* the split spelling of .pressed */
+void _ZN5Stage17UpdateMenuButtonsEb(int b);
+void func_02012790(int id);
+}
+
+extern "C" void hal_lc_menu_pad(void)
+{
+    static int cursor_shown;
+    if (data_0209f20c == 0 || data_0209f2d4 != 3) {
+        cursor_shown = 0;
+        return;
+    }
+    if (data_0209f22c != 0 || data_0209f244 != 0) return;
+    const int slot = data_020a0e40;
+    unsigned short *pressed =
+        (unsigned short *)((char *)data_020a0e58 + slot * 4 + 2);
+    unsigned short *split =
+        (unsigned short *)((char *)data_020a0e5a + slot * 4);
+    unsigned short keys = *pressed;
+    if (keys & 0xc0) {
+        const int last = data_0209f2b4 ? data_0209f2b4 - 1 : 0;
+        int sel = data_0209f2e0;
+        int moved = 0;
+        if (!cursor_shown) {
+            cursor_shown = 1;
+            moved = 1;
+        } else if ((keys & 0x40) && sel > 0) {
+            --sel;
+            moved = 1;
+        } else if ((keys & 0x80) && sel < last) {
+            ++sel;
+            moved = 1;
+        }
+        if (moved) {
+            data_0209f2e0 = (unsigned char)sel;
+            _ZN5Stage17UpdateMenuButtonsEb(0);
+            func_02012790(0x12e);
+        }
+    }
+    keys &= (unsigned short)~0xf0u;
+    if (keys & 2) keys = (unsigned short)((keys & ~2u) | 8u);
+    *pressed = keys;
+    *split = keys;
 }
 
 /* Bottom of the frame: upload the shadows the game filled, rasterise engine B,
