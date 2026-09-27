@@ -78,3 +78,127 @@ PSOut ps_main(VSOut i)
     o.id = 0x80u | (uint)(i.attr.y + 0.5);
     return o;
 }
+
+// ============================================================================
+// THE EDGE-SMOOTHING PASS, ON THE CARD (run perf2, lane GPURB). A copy of
+// ntr/gx.cpp's aa_band, operation for operation, not an improvement on it:
+// the CPU pass stays the reference and runs whenever the card is not drawing.
+//
+// EXACT ARITHMETIC. Every value is computed in the same order as the C++, each
+// operation rounded once to a 32-bit float, which is what `precise` asks of the
+// compiler (no fused multiply-add, no reassociation) and what Direct3D 11
+// requires of an add and a multiply. The pixels are integers in and integers
+// out: the frame arrives as one packed 0xAARRGGBB word per texel (R32_UINT) and
+// the coverage mask as one byte, and the result leaves the same way, so no
+// UNORM conversion stands between the CPU's bytes and the shader's.
+//
+// THE ONE OPERATION DIRECT3D DOES NOT ROUND EXACTLY is the divide (2.5 ULP).
+// aa_band divides once, t = |avg - lM| / range, so div_rn below finds the
+// correctly rounded quotient: it tries the few floats around the card's own
+// answer and keeps the one whose remainder a - q * b, computed exactly with
+// Dekker's split product, is smallest. The quotient of two floats is never
+// exactly half way between two floats, so there is always one winner.
+
+Texture2D<uint> aa_src : register(t0);
+Texture2D<uint> aa_cov : register(t1);
+
+float4 aa_vs(uint id : SV_VertexID) : SV_Position
+{
+    // one triangle over the whole picture: (-1,1) (3,1) (-1,-3)
+    float x = (id == 1) ? 3.0 : -1.0;
+    float y = (id == 2) ? -3.0 : 1.0;
+    return float4(x, y, 0.0, 1.0);
+}
+
+float luma(uint p)
+{
+    precise float r = (float)((p >> 16) & 0xFFu);
+    precise float g = (float)((p >> 8) & 0xFFu);
+    precise float b = (float)(p & 0xFFu);
+    precise float v = 0.299f * r + 0.587f * g;
+    precise float l = v + 0.114f * b;
+    return l;
+}
+
+// the exact error of p = x * y, p already rounded (Dekker, no fused ops)
+float prod_err(float x, float y, float p)
+{
+    precise float cx = 4097.0f * x;
+    precise float xh = cx - (cx - x);
+    precise float xl = x - xh;
+    precise float cy = 4097.0f * y;
+    precise float yh = cy - (cy - y);
+    precise float yl = y - yh;
+    precise float e = ((xh * yh - p) + xh * yl + xl * yh) + xl * yl;
+    return e;
+}
+
+// a >= 0, b > 0: the float nearest a / b
+float div_rn(float a, float b)
+{
+    if (a == 0.0f) return 0.0f;
+    precise float q0 = a / b;
+    float best = q0;
+    precise float bestr = 1e30f;
+    [unroll] for (int k = -3; k <= 3; ++k) {
+        precise float q = asfloat((uint)((int)asuint(q0) + k));
+        precise float p = q * b;
+        precise float e = prod_err(q, b, p);
+        precise float r = (a - p) - e;
+        precise float ar = abs(r);
+        if (ar < bestr) { bestr = ar; best = q; }
+    }
+    return best;
+}
+
+uint mix_ch(uint a, uint b, float s, float t)
+{
+    precise float v = (float)a * s + (float)b * t;
+    precise float w = v + 0.5f;
+    int i = (int)w;
+    return (uint)clamp(i, 0, 255);
+}
+
+uint mix2(uint a, uint b, float t)
+{
+    precise float s = 1.0f - t;
+    return 0xFF000000u |
+           (mix_ch((a >> 16) & 0xFFu, (b >> 16) & 0xFFu, s, t) << 16) |
+           (mix_ch((a >> 8) & 0xFFu, (b >> 8) & 0xFFu, s, t) << 8) |
+           mix_ch(a & 0xFFu, b & 0xFFu, s, t);
+}
+
+uint aa_ps(float4 pos : SV_Position) : SV_Target0
+{
+    int w, h;
+    aa_src.GetDimensions(w, h);
+    int x = (int)pos.x, y = (int)pos.y;
+    uint pM = aa_src.Load(int3(x, y, 0));
+    if (aa_cov.Load(int3(x, y, 0)) == 0u) return pM;
+    int xw = x > 0 ? x - 1 : 0;
+    int xe = x + 1 < w ? x + 1 : x;
+    int yn = y > 0 ? y - 1 : 0;
+    int ys = y + 1 < h ? y + 1 : y;
+    uint pN = aa_src.Load(int3(x, yn, 0));
+    uint pS = aa_src.Load(int3(x, ys, 0));
+    uint pW = aa_src.Load(int3(xw, y, 0));
+    uint pE = aa_src.Load(int3(xe, y, 0));
+    precise float lM = luma(pM), lN = luma(pN), lS = luma(pS);
+    precise float lW = luma(pW), lE = luma(pE);
+    float lo = min(min(min(min(lM, lN), lS), lW), lE);
+    float hi = max(max(max(max(lM, lN), lS), lW), lE);
+    precise float range = hi - lo;
+    precise float hr = hi * 0.125f;
+    if (range < 8.0f || range < hr) return pM;
+    precise float d2x = abs((lW + lE) - 2.0f * lM);
+    precise float d2y = abs((lN + lS) - 2.0f * lM);
+    uint n1 = (d2x >= d2y) ? pW : pN;
+    uint n2 = (d2x >= d2y) ? pE : pS;
+    precise float avg = 0.25f * (((lN + lS) + lW) + lE);
+    precise float t = div_rn(abs(avg - lM), range);
+    t = t * t;
+    if (t > 0.5f) t = 0.5f;
+    if (t <= 0.002f) return pM;
+    uint nb = mix2(n1, n2, 0.5f);
+    return mix2(pM, nb, t);
+}
