@@ -630,6 +630,202 @@ void at_exit()
     /* the device itself belongs to hal/gpu_device.cpp and is released there */
 }
 
+/* ---- the readback -------------------------------------------------------- */
+
+/* THE TEST KNOBS OF THE READBACK, off in every ordinary run.
+   SM64DS_RENDERER_RBCHECK=1: every frame the card draws is read back twice,
+   this file's way and the old way (the whole targets, the whole present
+   rectangle scanned one pixel at a time), from the same buffers as handed
+   over; the two results are compared byte for byte -- colour, coverage,
+   polygon id, depth -- and the old one is kept. The count is printed at exit.
+   SM64DS_RENDERER_RBTIME=1: see draw_frame. */
+int g_rbcheck, g_rbtime;
+long long g_rbc_frames, g_rbc_bad_frames, g_rbc_bad_bytes;
+std::vector<uint32_t> g_rbc_fb0, g_rbc_fb1;
+std::vector<uint8_t>  g_rbc_cv0, g_rbc_cv1, g_rbc_id0, g_rbc_id1;
+std::vector<float>    g_rbc_dp0, g_rbc_dp1;
+double    g_rbt_ms[2], g_rbt_wait[2];
+long long g_rbt_n[2];
+
+/* Read the box [bx0,bx1) x [by0,by1) back into the software rasteriser's
+   buffers: covered pixels only, which is what keeps every pixel the card did
+   not reach exactly as the caller's clear left it. `whole` is the old way,
+   kept for the two knobs above: whole-target copies and a scan of whatever
+   box is passed (the present rectangle).
+
+   The colour and the id come out through a boxed copy into the same place in
+   their full-size staging copies, so a pixel's staging address does not
+   depend on the box. The DEPTH is always copied whole: Direct3D 11 refuses a
+   boxed copy out of a depth-stencil resource (and refuses it silently: the
+   staging copy just keeps what it held), and it is only read back on frames
+   a second pass will read it on (want_depth) in the first place.
+
+   Every Map happens before a single CPU byte is written, so a failure leaves
+   the buffers exactly as gx.cpp cleared them. Returns 0 after fall_back. */
+int read_back(const ntr::GxGpuFrame *f, int bx0, int by0, int bx1, int by1,
+              bool whole, double *wait_ms)
+{
+    if (whole) {
+        g_ctx->CopyResource(g_col_stage, g_col);
+        g_ctx->CopyResource(g_id_stage, g_id);
+    } else {
+        D3D11_BOX box;
+        box.left = (UINT)bx0;
+        box.right = (UINT)bx1;
+        box.top = (UINT)by0;
+        box.bottom = (UINT)by1;
+        box.front = 0;
+        box.back = 1;
+        g_ctx->CopySubresourceRegion(g_col_stage, 0, (UINT)bx0, (UINT)by0, 0,
+                                     g_col, 0, &box);
+        g_ctx->CopySubresourceRegion(g_id_stage, 0, (UINT)bx0, (UINT)by0, 0,
+                                     g_id, 0, &box);
+    }
+    if (f->want_depth) g_ctx->CopyResource(g_dep_stage, g_dep);
+    port_gpu_timer_span_end(PORT_GPU_SPAN_OPAQUE);
+
+    const long long tw0 = qpc();
+    D3D11_MAPPED_SUBRESOURCE mc, mi, md;
+    memset(&mc, 0, sizeof mc);
+    memset(&mi, 0, sizeof mi);
+    memset(&md, 0, sizeof md);
+    HRESULT hr = g_ctx->Map(g_col_stage, 0, D3D11_MAP_READ, 0, &mc);
+    if (FAILED(hr)) { fall_back("the picture could not be read back", hr); return 0; }
+    hr = g_ctx->Map(g_id_stage, 0, D3D11_MAP_READ, 0, &mi);
+    if (FAILED(hr)) {
+        g_ctx->Unmap(g_col_stage, 0);
+        fall_back("the polygon ids could not be read back", hr);
+        return 0;
+    }
+    if (f->want_depth) {
+        hr = g_ctx->Map(g_dep_stage, 0, D3D11_MAP_READ, 0, &md);
+        if (FAILED(hr)) {
+            g_ctx->Unmap(g_id_stage, 0);
+            g_ctx->Unmap(g_col_stage, 0);
+            fall_back("the depth could not be read back", hr);
+            return 0;
+        }
+    }
+    *wait_ms += ms_between(tw0, qpc());
+
+    /* NOTHING ON THE CPU SIDE HAS BEEN TOUCHED UNTIL HERE, which is what makes
+       a failure above safe: the software pass then draws the frame over
+       buffers that are still exactly as it cleared them. */
+    for (int y = by0; y < by1; ++y) {
+        const uint32_t *crow =
+            (const uint32_t *)((const unsigned char *)mc.pData + (size_t)y * mc.RowPitch);
+        const unsigned char *irow =
+            (const unsigned char *)mi.pData + (size_t)y * mi.RowPitch;
+        const float *drow = f->want_depth
+            ? (const float *)((const unsigned char *)md.pData + (size_t)y * md.RowPitch)
+            : 0;
+        uint32_t *fbrow = f->fb + (size_t)y * f->stride;
+        uint8_t *cvrow = f->cover + (size_t)y * f->stride;
+        uint8_t *idrow = f->attrid + (size_t)y * f->stride;
+        float *dprow = f->depth + (size_t)y * f->stride;
+        for (int x = bx0; x < bx1; ++x) {
+            const unsigned char idv = irow[x];
+            if (!(idv & 0x80u)) continue;
+            fbrow[x] = 0xFF000000u | (crow[x] & 0x00FFFFFFu);
+            cvrow[x] = 1;
+            if (f->want_attrid) idrow[x] = (uint8_t)(idv & 0x3Fu);
+            if (drow) dprow[x] = drow[x] * kDepthUnscale;
+        }
+    }
+
+    if (f->want_depth) g_ctx->Unmap(g_dep_stage, 0);
+    g_ctx->Unmap(g_id_stage, 0);
+    g_ctx->Unmap(g_col_stage, 0);
+    return 1;
+}
+
+void rbt_report()
+{
+    for (int a = 0; a < 2; ++a) {
+        const double n = g_rbt_n[a] ? (double)g_rbt_n[a] : 1.0;
+        fprintf(stderr, "[renderer-rbtime] %s: %lld frame(s), readback %.3f ms "
+                "(wait %.3f copy %.3f)\n", a ? "old" : "new", g_rbt_n[a],
+                g_rbt_ms[a] / n, g_rbt_wait[a] / n,
+                (g_rbt_ms[a] - g_rbt_wait[a]) / n);
+    }
+}
+
+void rbc_report()
+{
+    fprintf(stderr, "[renderer-rbcheck] %lld frame(s) read back both ways, %lld "
+            "differing, %lld differing byte(s)\n",
+            g_rbc_frames, g_rbc_bad_frames, g_rbc_bad_bytes);
+}
+
+/* the present rectangle of the four buffers, into or out of a side copy */
+void rbc_save(const ntr::GxGpuFrame *f, std::vector<uint32_t> &fb,
+              std::vector<uint8_t> &cv, std::vector<uint8_t> &id,
+              std::vector<float> &dp, bool out)
+{
+    const size_t n = (size_t)f->pw * (size_t)f->ph;
+    fb.resize(n);
+    cv.resize(n);
+    id.resize(n);
+    dp.resize(n);
+    for (int y = 0; y < f->ph; ++y) {
+        const size_t o = (size_t)(f->py0 + y) * f->stride + f->px0;
+        const size_t r = (size_t)y * f->pw;
+        if (out) {
+            memcpy(&fb[r], f->fb + o, f->pw * sizeof(uint32_t));
+            memcpy(&cv[r], f->cover + o, f->pw);
+            memcpy(&id[r], f->attrid + o, f->pw);
+            memcpy(&dp[r], f->depth + o, f->pw * sizeof(float));
+        } else {
+            memcpy(f->fb + o, &fb[r], f->pw * sizeof(uint32_t));
+            memcpy(f->cover + o, &cv[r], f->pw);
+            memcpy(f->attrid + o, &id[r], f->pw);
+            memcpy(f->depth + o, &dp[r], f->pw * sizeof(float));
+        }
+    }
+}
+
+/* After this frame's readback: set its result aside (fb0), put the buffers
+   back as they were handed over (fb1, saved before the readback), read the
+   frame back the old way, compare, keep the old result. On a frame the card
+   had nothing to draw the old way reads nothing either, so the comparison is
+   against the buffers as handed over. */
+void rbc_frame(const ntr::GxGpuFrame *f, bool drew)
+{
+    rbc_save(f, g_rbc_fb0, g_rbc_cv0, g_rbc_id0, g_rbc_dp0, true);
+    rbc_save(f, g_rbc_fb1, g_rbc_cv1, g_rbc_id1, g_rbc_dp1, false);
+    double w = 0.0;
+    if (drew && !read_back(f, f->px0, f->py0, f->px0 + f->pw, f->py0 + f->ph,
+                           true, &w))
+        return;
+    long long bytes = 0;
+    for (int y = 0; y < f->ph; ++y) {
+        const size_t o = (size_t)(f->py0 + y) * f->stride + f->px0;
+        const size_t r = (size_t)y * f->pw;
+        if (!memcmp(&g_rbc_fb0[r], f->fb + o, f->pw * 4) &&
+            !memcmp(&g_rbc_cv0[r], f->cover + o, f->pw) &&
+            !memcmp(&g_rbc_id0[r], f->attrid + o, f->pw) &&
+            !memcmp(&g_rbc_dp0[r], f->depth + o, f->pw * 4))
+            continue;
+        for (int x = 0; x < f->pw; ++x) {
+            const unsigned char *a = (const unsigned char *)&g_rbc_fb0[r + x];
+            const unsigned char *b = (const unsigned char *)(f->fb + o + x);
+            const unsigned char *c = (const unsigned char *)&g_rbc_dp0[r + x];
+            const unsigned char *e = (const unsigned char *)(f->depth + o + x);
+            for (int k = 0; k < 4; ++k) bytes += (a[k] != b[k]) + (c[k] != e[k]);
+            bytes += g_rbc_cv0[r + x] != f->cover[o + x];
+            bytes += g_rbc_id0[r + x] != f->attrid[o + x];
+        }
+    }
+    if (bytes) {
+        ++g_rbc_bad_frames;
+        g_rbc_bad_bytes += bytes;
+        if (g_rbc_bad_frames <= 5)
+            fprintf(stderr, "[renderer-rbcheck] frame %lld: %lld byte(s) "
+                    "differ\n", g_frames, bytes);
+    }
+    ++g_rbc_frames;
+}
+
 /* ---- the frame ----------------------------------------------------------- */
 
 int draw_frame(const ntr::GxGpuFrame *f)
@@ -668,6 +864,15 @@ int draw_frame(const ntr::GxGpuFrame *f)
     const float inv_cw = 2.0f / (float)f->cw;
     const float inv_ch = 2.0f / (float)f->ch;
 
+    /* THE SCREEN BOX OF EVERY TRIANGLE THE CARD WILL DRAW. A pixel outside it
+       cannot be covered, so the readback below only copies and scans the box:
+       on a course that is the whole picture, around a menu's or a minigame's
+       model it is often a small part of it. A coordinate that is not a finite
+       number widens the box to the whole present rectangle rather than
+       trusting it. */
+    float bminx = 1e30f, bminy = 1e30f, bmaxx = -1e30f, bmaxy = -1e30f;
+    bool bwide = false;
+
     for (size_t i = 0; i < f->count; ++i) {
         const ntr::GxTriangle &t = f->tris[i];
         if (t.translucent) continue;          /* the second pass' business */
@@ -680,6 +885,18 @@ int draw_frame(const ntr::GxGpuFrame *f)
         const bool backface = area > 0.0f;
         if (backface && !(t.cull & 1)) continue;
         if (!backface && !(t.cull & 2)) continue;
+
+        for (int k = 0; k < 3; ++k) {
+            const float vx = t.v[k].x, vy = t.v[k].y;
+            if (!(vx > -1e20f && vx < 1e20f && vy > -1e20f && vy < 1e20f)) {
+                bwide = true;
+                continue;
+            }
+            if (vx < bminx) bminx = vx;
+            if (vx > bmaxx) bmaxx = vx;
+            if (vy < bminy) bminy = vy;
+            if (vy > bmaxy) bmaxy = vy;
+        }
 
         const bool textured = t.tex && t.tw > 0 && t.th > 0;
         const GTex *gt = 0;
@@ -745,11 +962,19 @@ int draw_frame(const ntr::GxGpuFrame *f)
 
     /* ---- clear, submit ---------------------------------------------------- */
 
+    /* A FRAME WITH NOTHING FOR THE CARD TO DRAW READS NOTHING BACK. With no
+       opaque triangle no pixel is covered, and the copy below only ever
+       writes covered pixels, so the buffers already hold exactly what the
+       whole round trip would have left in them. The file select, the menus
+       and every frame whose 3D is all translucent take this path and never
+       wait for the card at all. */
+    const bool nothing = g_scratch.empty();
+
     /* The card's own clock over the opaque pass: the clears, every draw and
        the copy out of the targets, which is all of the work the Map below
        then waits for. A timestamp pair costs an End() at each end and is
        collected a picture or two later (hal/gpu_device.h). */
-    port_gpu_timer_span_begin(PORT_GPU_SPAN_OPAQUE);
+    if (!nothing) port_gpu_timer_span_begin(PORT_GPU_SPAN_OPAQUE);
 
     /* THE CLEAR COLOUR IS THE FRAMEBUFFER'S OWN, read at the top of the frame
        rather than assumed, and the alpha is meaningless here because coverage
@@ -764,11 +989,12 @@ int draw_frame(const ntr::GxGpuFrame *f)
         0.0f,
     };
     const float zero[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    g_ctx->ClearRenderTargetView(g_col_rtv, clr);
-    g_ctx->ClearRenderTargetView(g_id_rtv, zero);
-    g_ctx->ClearDepthStencilView(g_dep_dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
 
-    if (!g_scratch.empty()) {
+    if (!nothing) {
+        g_ctx->ClearRenderTargetView(g_col_rtv, clr);
+        g_ctx->ClearRenderTargetView(g_id_rtv, zero);
+        g_ctx->ClearDepthStencilView(g_dep_dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
+
         if (!ensure_vb(g_scratch.size())) return 0;
         D3D11_MAPPED_SUBRESOURCE ms;
         memset(&ms, 0, sizeof ms);
@@ -833,66 +1059,41 @@ int draw_frame(const ntr::GxGpuFrame *f)
         return 0;
     }
 
-    g_ctx->CopyResource(g_col_stage, g_col);
-    g_ctx->CopyResource(g_id_stage, g_id);
-    if (f->want_depth) g_ctx->CopyResource(g_dep_stage, g_dep);
-    port_gpu_timer_span_end(PORT_GPU_SPAN_OPAQUE);
-
-    const long long t2w = qpc();
-    D3D11_MAPPED_SUBRESOURCE mc, mi, md;
-    memset(&mc, 0, sizeof mc);
-    memset(&mi, 0, sizeof mi);
-    memset(&md, 0, sizeof md);
-    HRESULT hr = g_ctx->Map(g_col_stage, 0, D3D11_MAP_READ, 0, &mc);
-    if (FAILED(hr)) { fall_back("the picture could not be read back", hr); return 0; }
-    hr = g_ctx->Map(g_id_stage, 0, D3D11_MAP_READ, 0, &mi);
-    if (FAILED(hr)) {
-        g_ctx->Unmap(g_col_stage, 0);
-        fall_back("the polygon ids could not be read back", hr);
-        return 0;
+    /* THE BOX TO READ: the present rectangle cut down to the triangles' own
+       screen box plus a pixel of margin on every side (the card snaps a
+       vertex to a 1/256 pixel grid, far inside that margin). */
+    int bx0 = f->px0, by0 = f->py0;
+    int bx1 = f->px0 + f->pw, by1 = f->py0 + f->ph;
+    if (!nothing && !bwide) {
+        if (bminx - 1.0f > (float)bx0) bx0 = (int)(bminx - 1.0f);
+        if (bminy - 1.0f > (float)by0) by0 = (int)(bminy - 1.0f);
+        if (bmaxx + 2.0f < (float)bx1) bx1 = (int)(bmaxx + 2.0f);
+        if (bmaxy + 2.0f < (float)by1) by1 = (int)(bmaxy + 2.0f);
     }
-    if (f->want_depth) {
-        hr = g_ctx->Map(g_dep_stage, 0, D3D11_MAP_READ, 0, &md);
-        if (FAILED(hr)) {
-            g_ctx->Unmap(g_id_stage, 0);
-            g_ctx->Unmap(g_col_stage, 0);
-            fall_back("the depth could not be read back", hr);
-            return 0;
+    double wait_ms = 0.0;
+    if (g_rbcheck) rbc_save(f, g_rbc_fb1, g_rbc_cv1, g_rbc_id1, g_rbc_dp1, true);
+    if (!nothing && bx1 > bx0 && by1 > by0) {
+        /* SM64DS_RENDERER_RBTIME=1: odd frames read back the old way (the
+           whole targets, the whole present rectangle scanned one pixel at a
+           time), even frames this way, in one process over the same scenes,
+           so a busy machine slows both halves alike; the two averages are
+           printed at exit. Both leave the same bytes (RBCHECK). */
+        const int arm = (g_rbtime && (g_frames & 1)) ? 1 : 0;
+        const long long ta = qpc();
+        const bool ok = arm
+            ? read_back(f, f->px0, f->py0, f->px0 + f->pw, f->py0 + f->ph,
+                        true, &wait_ms)
+            : read_back(f, bx0, by0, bx1, by1, false, &wait_ms);
+        if (!ok) return 0;
+        if (g_rbtime) {
+            g_rbt_ms[arm] += ms_between(ta, qpc());
+            g_rbt_wait[arm] += wait_ms;
+            ++g_rbt_n[arm];
         }
+    } else if (!nothing) {
+        port_gpu_timer_span_end(PORT_GPU_SPAN_OPAQUE);
     }
-
-    const long long t2m = qpc();
-
-    /* NOTHING ON THE CPU SIDE HAS BEEN TOUCHED UNTIL HERE, which is what makes
-       a failure above safe: the software pass then draws the frame over
-       buffers that are still exactly as it cleared them. */
-    const int x0 = f->px0, x1 = f->px0 + f->pw;
-    const int y0 = f->py0, y1 = f->py0 + f->ph;
-    for (int y = y0; y < y1; ++y) {
-        const uint32_t *crow =
-            (const uint32_t *)((const unsigned char *)mc.pData + (size_t)y * mc.RowPitch);
-        const unsigned char *irow =
-            (const unsigned char *)mi.pData + (size_t)y * mi.RowPitch;
-        const float *drow = f->want_depth
-            ? (const float *)((const unsigned char *)md.pData + (size_t)y * md.RowPitch)
-            : 0;
-        uint32_t *fbrow = f->fb + (size_t)y * f->stride;
-        uint8_t *cvrow = f->cover + (size_t)y * f->stride;
-        uint8_t *idrow = f->attrid + (size_t)y * f->stride;
-        float *dprow = f->depth + (size_t)y * f->stride;
-        for (int x = x0; x < x1; ++x) {
-            const unsigned char idv = irow[x];
-            if (!(idv & 0x80u)) continue;
-            fbrow[x] = 0xFF000000u | (crow[x] & 0x00FFFFFFu);
-            cvrow[x] = 1;
-            if (f->want_attrid) idrow[x] = (uint8_t)(idv & 0x3Fu);
-            if (drow) dprow[x] = drow[x] * kDepthUnscale;
-        }
-    }
-
-    if (f->want_depth) g_ctx->Unmap(g_dep_stage, 0);
-    g_ctx->Unmap(g_id_stage, 0);
-    g_ctx->Unmap(g_col_stage, 0);
+    if (g_rbcheck) rbc_frame(f, !nothing);
 
     const long long t3 = qpc();
     ++g_frames;
@@ -906,8 +1107,8 @@ int draw_frame(const ntr::GxGpuFrame *f)
         g_perf_build += ms_between(t0, t1);
         g_perf_draw += ms_between(t1, t2);
         g_perf_read += ms_between(t2, t3);
-        g_perf_wait += ms_between(t2w, t2m);
-        g_perf_copy += ms_between(t2m, t3);
+        g_perf_wait += wait_ms;
+        g_perf_copy += ms_between(t2, t3) - wait_ms;
         g_perf_tris += (long long)(g_scratch.size() / 3);
         g_perf_batches += (long long)g_batch.size();
         if (++g_perf_n >= 30) {
@@ -948,6 +1149,10 @@ extern "C" void port_gpu_raster_configure(void)
     g_fail_readback = env_int("SM64DS_RENDERER_FAIL_READBACK", 0);
     g_addrcheck = env_int("SM64DS_RENDERER_ADDRCHECK", 0);
     g_fail_device = env_int("SM64DS_RENDERER_FAIL_DEVICE", 0);
+    g_rbcheck = env_int("SM64DS_RENDERER_RBCHECK", 0);
+    if (g_rbcheck) atexit(rbc_report);
+    g_rbtime = env_int("SM64DS_RENDERER_RBTIME", 0);
+    if (g_rbtime) atexit(rbt_report);
     ntr::gx_set_gpu_opaque(&backend);
 }
 
