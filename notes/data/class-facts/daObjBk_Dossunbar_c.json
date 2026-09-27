@@ -250,7 +250,7 @@
     "evidence": "CARTRIDGE for the four ov002/ov015 addresses and for arm9:0x0208e390 / 0x0208e384 (read as the chain walk's +4 and +8 words from the module images). The fBase_c and dBase_c pairs were read the same way at the tail of that walk, and independently agree with the addresses the sibling oracle's manifest already records."
   },
   "oracle_inferred_not_cartridge": [
-    "The file layout convention -- //cpp marker as the first bytes, reverse-of-ROM function order, // @symbol on every member, one trailing file-scope extern \"C\" block for the .c-derived members -- is taken from the sibling oracle src/game/actors/d_a_obj_bk_billboard.cpp and config/tu_manifest.d/ov015/daObjBkBillboard_c.json. It is a project convention, not a ROM fact.",
+    "The file layout convention -- //cpp marker as the first bytes, reverse-of-ROM function order, // @symbol on every member, one trailing file-scope extern \"C\" block for the .c-derived members -- is taken from the sibling oracle src/actors/daObjBkBillboard_c.cpp and config/tu_manifest.d/ov015/daObjBkBillboard_c.json. It is a project convention, not a ROM fact.",
     "That an INLINE destructor body in the header is what yields D1-then-D0-and-no-D2 is the oracle's stated mechanism. What the cartridge proves here is only the OUTCOME: D1 at 0x02111ba0, D0 at 0x02111be4, no D2 anywhere.",
     "The expectation that all 11 compiler-only records disposition as deadstrip-data follows the oracle's pattern; the canonical addresses themselves are cartridge-read.",
     "The recommendation to fold both factories into the TU follows the oracle's FOLD 2026-09-04 precedent. The cartridge proves only that the two factories sit inside the contiguous run with no other class between them.",

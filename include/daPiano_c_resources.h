@@ -42,7 +42,7 @@ typedef char SharedFilePtrLayout_SizeIs8[
 
 /* Readable aliases for the three ov063 BSS handles. config/arm9/overlays/ov063/
  * symbols.txt now also carries daPiano_c_ModelFile, daPiano_c_ClsnFile and
- * daPiano_c_AnimFile at these same three addresses, and d_a_piano.cpp declares
+ * daPiano_c_AnimFile at these same three addresses, and daPiano_c.cpp declares
  * both spellings; retiring this macro layer in favour of the configured names
  * changes which symbol the relocations name, so it needs its own byte proof and
  * is deliberately not part of this rename. */

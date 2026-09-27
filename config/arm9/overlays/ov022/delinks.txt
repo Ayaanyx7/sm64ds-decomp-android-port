@@ -73,11 +73,11 @@ src/actors/daObjFl_UkiKi_c.cpp:
     complete
     .text start:0x02112130 end:0x02112380
 
-src/game/actors/daObjFl_Fall_Block_c.cpp:
+src/actors/daObjFl_Fall_Block_c.cpp:
     complete
     .text start:0x02112380 end:0x02112498
 
-src/game/actors/d_a_obj_fl_maruta.cpp:
+src/actors/daObjFlMaruta_c.cpp:
     complete
     .text start:0x02112498 end:0x02112950
 

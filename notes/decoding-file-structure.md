@@ -13,7 +13,7 @@ headers.
 source file as one `complete` span (one object emits one contiguous
 `.text`):
 ```sh
-    grep -A2 "src/game/actors/d_a_tree.cpp" config/arm9/overlays/ov002/delinks.txt
+    grep -A2 "src/actors/daTree_c.cpp" config/arm9/overlays/ov002/delinks.txt
 ```
 ## ROM address → source file
 

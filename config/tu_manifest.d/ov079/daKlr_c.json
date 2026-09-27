@@ -1,8 +1,8 @@
 {
   "id": "ov079/daKlr_c",
   "module": "ov079",
-  "source": "src/game/actors/d_a_klr.cpp",
-  "promoted_source": "src/game/actors/d_a_klr.cpp",
+  "source": "src/actors/daKlr_c.cpp",
+  "promoted_source": "src/actors/daKlr_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [
@@ -99,7 +99,7 @@
   "data": [],
   "bss": [],
   "notes": [
-    "Hand-assembled: tubuild create generated the ten class-run members; the zero-gap daKlr_c_classInit factory was folded in by hand, following ov045 d_a_obj_km2_agaru.cpp. The two state functions (func_ov079_0212682c / func_ov079_02126794) and the pose helper func_ov079_02126704 were already inside the tu_map run.",
+    "Hand-assembled: tubuild create generated the ten class-run members; the zero-gap daKlr_c_classInit factory was folded in by hand, following ov045 daObjKm2_Agaru_c.cpp. The two state functions (func_ov079_0212682c / func_ov079_02126794) and the pose helper func_ov079_02126704 were already inside the tu_map run.",
     "__sinit_ov079_021279d4, which fills this class's pointer-to-member state table at data_ov079_021282e0, is not claimed: text-only promotion."
   ],
   "verification": {

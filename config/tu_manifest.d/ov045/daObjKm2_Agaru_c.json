@@ -1,8 +1,8 @@
 {
   "id": "ov045/daObjKm2_Agaru_c",
   "module": "ov045",
-  "source": "src/game/actors/d_a_obj_km2_agaru.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_km2_agaru.cpp",
+  "source": "src/actors/daObjKm2_Agaru_c.cpp",
+  "promoted_source": "src/actors/daObjKm2_Agaru_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [
@@ -85,7 +85,7 @@
   "data": [],
   "bss": [],
   "notes": [
-    "Hand-assembled: tubuild create generated the six class members; the mesh-collider callback pair and the classInit factory were folded in by hand, following the ov045 siblings d_a_obj_km2_ami_bou.cpp and d_a_obj_km2_ukishima.cpp."
+    "Hand-assembled: tubuild create generated the six class members; the mesh-collider callback pair and the classInit factory were folded in by hand, following the ov045 siblings daObjKm2_Ami_Bou_c.cpp and daObjKm2_Ukishima_c.cpp."
   ],
   "verification": {
     "round": "tools/tubuild.py verify -- text-only, whole shadow TU compiled once",

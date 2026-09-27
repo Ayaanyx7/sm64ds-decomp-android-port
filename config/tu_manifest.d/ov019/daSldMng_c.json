@@ -1,8 +1,8 @@
 {
   "id": "ov019/daSldMng_c",
   "module": "ov019",
-  "source": "src/game/actors/d_a_sld_mng.cpp",
-  "promoted_source": "src/game/actors/d_a_sld_mng.cpp",
+  "source": "src/actors/daSldMng_c.cpp",
+  "promoted_source": "src/actors/daSldMng_c.cpp",
   "status": "promoted",
   "boundary_confidence": "high",
   "boundary_evidence": [

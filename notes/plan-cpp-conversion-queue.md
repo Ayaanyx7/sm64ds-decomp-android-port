@@ -110,7 +110,7 @@ reason than tidiness.)*
 **Entry:** pilot (§3) passed.
 **Set:** direct-proven, tier `P2-vtable-only` (`func_<addr>`, no mangled name anywhere),
 enrolled, free of all seven lexical hazards. Modules: [ov006](../config/arm9/overlays/ov006/symbols.txt) 51, [ov004](../config/arm9/overlays/ov004/symbols.txt) 13, [arm9](../config/arm9/symbols.txt) 9, [ov064](../config/arm9/overlays/ov064/symbols.txt) 7,
-[ov002](../config/arm9/overlays/ov002/symbols.txt) 5, [ov022](../config/arm9/overlays/ov022/symbols.txt) 5, [ov045](../config/arm9/overlays/ov045/symbols.txt) 5, [ov071](../config/arm9/overlays/ov071/symbols.txt) 4, [ov070](../config/arm9/overlays/ov070/symbols.txt) 4, [ov072](../config/arm9/overlays/ov072/symbols.txt) 3, tail. Six sit in the safe merge pool ([func_ov081_021261b8](../src/func_ov081_021261b8.c)(weak ref to `daSnowman_c`), [func_ov026_021122b0](../src/func_ov026_021122b0.c)(weak ref to `daWater_Tatumaki_c`), [func_ov026_021122cc](../src/func_ov026_021122cc.c)(weak ref to `daWater_Tatumaki_c`), [func_ov027_02111680](../src/game/actors/d_a_i_donketu.cpp)(func 3 used to assemble TU - `d_a_i_donketu.cpp`), `func_ov064_0211755c`(weak ref to `daBDonketu_c`), [func_ov022_02112710](../src/game/actors/d_a_obj_fl_maruta.cpp))(ROM ordinal 4 of `daObj_volcanoCannon_c`) — **per §7 those six are ceded to the merge**, leaving 76 here.
+[ov002](../config/arm9/overlays/ov002/symbols.txt) 5, [ov022](../config/arm9/overlays/ov022/symbols.txt) 5, [ov045](../config/arm9/overlays/ov045/symbols.txt) 5, [ov071](../config/arm9/overlays/ov071/symbols.txt) 4, [ov070](../config/arm9/overlays/ov070/symbols.txt) 4, [ov072](../config/arm9/overlays/ov072/symbols.txt) 3, tail. Six sit in the safe merge pool ([func_ov081_021261b8](../src/func_ov081_021261b8.c)(weak ref to `daSnowman_c`), [func_ov026_021122b0](../src/func_ov026_021122b0.c)(weak ref to `daWater_Tatumaki_c`), [func_ov026_021122cc](../src/func_ov026_021122cc.c)(weak ref to `daWater_Tatumaki_c`), [func_ov027_02111680](../src/actors/daIDonketu_c.cpp)(func 3 used to assemble TU - `daIDonketu_c.cpp`), `func_ov064_0211755c`(weak ref to `daBDonketu_c`), [func_ov022_02112710](../src/actors/daObjFlMaruta_c.cpp))(ROM ordinal 4 of `daObj_volcanoCannon_c`) — **per §7 those six are ceded to the merge**, leaving 76 here.
 
 The exact edit — two lines, no restructuring:
 
@@ -171,7 +171,7 @@ warns about. **Preserve that; do not "fix" it to `virtual`.**
 **SINCE LANDED, AND SINCE SUPERSEDED.** This pilot went in with #1684, essentially as
 written below. The class has since been renamed to the cartridge's own
 `daObjKm2_Fall_Block_c` and consolidated into one genuine TU,
-`src/game/actors/d_a_obj_km2_fall_block.cpp`, which is why every path in this section now
+`src/actors/daObjKm2_Fall_Block_c.cpp`, which is why every path in this section now
 names that file: the five per-function sources are gone. Both slot methods are now
 declared plainly, so `CleanupResources` (the first declared non-inline virtual, the
 destructor being inline) deliberately IS the key function, and the `no _ZTV` half of the
@@ -180,7 +180,7 @@ the RTTI group to land, and the class stays unverifiable against the cartridge u
 does. The reasoning above is kept because the rest of the queue still rests on it, and it
 still holds wherever a class remains spread over per-function files.
 
-The exact edit (`src/game/actors/d_a_obj_km2_fall_block.cpp`, `0x02111e10`, size `0x14`, [ov045](../config/arm9/overlays/ov045/symbols.txt)):
+The exact edit (`src/actors/daObjKm2_Fall_Block_c.cpp`, `0x02111e10`, size `0x14`, [ov045](../config/arm9/overlays/ov045/symbols.txt)):
 
 ```cpp
 //cpp
@@ -194,7 +194,7 @@ This is a **real** migration: the compiler mangles the name. Verify that claim w
 oracle **before** the byte gate — it needs no ROM and no serialization:
 
 ```sh
-python tools/mangle.py src/game/actors/d_a_obj_km2_fall_block.cpp \
+python tools/mangle.py src/actors/daObjKm2_Fall_Block_c.cpp \
     --expect _ZN21daObjKm2_Fall_Block_c13InitResourcesEv
 ```
 
@@ -292,7 +292,7 @@ merge. So S1 legitimately harvests blocked-pool files; S6 does not.
 > was still going by its coined name. `ChillBully` is `daIDonketu_c` — the cartridge's own
 > name, measured at the top of `include/daIDonketu_c.h` — and all seven of its
 > per-function sources have since been folded into one translation unit, source-owned as
-> `actors/d_a_i_donketu.cpp`. The paths and symbols below are left as the pilot spelled
+> `src/actors/daIDonketu_c.cpp`. The paths and symbols below are left as the pilot spelled
 > them, so none of them is in the tree any more.
 
 Why not the 4-byte `dThIcon_c::Render` (an empty `bx lr`), which had its own
@@ -359,8 +359,8 @@ python tools/match.py --c src/_ZN10ChillBully14UpdateRunStateEv.cpp \
 and the pilot deliberately excludes:
 
 ```sh
-python tools/mangle.py src/game/actors/d_a_obj_km2_fall_block.cpp --expect _ZN21daObjKm2_Fall_Block_c13InitResourcesEv
-python tools/match.py --c src/game/actors/d_a_obj_km2_fall_block.cpp \
+python tools/mangle.py src/actors/daObjKm2_Fall_Block_c.cpp --expect _ZN21daObjKm2_Fall_Block_c13InitResourcesEv
+python tools/match.py --c src/actors/daObjKm2_Fall_Block_c.cpp \
     --func _ZN21daObjKm2_Fall_Block_c13InitResourcesEv --addr 0x02111e10 --size 0x14 --module ov045
 ```
 

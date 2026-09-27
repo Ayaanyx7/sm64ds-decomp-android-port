@@ -60,7 +60,7 @@ src/actors/daGmch_c.cpp:
     complete
     .text start:0x02126504 end:0x02127b34
 
-src/game/actors/d_a_obj_ice_block.cpp:
+src/actors/daObjIceBlock_c.cpp:
     complete
     .text start:0x02127b34 end:0x021280d8
 

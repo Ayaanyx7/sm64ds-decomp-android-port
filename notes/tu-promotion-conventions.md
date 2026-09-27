@@ -146,16 +146,16 @@ The initial corpus was seven classes across six PRs:
 
 | PR | class | promoted TU |
 | --- | --- | --- |
-| #2000 | daKpFr_c | [src/game/actors/d_a_kp_fr.cpp](../src/game/actors/d_a_kp_fr.cpp) |
-| #2043 | daObjFm_Battan_c | [src/game/actors/d_a_obj_fm_battan.cpp](../src/game/actors/d_a_obj_fm_battan.cpp) |
-| #2045 | daBar_c | [src/game/actors/d_a_bar.cpp](../src/game/actors/d_a_bar.cpp) |
-| #2047 | daObjCannonShutter_c | [src/game/actors/d_a_obj_cannon_shutter.cpp](../src/game/actors/d_a_obj_cannon_shutter.cpp) |
-| #2047 | daObjFl_Fall_Block_c | [src/game/actors/daObjFl_Fall_Block_c.cpp](../src/game/actors/daObjFl_Fall_Block_c.cpp) |
-| #2051 | daObjKinokoTag_c | [src/game/actors/d_a_obj_kinoko_tag.cpp](../src/game/actors/d_a_obj_kinoko_tag.cpp) |
-| #2055 | daEyBm_c | [src/game/actors/d_a_ey_bm.cpp](../src/game/actors/d_a_ey_bm.cpp) |
+| #2000 | daKpFr_c | [src/actors/daKpFr_c.cpp](../src/actors/daKpFr_c.cpp) |
+| #2043 | daObjFm_Battan_c | [src/actors/daObjFm_Battan_c.cpp](../src/actors/daObjFm_Battan_c.cpp) |
+| #2045 | daBar_c | [src/actors/daBar_c.cpp](../src/actors/daBar_c.cpp) |
+| #2047 | daObjCannonShutter_c | [src/actors/daObjCannonShutter_c.cpp](../src/actors/daObjCannonShutter_c.cpp) |
+| #2047 | daObjFl_Fall_Block_c | [src/actors/daObjFl_Fall_Block_c.cpp](../src/actors/daObjFl_Fall_Block_c.cpp) |
+| #2051 | daObjKinokoTag_c | [src/actors/daObjKinokoTag_c.cpp](../src/actors/daObjKinokoTag_c.cpp) |
+| #2055 | daEyBm_c | [src/actors/daEyBm_c.cpp](../src/actors/daEyBm_c.cpp) |
 
 PR #2004 was superseded by #2057, which landed
-[src/game/actors/d_a_obj_km3_kurumajiku.cpp](../src/game/actors/d_a_obj_km3_kurumajiku.cpp)
+[src/actors/daObjKm3_Kurumajiku_c.cpp](../src/actors/daObjKm3_Kurumajiku_c.cpp)
 as an intact-object promotion. Section 2 retains the original experiment's
 measurements; section 6 cites the landed file.
 
@@ -218,7 +218,7 @@ Four different locations and two different spellings across seven classes:
 - **Not declared at all**, because the TU has no factory — daObjFl_Fall_Block_c.
 
 Spellings: `(int)&_ZTV<C>[2]` at five sites, `(int)(_ZTV<C> + 2)` at one
-(`src/game/actors/d_a_obj_cannon_shutter.cpp`). On an `int[]` those are the same arithmetic,
+(`src/actors/daObjCannonShutter_c.cpp`). On an `int[]` those are the same arithmetic,
 +8 bytes either way.
 
 One fact that changes the argument: **`include/decl_common.h` already declares
@@ -248,7 +248,7 @@ already carries.
   classes migrate. The vptr seam is an implementation detail of one factory in one TU,
   not part of the class's public surface, and it should not be priced as public surface.
 - **`#include "decl_common.h"` costs the TU its typing freedom.**
-  `src/game/actors/d_a_obj_cannon_shutter.cpp` documents the bill it paid: a parameter "stays
+  `src/actors/daObjCannonShutter_c.cpp` documents the bill it paid: a parameter "stays
   `void *` because `include/decl_common.h` — which C translation units also read —
   declares it that way". Reasonable when the TU needs that header anyway; not worth
   pulling in for one line.
@@ -464,10 +464,10 @@ Scored with `tools/tiers.py` against this tree:
 
 | promoted TU | members | `@symbol` markers | members at 5/5 | banked |
 | --- | --- | --- | --- | --- |
-| `src/game/actors/d_a_obj_kinoko_tag.cpp` | 9 | 7 | 6 | 6 |
-| `src/game/actors/d_a_obj_fm_battan.cpp` | 9 | 7 | 5 | 5 |
-| `src/game/actors/d_a_obj_km3_kurumajiku.cpp` | 5 | 3 | 4 | 4 |
-| `src/game/actors/d_a_ey_bm.cpp` | 13 | **0** | 2 | 2 |
+| `src/actors/daObjKinokoTag_c.cpp` | 9 | 7 | 6 | 6 |
+| `src/actors/daObjFm_Battan_c.cpp` | 9 | 7 | 5 | 5 |
+| `src/actors/daObjKm3_Kurumajiku_c.cpp` | 5 | 3 | 4 | 4 |
+| `src/actors/daEyBm_c.cpp` | 13 | **0** | 2 | 2 |
 
 "banked" is the count of `promoted-path#symbol` identities in
 `config/converted-baseline.json`. In the first three TUs the unmarked members are exactly
@@ -495,10 +495,10 @@ and nothing goes red; the member simply scores as if it were unmarked.
 
 A member's slice runs to the *next* marker, so anything written between two definitions is
 charged to the earlier one, while text above the first marker belongs to no member at all.
-`src/game/actors/d_a_obj_kinoko_tag.cpp` puts its whole `extern "C" { ... }` block of mangled
+`src/actors/daObjKinokoTag_c.cpp` puts its whole `extern "C" { ... }` block of mangled
 ABI-seam declarations at the top of the file, above the first marker on line 40, and none
 of those spellings costs any member its `no_mangled_refs`. Declaring an ABI seam
-immediately above the one function that calls it — as `src/game/actors/d_a_ey_bm.cpp` does —
+immediately above the one function that calls it — as `src/actors/daEyBm_c.cpp` does —
 hands the mangled spelling to the preceding member instead.
 
 ### Constructors and destructors take the second path, and usually cannot be marked

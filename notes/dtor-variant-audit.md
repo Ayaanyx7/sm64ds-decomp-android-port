@@ -307,7 +307,7 @@ settles it:
                                           _ZTI5Actor, _ZTS5Actor
                                   DEFINES _ZN6CannonD0Ev, D1Ev, D2Ev
 ```
-(That shard has since been retired into `src/game/actors/d_a_cnn.cpp`, as daCnn_c.)
+(That shard has since been retired into `src/actors/daCnn_c.cpp`, as daCnn_c.)
 Its shadow `struct Cannon : Actor { virtual ~Cannon(); }` declares the destructor
 first, so it *is* the key function. `eligible.py` gives every one of them
 `extra sections: .data`, and none appears in `build/eligible-names.txt`. Their

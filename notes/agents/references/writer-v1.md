@@ -516,7 +516,7 @@ committed in this tree as though they were repo notes. Naming the slugs alone,
 because spelling them the way the source does would trip the dead-reference gate
 in this very file: `actor-class-names-off-by-one` in `include/daObjHmBskt_c.h`,
 `key-function-tu-vptr-store-blocker` in
-`src/game/actors/d_a_obj_km3_dorifu.cpp`, `phantom-references` in
+`src/actors/daObjKm3_Dorifu_c.cpp`, `phantom-references` in
 `include/nitro/hw/registers.h`, and `stale-tu-map-overcut-ov006` in two
 `config/tu_manifest.d/ov006/*.json` `boundary_evidence` strings ([MgBingoBallSlotsShot.json](../../../config/tu_manifest.d/ov006/MgBingoBallSlotsShot.json) & [MgWhichWiggler.json](../../../config/tu_manifest.d/ov006/MgWhichWiggler.json)) — each written there with a `notes/` prefix and a `.md` suffix. Those files live in one machine's private memory directory; nobody else can follow the reference,
 and the dead-reference gate never saw them because it walked only `.md`.
@@ -676,7 +676,7 @@ mwccarm 2004/b56 behaviours, not style preferences.
   always**; out-of-line ⇒ D2, D0, D1. A `delete p` scaffold, a `p->~X()`
   scaffold, and moving the declaration below the overrides all change
   **nothing**. See the comment block in
-  `src/game/actors/d_a_obj_wc_obj01.cpp` and `notes/tu-reconstruction-pilot-report.md`
+  `src/actors/daObjWcObj01_c.cpp` and `notes/tu-reconstruction-pilot-report.md`
   section 3.
 
   **But that closure holds only under deferred codegen, and `#pragma
@@ -1017,8 +1017,10 @@ Ask the compiler rather than hand-mangling:
 ## Conventions — fixed, so nine agents do not pick nine ways
 
 - **File:** `src/actors/<Class>.cpp`, the class name exactly, matching the
-  class-named majority and the `layout_check` L2 stem rule. (`d_a_*.cpp` snake
-  names also exist in the tree; do not add more.)
+  class-named majority and the `layout_check` L2 stem rule. (The `d_a_*.cpp`
+  snake-named actor TUs that used to sit under `game/actors/` were moved
+  here under class names; see `notes/src-domain-buckets.md`. Do not add
+  snake names.)
 
   **A `promoted_source` already sitting in the manifest is a plan, not an
   instruction.** `dScMgMemory2_c`'s manifest pre-declared

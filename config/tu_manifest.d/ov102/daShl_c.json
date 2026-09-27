@@ -1,8 +1,8 @@
 {
   "id": "ov102/daShl_c",
   "module": "ov102",
-  "source": "src/game/actors/d_a_shl.cpp",
-  "promoted_source": "src/game/actors/d_a_shl.cpp",
+  "source": "src/actors/daShl_c.cpp",
+  "promoted_source": "src/actors/daShl_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [

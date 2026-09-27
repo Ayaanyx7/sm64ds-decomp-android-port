@@ -15,7 +15,7 @@ claim and changed no production source, delinks, symbol file, or manifest.
 |---|---|---|
 | [__sinit_ov002_02100adc](../src/__sinit_ov002_02100adc.c) | **CONFIRMED: [ov002](../config/arm9/overlays/ov002/symbols.txt)/[da1up_c](../src/actors/da1up_c.cpp)** | Exact organic proof: a natural non-const 14-entry PMF array emits a raw-identical `0x174` `.init`, the same 15 relocation word offsets/types/addends, 14 8-byte source descriptors, a `0x70` BSS destination, and one 4-byte `.ctor`. Production still needs names/signatures for the 14 anonymous state methods and TU-level link placement. |
 | [__sinit_ov002_02100f84](../src/__sinit_ov002_02100f84.c) | **CONFIRMED: [ov002](../config/arm9/overlays/ov002/symbols.txt)/[daObjKurumajiku_c](../include/daObjKurumajiku_c.h)** | Partial organic proof: four separate vector objects with an inline three-component constructor and destructor emit the exact `0xe0` size, exact 13 relocation word offsets/types/addends, four 12-byte objects, four 12-byte registration nodes, one 4-byte destructor and one 4-byte `.ctor`. Sixteen non-relocation words differ because of store/register scheduling, so regeneration is **not byte-ready**. |
-| [__sinit_ov063_0211e5fc](../src/game/actors/daPiano_c/__sinit_ov063_0211e5fc.c) | **CONFIRMED: [ov063](../config/arm9/overlays/ov063/symbols.txt)/[daPiano_c](../src/game/actors/daPiano_c/d_a_piano.cpp)** | Exact organic proof: three distinct 8-byte resource objects plus a 2x2 PMF table emit a raw-identical `0x100` `.init`, the same 20 relocation word offsets/types/addends, three 12-byte registration nodes, four 8-byte descriptors, a 32-byte BSS table and one 4-byte `.ctor`. Production still needs the real special-member type declarations/names and TU-level link placement. |
+| [__sinit_ov063_0211e5fc](../src/game/actors/daPiano_c/__sinit_ov063_0211e5fc.c) | **CONFIRMED: [ov063](../config/arm9/overlays/ov063/symbols.txt)/[daPiano_c](../src/actors/daPiano_c.cpp)** | Exact organic proof: three distinct 8-byte resource objects plus a 2x2 PMF table emit a raw-identical `0x100` `.init`, the same 20 relocation word offsets/types/addends, three 12-byte registration nodes, four 8-byte descriptors, a 32-byte BSS table and one 4-byte `.ctor`. Production still needs the real special-member type declarations/names and TU-level link placement. |
 
 The ownership verdicts stay confirmed even where regeneration is incomplete:
 ownership is established by exclusive consumers and TU boundaries; source
@@ -155,7 +155,7 @@ The second half copies four PMFs into [data_ov063_0211efbc](../config/arm9/overl
 
 All four targets are in daPiano_c's TU.  The two table consumers are
 `0x0211ddf0` and `0x0211de38`, in
-[src/game/actors/daPiano_c/d_a_piano.cpp](../src/game/actors/daPiano_c/d_a_piano.cpp), which
+[src/actors/daPiano_c.cpp](../src/actors/daPiano_c.cpp), which
 absorbed the `func_ov063_0211ddac` and `func_ov063_0211ddf4` helpers; they expose
 the destination as two entries of two PMFs.  All resource consumers also remain
 inside `daPiano_c`: CleanupResources consumes all three handles and InitResources

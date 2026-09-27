@@ -17,12 +17,12 @@ src/d_a_bg_snm_hed.c:
     complete
     .text start:0x021207d4 end:0x02120824
 
-src/game/actors/d_a_bg_snwmn.cpp:
+src/actors/daBgSnwmn_c.cpp:
     complete
     .text start:0x02120824 end:0x02120c58
     .data start:0x02122938 end:0x021229f4
 
-src/game/actors/d_a_pg_bby.cpp:
+src/actors/daPgBby_c.cpp:
     complete
     .text start:0x02120c58 end:0x02121ffc
 

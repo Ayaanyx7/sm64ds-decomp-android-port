@@ -55,7 +55,7 @@ struct daPropeller_Heyho_c : dEnemyBase_c {
     /* 0x30-byte block copy from data_020a0e68 in func_ov070_02120070; that
        helper then passes it to DropShadowRadHeight. Left as twelve words
        rather than Matrix4x3: Vector3's destructor would change D1/D0.
-       [func_ov070_02120070, in src/game/actors/d_a_propeller_heyho.cpp] */
+       [func_ov070_02120070, in src/actors/daPropeller_Heyho_c.cpp] */
     s32                          mShadowMatrix[12];     /* 0x38c */
     State                       *mCurrentState;         /* 0x3bc */
     /* InitResources copies mPosX/Y/Z here. Wander/chase compare Vec3_Dist
@@ -63,7 +63,7 @@ struct daPropeller_Heyho_c : dEnemyBase_c {
        and add a Y lift (0xc8000 / 0x12c000). 0211fd98 only reads it;
        0211f62c writes `+= 0x12c000`.
        [InitResources / func_ov070_0211f62c / func_ov070_0211fae4 /
-        func_ov070_0211f6e0, in src/game/actors/d_a_propeller_heyho.cpp] */
+        func_ov070_0211f6e0, in src/actors/daPropeller_Heyho_c.cpp] */
     s32                          mHomePosX;             /* 0x3c0 */
     s32                          mHomePosY;             /* 0x3c4 */
     s32                          mHomePosZ;             /* 0x3c8 */
@@ -71,37 +71,37 @@ struct daPropeller_Heyho_c : dEnemyBase_c {
        early-outs while it is non-zero; fire/dive exits store 0x5a.
        [Behavior / func_ov070_0211fd98 / func_ov070_0211f48c /
         func_ov070_0211f62c / func_ov070_0211f6e0,
-        in src/game/actors/d_a_propeller_heyho.cpp] */
+        in src/actors/daPropeller_Heyho_c.cpp] */
     u16                          mCooldown;             /* 0x3cc */
     u8  pad_3ce[0x2];
     /* Particle uniqueIDs: System::New 0x13a and NewUnkCallback818 0x13b in
        the defeated-state helper, only while mStateStep is set.
-       [func_ov070_0211f368, in src/game/actors/d_a_propeller_heyho.cpp] */
+       [func_ov070_0211f368, in src/actors/daPropeller_Heyho_c.cpp] */
     u32                          mParticle0;            /* 0x3d0 */
     u32                          mParticle1;            /* 0x3d4 */
     /* Per-state step/sub-phase word. Dive init (0211fa80), retreat init
        (0211f694), and return-to-wander (0211f62c) write 0; 0211f100 writes
        1 when the HURT anim starts.
        [func_ov070_0211fa80 / func_ov070_0211f694 / func_ov070_0211f62c /
-        func_ov070_0211f100, in src/game/actors/d_a_propeller_heyho.cpp] */
+        func_ov070_0211f100, in src/actors/daPropeller_Heyho_c.cpp] */
     s32                          mStateStep;            /* 0x3d8 */
     /* Set 1 when collision starts the hurt anim during the hover-attack
        state; only the dive init (0211fa80) clears it. 0211f694 only reads
        it. Dive's finished-anim path only returns to wander while this is 1.
        [func_ov070_0211f100 / func_ov070_0211fa80 / func_ov070_0211f6e0 /
-        func_ov070_0211f694, in src/game/actors/d_a_propeller_heyho.cpp] */
+        func_ov070_0211f694, in src/actors/daPropeller_Heyho_c.cpp] */
     s32                          mHitDuringAttack;      /* 0x3dc */
     /* param1 & 0xff, with 0xff folded to 0. Zero disables the fireball
        state; non-zero is a 50% roll in the chase helper.
        [InitResources / func_ov070_0211fae4,
-        in src/game/actors/d_a_propeller_heyho.cpp] */
+        in src/actors/daPropeller_Heyho_c.cpp] */
     s32                          mCanSpitFire;          /* 0x3e0 */
     u8  pad_3e4[0x2];
     /* Heading toward the player or home. Chase/fire/dive inits and
        ApproachAngle targets write it.
        [func_ov070_0211fa80 / func_ov070_0211fae4 / func_ov070_0211fd98 /
         func_ov070_0211f48c / func_ov070_0211f6e0,
-        in src/game/actors/d_a_propeller_heyho.cpp] */
+        in src/actors/daPropeller_Heyho_c.cpp] */
     s16                          mTargetAngY;           /* 0x3e6 */
 
     /* --- vtable --- */

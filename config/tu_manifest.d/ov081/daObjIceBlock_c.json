@@ -1,8 +1,8 @@
 {
   "id": "ov081/daObjIceBlock_c",
   "module": "ov081",
-  "source": "src/game/actors/d_a_obj_ice_block.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_ice_block.cpp",
+  "source": "src/actors/daObjIceBlock_c.cpp",
+  "promoted_source": "src/actors/daObjIceBlock_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [
@@ -92,7 +92,7 @@
   "data": [],
   "bss": [],
   "notes": [
-    "Hand-assembled: tubuild create generated the nine class members; the classInit factory was folded in by hand, following the ov045 promotion d_a_obj_km2_agaru.cpp."
+    "Hand-assembled: tubuild create generated the nine class members; the classInit factory was folded in by hand, following the ov045 promotion daObjKm2_Agaru_c.cpp."
   ],
   "verification": {
     "round": "tools/tubuild.py verify -- text-only, whole shadow TU compiled once",

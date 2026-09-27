@@ -92,7 +92,7 @@ def has_draft_banner(text):
     pr_linkcheck), `text[:400]` (nearmiss_db, prepush_linkcheck), or the whole file
     (classify, below). So one file could be a draft to one gate and matched to another,
     which is exactly what happened: the former Fwoosh collision shard (now in
-    src/game/actors/d_a_hyuhyu.cpp) said "does NOT count as matched" at byte 246
+    src/actors/daHyuhyu_c.cpp) said "does NOT count as matched" at byte 246
     -- past the 200-byte window -- and the progress bar counted it
     as matched regardless of what its author wrote.
 

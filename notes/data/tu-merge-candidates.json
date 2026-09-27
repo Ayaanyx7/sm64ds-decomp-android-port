@@ -7026,7 +7026,7 @@
    "n_functions_map": 8,
    "n_files": 1,
    "files": [
-    "src/game/actors/d_a_obj_number.cpp"
+    "src/actors/daObjNumber_c.cpp"
    ],
    "ext_mix": {
     ".cpp": 5,

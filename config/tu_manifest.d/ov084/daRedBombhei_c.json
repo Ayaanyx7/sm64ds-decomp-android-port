@@ -1,8 +1,8 @@
 {
   "id": "ov084/daRedBombhei_c",
   "module": "ov084",
-  "source": "src/game/actors/d_a_red_bombhei.cpp",
-  "promoted_source": "src/game/actors/d_a_red_bombhei.cpp",
+  "source": "src/actors/daRedBombhei_c.cpp",
+  "promoted_source": "src/actors/daRedBombhei_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [

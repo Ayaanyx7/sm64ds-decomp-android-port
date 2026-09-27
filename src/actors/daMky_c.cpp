@@ -16,7 +16,7 @@
  *   symbol table, so the labels are not evidence that these were free
  *   functions, and their original spellings are unknown. EnterState0..10 are
  *   already members; do not coin names for the rest. 0211124c is not this
- *   TU's: it is defined in src/game/actors/d_a_obj_hm_bskt.cpp and is also
+ *   TU's: it is defined in src/actors/daObjHmBskt_c.cpp and is also
  *   called from daObjHmBskt_c::Behavior.
  *   SetAnim / dCcAc_c::Init / dBgCh_Actr::Init / DropShadowRadHeight /
  *   IsTooFarAwayFromPlayer stay mangled (Fix12 by value,

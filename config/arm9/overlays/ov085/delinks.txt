@@ -4,7 +4,7 @@
     .ctor       start:0x0212fdf0 end:0x0212fe08 kind:rodata align:4
     .data       start:0x0212fe20 end:0x02130480 kind:data align:32
     .bss        start:0x02130480 end:0x02130880 kind:bss align:32
-src/game/actors/d_a_kinopio.cpp:
+src/actors/daKinopio_c.cpp:
     complete
     .text start:0x02129020 end:0x02129d18
 
@@ -20,7 +20,7 @@ src/actors/daObj_Mip_Key_c.cpp:
     complete
     .text start:0x0212cc88 end:0x0212d528
 
-src/game/actors/d_a_c_jugem.cpp:
+src/actors/daC_Jugem_c.cpp:
     complete
     .text start:0x0212d528 end:0x0212edac
 

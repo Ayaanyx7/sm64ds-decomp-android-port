@@ -1,6 +1,6 @@
 /* daChScene_c, ov002 0x020b09b0..0x020b0f54 -- five virtual overrides, the
  * destructor pair, a helper and the factory, all in
- * src/game/actors/d_a_ch_scene.cpp. Offsets/widths are observed, not guessed.
+ * src/actors/daChScene_c.cpp. Offsets/widths are observed, not guessed.
  * Gaps are explicit padding. Field NAMES are placeholders - renaming cannot
  * change codegen.
  *
@@ -80,7 +80,7 @@ struct daChScene_c : dActor_c {
      * 0x02108674, and the only word in any extracted binary pointing at it is
      * 0x021086b0 -- the class's own vtable slot -- so no other class names it
      * as a base and no other TU's codegen moves with this. See the leaf proof
-     * in src/game/actors/d_a_ch_scene.cpp. */
+     * in src/actors/daChScene_c.cpp. */
     virtual ~daChScene_c() {}
 
     virtual s32 InitResources();

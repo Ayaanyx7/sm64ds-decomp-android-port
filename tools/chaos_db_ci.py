@@ -427,7 +427,7 @@ def match_finishers(rev="HEAD") -> dict[str, str]:
         #
         # The draft test is asm_policy.has_draft_banner -- the same rule the live count
         # uses -- not a fixed head window: the former Fwoosh collision shard
-        # (now in src/game/actors/d_a_hyuhyu.cpp) carried its marker at byte 246
+        # (now in src/actors/daHyuhyu_c.cpp) carried its marker at byte 246
         # for months, so a 200-byte read judged every drafted state of that
         # file "clean" and handed the finisher's credit to the drafter.
         blob = data[pos:pos + size].decode("utf-8", "replace")

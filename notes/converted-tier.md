@@ -31,7 +31,7 @@ So a converted method cannot carry any other symbol, and the only way to pass
 function. The tier paid you to undo the work it exists to measure.
 
 This is not a hypothetical. The former KoopaShell OnYoshiTryEat shard
-(now `daShl_c::OnYoshiTryEat` in `src/game/actors/d_a_shl.cpp`) was:
+(now `daShl_c::OnYoshiTryEat` in `src/actors/daShl_c.cpp`) was:
 
 ```cpp
 // @symbol _ZN10KoopaShell13OnYoshiTryEatEv
@@ -219,7 +219,7 @@ A GONE path is now resolved through the manifest (via `tools/tu_manifest.py`, pe
 naming the absorbing file:
 
 ```sh
-MOVED -- absorbed into src/game/actors/daObjPathLift_c.cpp by TU promotion
+MOVED -- absorbed into src/actors/daObjPathLift_c.cpp by TU promotion
          (ov100/daObjPathLift_c), which fails: No raw offset arithmetic ...;
          Calls things by real names, not mangled _Z
 ```

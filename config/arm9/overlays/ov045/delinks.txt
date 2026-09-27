@@ -4,11 +4,11 @@
     .ctor       start:0x0211242c end:0x02112444 kind:rodata align:4
     .data       start:0x02112460 end:0x02113180 kind:data align:32
     .bss        start:0x02113180 end:0x02113280 kind:bss align:32
-src/game/actors/d_a_obj_km2_agaru.cpp:
+src/actors/daObjKm2_Agaru_c.cpp:
     complete
     .text start:0x021111a0 end:0x0211150c
 
-src/game/actors/d_a_obj_km2_ami_bou.cpp:
+src/actors/daObjKm2_Ami_Bou_c.cpp:
     complete
     .text start:0x0211150c end:0x02111840
 
@@ -20,16 +20,16 @@ src/d_a_obj_km2_nobiru.c:
     complete
     .text start:0x02111ad4 end:0x02111b14
 
-src/game/actors/d_a_obj_km2_ukishima.cpp:
+src/actors/daObjKm2_Ukishima_c.cpp:
     complete
     .text start:0x02111b14 end:0x02111c30
 
-src/game/actors/d_a_obj_km2_gura.cpp:
+src/actors/daObjKm2_Gura_c.cpp:
     complete
     .text start:0x02111c30 end:0x02111d48
     .data start:0x02112fdc end:0x021130a0
 
-src/game/actors/d_a_obj_km2_fall_block.cpp:
+src/actors/daObjKm2_Fall_Block_c.cpp:
     complete
     .text start:0x02111d48 end:0x02111e60
 

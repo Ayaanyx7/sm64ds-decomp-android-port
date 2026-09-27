@@ -1,8 +1,8 @@
 {
   "id": "ov014/daWanwan_c",
   "module": "ov014",
-  "source": "src/game/actors/d_a_wanwan.cpp",
-  "promoted_source": "src/game/actors/d_a_wanwan.cpp",
+  "source": "src/actors/daWanwan_c.cpp",
+  "promoted_source": "src/actors/daWanwan_c.cpp",
   "status": "promoted",
   "boundary_confidence": "high",
   "boundary_evidence": [

@@ -1,8 +1,8 @@
 {
   "id": "ov080/daObjMaruta_c",
   "module": "ov080",
-  "source": "src/game/actors/d_a_obj_maruta.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_maruta.cpp",
+  "source": "src/actors/daObjMaruta_c.cpp",
+  "promoted_source": "src/actors/daObjMaruta_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [

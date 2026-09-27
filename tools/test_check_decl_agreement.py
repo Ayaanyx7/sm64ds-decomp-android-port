@@ -843,7 +843,7 @@ class HistoricalArrayConstructorTests(unittest.TestCase):
          "extern int __cxa_vec_ctor(void*,int,int,void*,void*);"),
         ("src/d_a_hanachan.c", "int",
          "extern int __cxa_vec_ctor(void *p, int a, int b, void *ctor, void *dtor);"),
-        ("src/game/actors/d_a_wanwan.cpp", "int",
+        ("src/actors/daWanwan_c.cpp", "int",
          "int __cxa_vec_ctor(void *, int, int, void *, void *);"),
         ("src/d_a_luigi.cpp", "void *",
          "extern void* __cxa_vec_ctor(void* a, int b, int n, void* ctor, void* dtor);"),
@@ -2203,7 +2203,7 @@ class NativeDestructorTests(unittest.TestCase):
             ("dBgPi", "dBgPiLoc *", "src/_ZN10dBgCh_Actr16UpdateContinuousEv.cpp"),
             ("dBgPi", "dBgPiLoc *", "src/_ZN10dBgCh_Actr20UpdateExtraContinousEv.cpp"),
             ("dBgPi", "dBgPiLoc *", "src/_ZN10dBgCh_Actr22UpdateContinuousNoLavaEv.cpp"),
-            ("dBgPi", "dBgPiRaw *", "src/game/actors/d_a_pg_mthr.cpp"),
+            ("dBgPi", "dBgPiRaw *", "src/actors/daPgMthr_c.cpp"),
             ("dBgCh_Gnd", "RG *", "src/func_ov002_020b94c4.c"),
             ("dBgCh_Gnd", "char *", "src/actors/daObjMarioCap_c.cpp"),
         )

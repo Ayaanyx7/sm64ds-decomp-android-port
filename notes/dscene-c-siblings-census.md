@@ -292,7 +292,7 @@ So the D0-labelled-as-OnYoshiTryEat defect no longer has a single instance in
 `src/`. The seven survivors §3 counted were fixed as their classes were named,
 each one settled by reading the body. Two still carry that reasoning in their own
 headers: the deleting destructor of `daIDonketu_c`, whose seven per-function
-sources have since been folded into the source-owned `actors/d_a_i_donketu.cpp`
+sources have since been folded into the source-owned `src/actors/daIDonketu_c.cpp`
 (the destructor pair is inline in `include/daIDonketu_c.h` now, and the TU's
 closing comment says why), and `src/actors/daObjFl_Seesaw_c.cpp`. All 31
 remaining `OnYoshiTryEat` claims sit on genuine slot-18 bodies. The standing

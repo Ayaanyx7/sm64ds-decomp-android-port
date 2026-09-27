@@ -32,7 +32,7 @@
  *   the pooled `ldr ip,[pc,#8]; bx ip` absolute tail-call (size 0x14); a near
  *   `b` to func_ov015_021128e8 in this same TU is 0xc. The pragma is
  *   positional in 2004/b56, the same bracket
- *   src/game/actors/d_a_obj_b_swdoor.cpp uses.
+ *   src/actors/daObjBSwdoor_c.cpp uses.
  * Leftover: func_ov015_021128e8 keeps a second unused parameter: the veneer
  *   forwards two registers after dropping the collider, and a 1-arg callee
  *   drops `mov r1, r2`. Same shape as daObjFallBlock_c_RequestShake.
@@ -43,7 +43,7 @@
  *   KCL and BMD handles. symbols.txt also coins MovingBarSmall_ClsnFile /
  *   MovingBarSmall_ModelFile on the same two addresses -- this class's
  *   retired coined name -- so this TU uses the address-true spelling, the
- *   way src/game/actors/d_a_obj_bk_rotebar.cpp does.
+ *   way src/actors/daObjBk_Rotebar_c.cpp does.
  * Leftover: data_ov015_02113594 is the CLPS block in overlay .data that
  *   this TU does not own; data_02082214 is arm9's sin/cos table and
  *   data_0209f220 / data_0209f2f8 are arm9 scene state.

@@ -1,8 +1,8 @@
 {
   "id": "ov098/daCnn_c",
   "module": "ov098",
-  "source": "src/game/actors/d_a_cnn.cpp",
-  "promoted_source": "src/game/actors/d_a_cnn.cpp",
+  "source": "src/actors/daCnn_c.cpp",
+  "promoted_source": "src/actors/daCnn_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [

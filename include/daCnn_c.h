@@ -28,7 +28,7 @@ struct Player;
  *   2 wait    sunk; wait for a player to climb in
  *   3 load    rise, turn, shoot the player out, sink again
  *
- * Field roles are read from the bodies in src/game/actors/d_a_cnn.cpp; the
+ * Field roles are read from the bodies in src/actors/daCnn_c.cpp; the
  * names are inferred, not recovered.
  */
 struct daCnn_c : dActor_c {

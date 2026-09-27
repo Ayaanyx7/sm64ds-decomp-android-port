@@ -1,8 +1,8 @@
 {
   "id": "ov010/daObjC1Hikari_c",
   "module": "ov010",
-  "source": "src/game/actors/d_a_obj_c1_hikari.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_c1_hikari.cpp",
+  "source": "src/actors/daObjC1Hikari_c.cpp",
+  "promoted_source": "src/actors/daObjC1Hikari_c.cpp",
   "status": "promoted",
   "boundary_confidence": "high",
   "boundary_evidence": [

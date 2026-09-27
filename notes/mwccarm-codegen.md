@@ -129,7 +129,7 @@ temporaries.
 
 **How to apply.** A `5Fix12IiE` callee cannot be reached through a class-typed
 header declaration. Callers keep a C-linkage extern with a scalar `Fix12i`
-parameter, as `src/game/actors/d_a_obj_bc_switch.cpp` does for
+parameter, as `src/actors/daObjBC_Switch_c.cpp` does for
 `Sound::ChangeMusicVolume` -- or, following `IsGoingOffCliff` above, the symbol
 is renamed to its scalar mangling so a real declaration works on both sides.
 The 2026-08-27 result is untouched: inside the callee, an unread class parameter

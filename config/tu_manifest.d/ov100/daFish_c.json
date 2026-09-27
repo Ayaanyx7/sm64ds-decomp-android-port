@@ -1,8 +1,8 @@
 {
   "id": "ov100/daFish_c",
   "module": "ov100",
-  "source": "src/game/actors/d_a_fish.cpp",
-  "promoted_source": "src/game/actors/d_a_fish.cpp",
+  "source": "src/actors/daFish_c.cpp",
+  "promoted_source": "src/actors/daFish_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [

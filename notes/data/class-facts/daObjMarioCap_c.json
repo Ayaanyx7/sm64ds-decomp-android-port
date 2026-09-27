@@ -62,7 +62,7 @@
     "licensed_start": "0x020b6f18",
     "licensed_end": "0x020b86d0",
     "licensed_functions": 29,
-    "boundary_confidence": "medium/medium (tools/tu_map.py). Left neighbour src/game/actors/d_a_obj_waterfall.cpp ends exactly at 0x020b6f18; the factory's own delinks entry begins exactly at 0x020b8b98."
+    "boundary_confidence": "medium/medium (tools/tu_map.py). Left neighbour src/actors/daObjWaterfall_c.cpp ends exactly at 0x020b6f18; the factory's own delinks entry begins exactly at 0x020b8b98."
   },
   "compiler_only_records": {
     "count": 12,

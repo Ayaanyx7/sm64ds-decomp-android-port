@@ -20,15 +20,15 @@ src/d_a_obj_sm_lift.c:
     complete
     .text start:0x02111818 end:0x02111848
 
-src/game/actors/d_a_pg_mthr.cpp:
+src/actors/daPgMthr_c.cpp:
     complete
     .text start:0x02111848 end:0x021126d4
 
-src/game/actors/d_a_s_cre.cpp:
+src/actors/daSCre_c.cpp:
     complete
     .text start:0x021126d4 end:0x021127bc
 
-src/game/actors/d_a_obj_ice_board.cpp:
+src/actors/daObjIceBoard_c.cpp:
     complete
     .text start:0x021127bc end:0x02112a74
 

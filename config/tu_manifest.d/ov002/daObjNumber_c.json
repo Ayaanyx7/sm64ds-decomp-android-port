@@ -1,8 +1,8 @@
 {
   "id": "ov002/daObjNumber_c",
   "module": "ov002",
-  "source": "src/game/actors/d_a_obj_number.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_number.cpp",
+  "source": "src/actors/daObjNumber_c.cpp",
+  "promoted_source": "src/actors/daObjNumber_c.cpp",
   "status": "promoted",
   "boundary_confidence": "high",
   "boundary_evidence": [

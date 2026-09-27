@@ -1,8 +1,8 @@
 {
   "id": "ov016/daObjKi_Ita_c",
   "module": "ov016",
-  "source": "src/game/actors/d_a_obj_ki_ita.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_ki_ita.cpp",
+  "source": "src/actors/daObjKi_Ita_c.cpp",
+  "promoted_source": "src/actors/daObjKi_Ita_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [

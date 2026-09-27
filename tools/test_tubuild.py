@@ -123,12 +123,12 @@ def test_verify_reproduces_pilot_1s_7_of_7_and_clean_objisolate():
     walk of match.py + objisolate.py + reloc_audit.py agree with what a human
     found by hand for this exact TU (notes/tu-reconstruction-pilot-report.md sec 1)?
 
-    Runs against the promoted src/game/actors/d_a_obj_km2_ami_bou.cpp.
+    Runs against the promoted src/actors/daObjKm2_Ami_Bou_c.cpp.
     """
     if not _toolchain():
         raise unittest.SkipTest(
             "needs the pinned compiler and extracted/ ROM dump")
-    shadow = REPO / "src" / "game" / "actors" / "d_a_obj_km2_ami_bou.cpp"
+    shadow = REPO / "src" / "actors" / "daObjKm2_Ami_Bou_c.cpp"
     assert shadow.is_file(), "the promoted TU is missing"
 
     scratch = _scratch_manifest()

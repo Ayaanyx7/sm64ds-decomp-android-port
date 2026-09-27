@@ -3,19 +3,19 @@
     .ctor       start:0x02111ae8 end:0x02111af8 kind:rodata align:4
     .data       start:0x02111b00 end:0x021125e0 kind:data align:32
     .bss        start:0x021125e0 end:0x02112720 kind:bss align:32
-src/game/actors/d_a_obj_km1_ukishima.cpp:
+src/actors/daObjKm1_Ukishima_c.cpp:
     complete
     .text start:0x021111a0 end:0x021113fc
 
-src/game/actors/d_a_obj_km1_kurumajiku.cpp:
+src/actors/daObjKm1_Kurumajiku_c.cpp:
     complete
     .text start:0x021113fc end:0x02111518
 
-src/game/actors/d_a_obj_km1_kuruma.cpp:
+src/actors/daObjKm1_Kuruma_c.cpp:
     complete
     .text start:0x02111518 end:0x02111630
 
-src/game/actors/d_a_obj_km1_dorifu.cpp:
+src/actors/daObjKm1_Dorifu_c.cpp:
     complete
     .text start:0x02111630 end:0x021117fc
     .data start:0x021124dc end:0x021125dc

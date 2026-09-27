@@ -20,19 +20,19 @@ src/func_ov009_02111234.cpp:
     complete
     .text start:0x02111234 end:0x0211145c
 
-src/game/actors/d_a_s_bird.cpp:
+src/actors/daSBird_c.cpp:
     complete
     .text start:0x021115d8 end:0x02111a70
 
-src/game/actors/d_a_obj_mc_water.cpp:
+src/actors/daObjMcWater_c.cpp:
     complete
     .text start:0x02111a70 end:0x02111dc4
 
-src/game/actors/d_a_obj_mc_metalnet.cpp:
+src/actors/daObjMc_Metalnet_c.cpp:
     complete
     .text start:0x02111dc4 end:0x02112078
 
-src/game/actors/d_a_mc_flag.cpp:
+src/actors/daMcFlag_c.cpp:
     complete
     .text start:0x02112078 end:0x02112228
 

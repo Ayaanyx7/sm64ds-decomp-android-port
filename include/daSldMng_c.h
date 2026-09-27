@@ -36,7 +36,7 @@ struct daSldMng_c : dActor_c {
 
     /* THE KEY FUNCTION IS InitResources -- the first DECLARED non-inline
      * virtual, not the first slot. Whichever TU defines it emits this class's
-     * _ZTV/_ZTI/_ZTS group; that is src/game/actors/d_a_sld_mng.cpp. */
+     * _ZTV/_ZTI/_ZTS group; that is src/actors/daSldMng_c.cpp. */
     virtual int InitResources(); /* slot 0 */
     virtual int Behavior();      /* slot 6 */
 

@@ -50,12 +50,28 @@
    "ref": "src/_ZN8PlatformD0Ev.cpp"
   },
   {
+   "file": "notes/agents/handoffs/data-interface-repair-0910.md",
+   "ref": "src/game/actors/d_a_obj_km2_gura.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/data-interface-repair-0910.md",
+   "ref": "src/game/actors/d_a_star_gate.cpp"
+  },
+  {
    "file": "notes/agents/handoffs/issue-2411-humanizer-2.md",
    "ref": "src/_ZN5Crate13OnTurnIntoEggER6Player.cpp"
   },
   {
    "file": "notes/agents/handoffs/issue-2411-humanizer-2.md",
+   "ref": "src/game/actors/d_a_jgm.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/issue-2411-humanizer-2.md",
    "ref": "src_tu/actors/Koopa"
+  },
+  {
+   "file": "notes/agents/handoffs/issue-2413.md",
+   "ref": "src/game/actors/d_a_obj_abuku.cpp"
   },
   {
    "file": "notes/agents/handoffs/mg-p1-factories-0926.md",
@@ -114,8 +130,60 @@
    "ref": "src/d_s_mg_pachinko2.c"
   },
   {
+   "file": "notes/agents/handoffs/pr-2709-source-review-fixes.md",
+   "ref": "src/game/actors/daTrsTrap_c/d_a_trs_trap.cpp"
+  },
+  {
    "file": "notes/agents/handoffs/pr2231-rescue-ov022-ov013-batch2.md",
    "ref": "src_tu/actors/daObj_volcanoCannon_c.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/pr2864-identity-promotion-0920.md",
+   "ref": "src/game/actors/d_a_nknk.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/prod-dossunbar-0907-daObjBk_Dossunbar_c.md",
+   "ref": "src/game/actors/d_a_obj_bk_dossunbar.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/prod-kuruma-0907-daObjKm1_Kurumajiku_c.md",
+   "ref": "src/game/actors/d_a_obj_km1_kuruma.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/prod-kuruma-0907-daObjKm1_Kurumajiku_c.md",
+   "ref": "src/game/actors/d_a_obj_km1_kurumajiku.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/prod-kuruma-0907-daObjKm1_Kurumajiku_c.md",
+   "ref": "src/game/actors/d_a_obj_km1_ukishima.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/prod-kuruma-0907-daObjKm1_Kurumajiku_c.md",
+   "ref": "src/game/actors/d_a_obj_km3_kurumajiku.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/prod-snmbdy-0907.md",
+   "ref": "src/game/actors/d_a_bg_snwmn.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/prod-ukishima-0907-daObjKm2_Ukishima_c.md",
+   "ref": "src/game/actors/d_a_obj_km2_gura.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/readable-ov071-casket-0925.md",
+   "ref": "src/game/actors/d_a_ey_bm.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/readable-ov089-objkey-0925.md",
+   "ref": "src/game/actors/d_a_wanwan.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/readable-ov098-wbm-0925.md",
+   "ref": "src/game/actors/d_a_cnn.cpp"
+  },
+  {
+   "file": "notes/agents/handoffs/shadowback-kinopio-0920.md",
+   "ref": "src/game/actors/d_a_kinopio.cpp"
   },
   {
    "file": "notes/archive/crack-loop-runbook.md",
@@ -124,6 +192,10 @@
   {
    "file": "notes/archive/func_02059d8c-asm-origin.md",
    "ref": "src/dst"
+  },
+  {
+   "file": "notes/archive/func_ov079_02124008-floor.md",
+   "ref": "src/game/actors/d_a_btn.cpp"
   },
   {
    "file": "notes/archive/n64-decomp-cross-reference.md",
@@ -147,6 +219,10 @@
   },
   {
    "file": "notes/archive/plan-gen-header.md",
+   "ref": "src/game/actors/d_a_wanwan.cpp"
+  },
+  {
+   "file": "notes/archive/plan-gen-header.md",
    "ref": "tools/decl_headers.py"
   },
   {
@@ -156,6 +232,10 @@
   {
    "file": "notes/archive/plan-scalar-markers.md",
    "ref": "src/_ZN9FaderWipeC1Ev.c"
+  },
+  {
+   "file": "notes/archive/plan-scalar-markers.md",
+   "ref": "src/game/actors/d_a_obj_wc_obj04.cpp"
   },
   {
    "file": "notes/bgobject-provenance.md",
@@ -168,10 +248,6 @@
   {
    "file": "notes/bgobject-provenance.md",
    "ref": "src/FortressWall_Spawn.c"
-  },
-  {
-   "file": "notes/bgobject-provenance.md",
-   "ref": "src/func_ov025_02111898.c"
   },
   {
    "file": "notes/collision-query-classes.md",
@@ -204,6 +280,362 @@
   {
    "file": "notes/emu-trace-build.md",
    "ref": "nearmiss/ledger"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-bakubaku-deadstore.md",
+   "ref": "src/game/actors/d_a_bakubaku.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-bakubaku-klass-ice.md",
+   "ref": "src/game/actors/d_a_bakubaku.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-bakubaku-matrix.md",
+   "ref": "src/game/actors/d_a_bakubaku.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-dispositions.md",
+   "ref": "src/game/actors/d_a_bakubaku.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-dispositions.md",
+   "ref": "src/game/actors/d_a_obj_bk_dossunbar.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-dispositions.md",
+   "ref": "src/game/actors/d_a_obj_ki_ita.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-dispositions.md",
+   "ref": "src/game/actors/d_a_obj_wc_obj01.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-dispositions.md",
+   "ref": "src/game/actors/d_a_pg_mthr.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-dispositions.md",
+   "ref": "src/game/actors/d_a_s_cre.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-dispositions.md",
+   "ref": "src/game/actors/d_a_wanwan.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-dossunbar-resdesc.md",
+   "ref": "src/game/actors/d_a_obj_bk_dossunbar.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-dossunbar-setfile.md",
+   "ref": "src/game/actors/d_a_obj_bk_dossunbar.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_bakubaku.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_bk_dossunbar.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_bk_fall_block.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_bk_ukisima.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_fl_gura.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_ki_ita.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_km1_dorifu.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_km1_kuruma.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_km1_kurumajiku.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_km2_fall_block.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_km2_gura.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_km2_ukishima.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_km3_dorifu.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_km3_kaitendai.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_km3_kuruma.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_km3_kurumajiku.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_rc_dorifu.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_rc_kaitendai.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_wc_obj01.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_wc_obj06.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_obj_wc_obj07.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_pg_mthr.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_s_cre.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-not-experimentable.md",
+   "ref": "src/game/actors/d_a_wanwan.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-pgmthr-dropshadow.md",
+   "ref": "src/game/actors/d_a_pg_mthr.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-pgmthr-init-1ac.md",
+   "ref": "src/game/actors/d_a_pg_mthr.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-pgmthr-matrix.md",
+   "ref": "src/game/actors/d_a_pg_mthr.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-pgmthr-setanim.md",
+   "ref": "src/game/actors/d_a_pg_mthr.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-wanwan-factory.md",
+   "ref": "src/game/actors/d_a_wanwan.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-wanwan-matrix.md",
+   "ref": "src/game/actors/d_a_wanwan.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-wanwan-stump.md",
+   "ref": "src/game/actors/d_a_wanwan.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-waterfall-levelid.md",
+   "ref": "src/game/actors/d_a_obj_waterfall.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-waterfall-particle.md",
+   "ref": "src/game/actors/d_a_obj_waterfall.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-waterfall-vector3.md",
+   "ref": "src/game/actors/d_a_obj_waterfall.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-wcobj01-getclsn.md",
+   "ref": "src/game/actors/d_a_obj_wc_obj01.cpp"
+  },
+  {
+   "file": "notes/experiments/batch2-2685-wcobj06-getclsn.md",
+   "ref": "src/game/actors/d_a_obj_wc_obj06.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-abuku-dccac-init-6az.md",
+   "ref": "src/game/actors/d_a_obj_abuku.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-abuku-sway-actorid-forms.md",
+   "ref": "src/game/actors/d_a_obj_abuku.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-abuku-vector3-pod.md",
+   "ref": "src/game/actors/d_a_obj_abuku.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-billboard-defaultless-switch.md",
+   "ref": "src/game/actors/d_a_obj_hs_billboard.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-setse-int-casts.md",
+   "ref": "src/game/actors/d_a_set_se.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-setse-volatile-rmw.md",
+   "ref": "src/game/actors/d_a_set_se.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-sldmng-playsub-method.md",
+   "ref": "src/game/actors/d_a_sld_mng.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-soundobj-dup-0x21.md",
+   "ref": "src/game/actors/d_a_sound_obj.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-soundobj-loop-int.md",
+   "ref": "src/game/actors/d_a_sound_obj.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-soundobj-loop-shape.md",
+   "ref": "src/game/actors/d_a_sound_obj.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-soundobj-loopinvariants.md",
+   "ref": "src/game/actors/d_a_sound_obj.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-soundobj-ret-goto.md",
+   "ref": "src/game/actors/d_a_sound_obj.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-tree-applyopacity-current.md",
+   "ref": "src/game/actors/d_a_tree.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-tree-clipper-6az.md",
+   "ref": "src/game/actors/d_a_tree.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-tree-dccpos-init-6az.md",
+   "ref": "src/game/actors/d_a_tree.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-tree-render-vector3-out.md",
+   "ref": "src/game/actors/d_a_tree.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-tree-znwj-new.md",
+   "ref": "src/game/actors/d_a_tree.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-warpkun-dccac-init-6az.md",
+   "ref": "src/game/actors/d_a_warpkun.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-warpkun-isplayer-fold.md",
+   "ref": "src/game/actors/d_a_warpkun.cpp"
+  },
+  {
+   "file": "notes/experiments/batch3-2707-warpkun-radius-cse.md",
+   "ref": "src/game/actors/d_a_warpkun.cpp"
+  },
+  {
+   "file": "notes/experiments/feather-2713-dbgch-actr-init.md",
+   "ref": "src/game/actors/daFeather_c/daFeather_c.cpp"
+  },
+  {
+   "file": "notes/experiments/feather-2713-dccac-init.md",
+   "ref": "src/game/actors/daFeather_c/daFeather_c.cpp"
+  },
+  {
+   "file": "notes/experiments/feather-2713-dropshadow.md",
+   "ref": "src/game/actors/daFeather_c/daFeather_c.cpp"
+  },
+  {
+   "file": "notes/experiments/feather-2713-particle-newsimple.md",
+   "ref": "src/game/actors/daFeather_c/daFeather_c.cpp"
+  },
+  {
+   "file": "notes/experiments/feather-2713-swayangle-short.md",
+   "ref": "src/game/actors/daFeather_c/daFeather_c.cpp"
+  },
+  {
+   "file": "notes/experiments/feather-2713-swayangle-volatile.md",
+   "ref": "src/game/actors/daFeather_c/daFeather_c.cpp"
+  },
+  {
+   "file": "notes/experiments/koopa-2864-source-forms.md",
+   "ref": "src/game/actors/d_a_nknk.cpp"
+  },
+  {
+   "file": "notes/experiments/piano-2712-dropshadow-advance.md",
+   "ref": "src/game/actors/daPiano_c/d_a_piano.cpp"
+  },
+  {
+   "file": "notes/experiments/piano-2712-dtor-split.md",
+   "ref": "src/game/actors/daPiano_c/d_a_piano.cpp"
+  },
+  {
+   "file": "notes/experiments/piano-2712-factory.md",
+   "ref": "src/game/actors/daPiano_c/d_a_piano.cpp"
+  },
+  {
+   "file": "notes/experiments/piano-2712-pianovec3.md",
+   "ref": "src/game/actors/daPiano_c/d_a_piano.cpp"
+  },
+  {
+   "file": "notes/experiments/piano-2712-pmf-verified.md",
+   "ref": "src/game/actors/daPiano_c/d_a_piano.cpp"
+  },
+  {
+   "file": "notes/experiments/piano-2712-setanim-6az.md",
+   "ref": "src/game/actors/daPiano_c/d_a_piano.cpp"
+  },
+  {
+   "file": "notes/experiments/piano-2712-sinit-split.md",
+   "ref": "src/game/actors/daPiano_c/d_a_piano.cpp"
+  },
+  {
+   "file": "notes/experiments/trap-2709-dispatch.md",
+   "ref": "src/game/actors/daTrsTrap_c/d_a_trs_trap.cpp"
+  },
+  {
+   "file": "notes/experiments/trap-2709-matrixd1.md",
+   "ref": "src/game/actors/daTrsTrap_c/d_a_trs_trap_classinits.cpp"
+  },
+  {
+   "file": "notes/experiments/trap-2709-notexperimentable.md",
+   "ref": "src/game/actors/daTrsTrap_c/d_a_trs_trap.cpp"
+  },
+  {
+   "file": "notes/experiments/trap-2709-offstable.md",
+   "ref": "src/game/actors/daTrsTrap_c/d_a_trs_trap.cpp"
+  },
+  {
+   "file": "notes/experiments/trap-2709-setfile.md",
+   "ref": "src/game/actors/daTrsTrap_c/d_a_trs_trap.cpp"
+  },
+  {
+   "file": "notes/experiments/trap-2709-statetimer.md",
+   "ref": "src/game/actors/daTrsTrap_c/d_a_trs_trap.cpp"
+  },
+  {
+   "file": "notes/experiments/trap-2709-v16order.md",
+   "ref": "src/game/actors/daTrsTrap_c/d_a_trs_trap.cpp"
   },
   {
    "file": "notes/ghidra-dsd-landscape.md",
@@ -240,6 +672,10 @@
   {
    "file": "notes/handoff-class-skeleton.md",
    "ref": "docs/class-reference-confidence"
+  },
+  {
+   "file": "notes/handoff-issue-2422.md",
+   "ref": "src/game/actors/daBrq_c.cpp"
   },
   {
    "file": "notes/handoff-marker-typing.md",
@@ -323,10 +759,6 @@
   },
   {
    "file": "notes/rom-build.md",
-   "ref": "src/func_ov013_021112a8.c"
-  },
-  {
-   "file": "notes/rom-build.md",
    "ref": "src/func_ov091_02132a0c.c"
   },
   {
@@ -358,8 +790,8 @@
    "ref": "src/ui/messages"
   },
   {
-   "file": "notes/translation-unit-reconstruction-plan.md",
-   "ref": "src/game/actors/d_a_holhei.cpp"
+   "file": "notes/tu-cpp-census-2026-08.md",
+   "ref": "src/game/actors/d_a_jgm.cpp"
   },
   {
    "file": "notes/tu-filename-reconstruction-pilot.md",
@@ -387,11 +819,19 @@
   },
   {
    "file": "notes/tu-reconstruction-pilot-2-report.md",
+   "ref": "src/game/actors/d_a_holhei.cpp"
+  },
+  {
+   "file": "notes/tu-reconstruction-pilot-2-report.md",
    "ref": "tools/reloc_audit.check_destinations"
   },
   {
    "file": "notes/tu-reconstruction-pilot-report.md",
    "ref": "include/Platform.h"
+  },
+  {
+   "file": "notes/tu-reconstruction-pilot-report.md",
+   "ref": "src/game/actors/d_a_obj_km2_ami_bou.cpp"
   },
   {
    "file": "port/docs/mmio-inventory.md",
@@ -472,14 +912,6 @@
   {
    "file": "tools/chaos_db_ci.py",
    "ref": "src/x.c"
-  },
-  {
-   "file": "tools/check_dead_references.py",
-   "ref": "src/f.c"
-  },
-  {
-   "file": "tools/check_dead_references.py",
-   "ref": "src/game/mario.c"
   },
   {
    "file": "tools/check_dead_references.py",

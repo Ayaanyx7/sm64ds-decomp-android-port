@@ -639,7 +639,8 @@ def resource_owner_from_source(source: str) -> tuple[str, str] | None:
 
 def build_layout_candidates(rows: list[dict[str, str]],
                             rename_rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Use resource-global consumers to suggest homes for static initializers."""
+    """Use resource-global consumers to suggest the actor TU (src/actors/<Class>.cpp) a
+    static initializer folds into."""
     consumers = {
         row["current_name"]: row["consumer_sources"].split("; ")
         for row in rename_rows if row["candidate_kind"] == "global"
@@ -672,9 +673,8 @@ def build_layout_candidates(rows: list[dict[str, str]],
         asset_dirs = sorted({
             str(pathlib.PurePosixPath(row["path"]).parent) for row in group
         })
-        filename = pathlib.PurePosixPath(source).name
         suggested = (
-            f"src/game/actors/{actors[0]}/{filename}"
+            f"src/actors/{actors[0]}.cpp"
             if len(actors) == 1 else ""
         )
         if len(actors) == 1:

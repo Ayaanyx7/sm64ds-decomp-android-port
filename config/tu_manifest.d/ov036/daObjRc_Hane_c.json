@@ -1,8 +1,8 @@
 {
   "id": "ov036/daObjRc_Hane_c",
   "module": "ov036",
-  "source": "src/game/actors/d_a_obj_rc_hane.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_rc_hane.cpp",
+  "source": "src/actors/daObjRc_Hane_c.cpp",
+  "promoted_source": "src/actors/daObjRc_Hane_c.cpp",
   "status": "promoted",
   "boundary_confidence": "high",
   "boundary_evidence": [

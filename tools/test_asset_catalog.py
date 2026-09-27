@@ -116,7 +116,7 @@ class AssetCatalogTests(unittest.TestCase):
         self.assertEqual(layouts[0]["confidence"], "high")
         self.assertEqual(
             layouts[0]["suggested_path"],
-            "src/game/actors/daPiano_c/__sinit_ov063_test.c",
+            "src/actors/daPiano_c.cpp",
         )
 
     def test_candidate_blocks_one_owner_with_multiple_assets(self):

@@ -1,8 +1,8 @@
 {
   "id": "ov036/daObjRc_Guruguru_c",
   "module": "ov036",
-  "source": "src/game/actors/d_a_obj_rc_guruguru.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_rc_guruguru.cpp",
+  "source": "src/actors/daObjRc_Guruguru_c.cpp",
+  "promoted_source": "src/actors/daObjRc_Guruguru_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [

@@ -78,7 +78,7 @@ def manifest(compiler_only=(), bss=(), data=(), **extra):
     entry = {
         "id": "ov023/daObjFm_Battan_c",
         "module": "ov023",
-        "source": "src/game/actors/d_a_obj_fm_battan.cpp",
+        "source": "src/actors/daObjFm_Battan_c.cpp",
         "compiler_only_output": [
             dict(symbol=s, disposition="deadstrip", reason=r)
             for s, r in compiler_only

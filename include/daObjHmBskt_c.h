@@ -22,7 +22,7 @@ struct dActor_c;
  * destroys the dBgW_KcMbg at 0x124 and the Model at 0xd4 before chaining to
  * dActor_c.
  *
- * The class translation unit is src/game/actors/d_a_obj_hm_bskt.cpp. It is
+ * The class translation unit is src/actors/daObjHmBskt_c.cpp. It is
  * this class's key-function TU -- the destructor below is inline, so the first
  * non-inline virtual declared, InitResources, carries the vague-linkage class
  * data -- which is what makes mwccarm emit _ZTV13daObjHmBskt_c and the

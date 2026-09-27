@@ -1,8 +1,8 @@
 {
   "id": "ov014/daObjWanwanShutter_c",
   "module": "ov014",
-  "source": "src/game/actors/d_a_obj_wanwan_shutter.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_wanwan_shutter.cpp",
+  "source": "src/actors/daObjWanwanShutter_c.cpp",
+  "promoted_source": "src/actors/daObjWanwanShutter_c.cpp",
   "status": "promoted",
   "boundary_confidence": "high",
   "boundary_evidence": [

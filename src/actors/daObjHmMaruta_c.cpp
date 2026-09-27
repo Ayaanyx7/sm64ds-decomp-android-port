@@ -5,7 +5,7 @@
  * The whole class is three forwarders. daObjMaruta_c leaves InitResources,
  * CleanupResources and Behavior pure; each leaf fills them by handing
  * `this` and its own per-stage table to the shared ov080 bodies in
- * src/game/actors/d_a_obj_maruta.cpp. ov022's daObjFlMaruta_c is the other
+ * src/actors/daObjMaruta_c.cpp. ov022's daObjFlMaruta_c is the other
  * leaf and does the same with its own tables.
  *
  * NAME: daObjHmMaruta_c is the cartridge's RTTI spelling -- _ZTS at ov030
@@ -40,7 +40,7 @@ struct SharedFilePtr;
 struct CLPS_Block;
 
 /* The model/collision/CLPS triple func_ov080_021274ac and _021270dc take,
- * spelt as src/game/actors/d_a_obj_maruta.cpp spells it. ov030's copy is
+ * spelt as src/actors/daObjMaruta_c.cpp spells it. ov030's copy is
  * data_ov030_02115a04: its three words relocate to 0x02115ca8 and 0x02115cb0,
  * this overlay's model and collision SharedFilePtrs, and to the CLPS block
  * at 0x02114f24. */

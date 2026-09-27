@@ -200,7 +200,7 @@ src/_ZN13daObjMaruta_cD1Ev.cpp:
     complete
     .text start:0x02127014 end:0x02127058
 
-src/game/actors/d_a_obj_maruta.cpp:
+src/actors/daObjMaruta_c.cpp:
     complete
     .text start:0x02127058 end:0x0212766c
 

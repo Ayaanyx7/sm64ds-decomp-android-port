@@ -25,7 +25,7 @@ struct daObjKi_Fune_c : dBgActor_c {
        tools/check_header_offsets.py only recognises a body written that way.
 
        Every member of this class is defined in one translation unit,
-       src/game/actors/d_a_obj_ki_fune.cpp, which owns the whole
+       src/actors/daObjKi_Fune_c.cpp, which owns the whole
        0x0211260c..0x021129a0 linker run. */
     virtual ~daObjKi_Fune_c() {}
     virtual int InitResources();

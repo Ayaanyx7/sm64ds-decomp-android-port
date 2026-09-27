@@ -1,8 +1,8 @@
 {
   "id": "ov072/daPgBby_c",
   "module": "ov072",
-  "source": "src/game/actors/d_a_pg_bby.cpp",
-  "promoted_source": "src/game/actors/d_a_pg_bby.cpp",
+  "source": "src/actors/daPgBby_c.cpp",
+  "promoted_source": "src/actors/daPgBby_c.cpp",
   "status": "promoted",
   "boundary_confidence": "high",
   "boundary_evidence": [

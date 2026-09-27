@@ -95,6 +95,10 @@ for an existing one. `enroll` writes each source's path into `config/**/delinks.
 from what `srcpath` returns, so a hand-built path that disagrees with it drops
 silently back to ROM bytes instead of erroring.
 
+A promoted actor translation unit is the exception `srcpath` does not decide: it goes to
+`src/actors/<Class>.cpp`, named for the ROM class (see
+[`notes/src-domain-buckets.md`](notes/src-domain-buckets.md)). The old `game/actors/` directory is retired.
+
 ## Shared headers (`include/`)
 
 **A header change is not a local change.** Editing a field width, order, or typedef

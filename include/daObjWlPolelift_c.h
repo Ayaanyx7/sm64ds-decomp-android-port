@@ -55,7 +55,7 @@
  * class recovered so far -- not the Fader family's 0/1.
  *
  * Every member of this class is defined in one translation unit,
- * src/game/actors/d_a_obj_wl_polelift.cpp, which owns the whole
+ * src/actors/daObjWlPolelift_c.cpp, which owns the whole
  * 0x021111a0..0x021116c8 linker run.
  */
 struct daObjWlPolelift_c : dActor_c {

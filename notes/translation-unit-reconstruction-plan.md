@@ -160,8 +160,8 @@ An illustrative entry:
 {
   "id": "ov062/daHolhei_c",
   "module": "ov062",
-  "source": "src/game/actors/d_a_holhei.cpp",
-  "promoted_source": "src/game/actors/d_a_holhei.cpp",
+  "source": "src/actors/daHolhei_c.cpp",
+  "promoted_source": "src/actors/daHolhei_c.cpp",
   "status": "shadow",
   "boundary_confidence": "high",
   "boundary_evidence": [
@@ -181,14 +181,14 @@ An illustrative entry:
       "symbol": "_ZN10daHolhei_c8BehaviorEv",
       "address": "0x021xxxxx",
       "size": "0x000xxxxx",
-      "legacy_source": "src/game/actors/d_a_holhei.cpp",
+      "legacy_source": "src/actors/daHolhei_c.cpp",
       "ordinal": 0
     },
     {
       "symbol": "_ZN10daHolhei_c6RenderEv",
       "address": "0x021xxxxx",
       "size": "0x000xxxxx",
-      "legacy_source": "src/game/actors/d_a_holhei.cpp",
+      "legacy_source": "src/actors/daHolhei_c.cpp",
       "ordinal": 1
     }
   ],

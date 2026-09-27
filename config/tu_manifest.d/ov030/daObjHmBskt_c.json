@@ -1,8 +1,8 @@
 {
   "id": "ov030/daObjHmBskt_c",
   "module": "ov030",
-  "source": "src/game/actors/d_a_obj_hm_bskt.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_hm_bskt.cpp",
+  "source": "src/actors/daObjHmBskt_c.cpp",
+  "promoted_source": "src/actors/daObjHmBskt_c.cpp",
   "status": "promoted",
   "boundary_confidence": "high",
   "boundary_evidence": [

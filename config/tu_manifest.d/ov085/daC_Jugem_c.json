@@ -1,8 +1,8 @@
 {
   "id": "ov085/daC_Jugem_c",
   "module": "ov085",
-  "source": "src/game/actors/d_a_c_jugem.cpp",
-  "promoted_source": "src/game/actors/d_a_c_jugem.cpp",
+  "source": "src/actors/daC_Jugem_c.cpp",
+  "promoted_source": "src/actors/daC_Jugem_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [

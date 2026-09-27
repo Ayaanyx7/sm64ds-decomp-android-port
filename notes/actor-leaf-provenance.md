@@ -95,7 +95,7 @@ segment count reaches three. Its complete gameplay meaning is not claimed.
 
 ## daPgBby_c -- include/daPgBby_c.h
 
-All bodies are in `src/game/actors/d_a_pg_bby.cpp`.
+All bodies are in `src/actors/daPgBby_c.cpp`.
 
 | offset | new name | evidence |
 | --- | --- | --- |
@@ -114,8 +114,8 @@ All bodies are in `src/game/actors/d_a_pg_bby.cpp`.
 
 | offset | new name | evidence |
 | --- | --- | --- |
-| 0x3c0 | `mMatrix` | `*(Matrix4x3*)&unk_3c0 = IDENTITY_MATRIX4X3` in `daJgm_c::InitResources` (`src/game/actors/d_a_jgm.cpp`). The pad after it runs to 0x3f3, four bytes past the matrix's own 0x30. |
-| 0x3f4 | `mState` | `daJgm_c::Render` (`src/game/actors/d_a_jgm.cpp`) draws the second `Model` only when this is 1. |
+| 0x3c0 | `mMatrix` | `*(Matrix4x3*)&unk_3c0 = IDENTITY_MATRIX4X3` in `daJgm_c::InitResources` (`src/actors/daJgm_c.cpp`). The pad after it runs to 0x3f3, four bytes past the matrix's own 0x30. |
+| 0x3f4 | `mState` | `daJgm_c::Render` (`src/actors/daJgm_c.cpp`) draws the second `Model` only when this is 1. |
 | 0x3f8 | `mSpawnPosX` | `InitResources` copies `this + 0x5c` (`mPosX`) in. |
 | 0x3fc | `mSpawnPosY` | same, `this + 0x60` (`mPosY`). |
 | 0x400 | `mSpawnPosZ` | same, `this + 0x64` (`mPosZ`); this is the only one of the three spelt as a member, the other two are raw `this + 0xNN` stores. |
@@ -167,8 +167,8 @@ one up, and its parameter list is half the evidence here.
 
 | offset | new name | evidence |
 | --- | --- | --- |
-| 0x138 | `mOwnerUniqueID` | `src/game/actors/d_a_obj_number.cpp` Behavior resolves it through `dActor_c::FindWithID` and, when the actor still exists, takes the popup's draw position from that actor's own `mPos` triple. 0 means "not following anything" -- the `owner` argument of `SpawnNumber`. |
-| 0x13c | `mStartPosX` | copied from `mPosX` in `src/game/actors/d_a_obj_number.cpp` InitResources, alongside the already-named `mStartPosY` at 0x140. |
+| 0x138 | `mOwnerUniqueID` | `src/actors/daObjNumber_c.cpp` Behavior resolves it through `dActor_c::FindWithID` and, when the actor still exists, takes the popup's draw position from that actor's own `mPos` triple. 0 means "not following anything" -- the `owner` argument of `SpawnNumber`. |
+| 0x13c | `mStartPosX` | copied from `mPosX` in `src/actors/daObjNumber_c.cpp` InitResources, alongside the already-named `mStartPosY` at 0x140. |
 | 0x144 | `mStartPosZ` | same, `mPosZ`. |
 | 0x148 | `mFollowOffsetY` | added to `mPosY - mStartPosY` -- how far the popup has risen -- when the position is taken from the owner. |
 | 0x14c | `mDelay` | the `delay` argument of `SpawnNumber`: while nonzero `Behavior` returns immediately and `Render` decrements it and draws nothing. |
@@ -237,7 +237,7 @@ The names are the reads in InitResources and Behavior.
 | 0x380 | `mParticle` | the particle-handle shape above, effect 0x4a. |
 | 0x384 | `mLifeTimer` | 0xb4 at init, counted down only while on the ground, destroys at 0, blinks below 0x2d. |
 
-Sources: `src/game/actors/daFeather_c/daFeather_c.cpp` (the 8 one-function
+Sources: `src/actors/daFeather_c.cpp` (the 8 one-function
 shards merged; the field evidence above now lives in
 `InitResources`/`Behavior`/`Render` there).
 
@@ -253,7 +253,7 @@ overlay.
 | 0x10e | `mLifeTimer` | 0x12c (300 frames) at init, `DecIfAbove0_Short`, pops at 0. |
 | 0x110 | `mParticle` | particle-handle shape, effect 1. |
 
-Source: `src/game/actors/d_a_obj_abuku.cpp`.
+Source: `src/actors/daObjAbuku_c.cpp`.
 
 ## daEyBm_c -- include/daEyBm_c.h
 
@@ -264,7 +264,7 @@ Source: `src/game/actors/d_a_obj_abuku.cpp`.
 | 0x32c | `mParticle2` | same, effect 0x47. |
 | 0x330 | `mLifeTimer` | 0x96 (150 frames) at init, `DecIfAbove0_Short` in `Behavior`. |
 
-Source: `src/game/actors/d_a_ey_bm.cpp`.
+Source: `src/actors/daEyBm_c.cpp`.
 
 ## daKpFr_c -- include/daKpFr_c.h
 
@@ -274,7 +274,7 @@ Source: `src/game/actors/d_a_ey_bm.cpp`.
 | 0x324 | `mParticle1` | particle-handle shape, effect 0x7f, emitted at `mPosY + 0x4b000`. |
 | 0x328 | `mParticle2` | same, effect 0x80. |
 
-Source: `src/game/actors/d_a_kp_fr.cpp`.
+Source: `src/actors/daKpFr_c.cpp`.
 
 ## daKrpa_c -- include/daKrpa_c.h
 
@@ -283,7 +283,7 @@ Source: `src/game/actors/d_a_kp_fr.cpp`.
 | 0x35c | `mMatrix` | identity-matrix shape. |
 | 0x3a8 | `mHeightAboveGnd` | `InitResources` raycasts a `dBgCh_Gnd` down from `mPos` and stores `(mPosY - hit height) + 0x1e000`, or the constant 0x1f4000 when nothing is hit. |
 
-Source: `src/game/actors/d_a_krpa.cpp`.
+Source: `src/actors/daKrpa_c.cpp`.
 
 ## daTgz_c -- include/daTgz_c.h
 
@@ -341,7 +341,7 @@ Source: `src/_ZN10BowserTail8BehaviorEv.cpp`.
 | --- | --- | --- |
 | 0x198 | `mShutterID` | initialized to zero, filled with the cannon shutter actor's `uniqueID`, and resolved with `dActor_c::FindWithID` during the camera/opening cutscene. |
 
-Source: `src/game/actors/d_a_red_bombhei.cpp`. The former observation that this
+Source: `src/actors/daRedBombhei_c.cpp`. The former observation that this
 slot was never read was incomplete; the consolidated helpers expose its uses.
 
 ## More leaves searched, nothing named
@@ -353,4 +353,4 @@ slot was never read was incomplete; the consolidated helpers expose its uses.
   same twelve-byte table row that fills `mLevelID`, `mTimerThreshold` and
   `mTimerReset` -- so it is the fourth column of the sound table, but nothing
   enrolled reads it, and which column is which is not something the table
-  itself says. [`src/game/actors/d_a_sound_obj.cpp`]
+  itself says. [`src/actors/daSoundObj_c.cpp`]

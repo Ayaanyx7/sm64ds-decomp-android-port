@@ -16,7 +16,7 @@ src/d_a_obj_rotate_updown_lift_updown_lift.c:
     complete
     .text start:0x02131bdc end:0x02131c14
 
-src/game/actors/d_a_linelift2.cpp:
+src/actors/daLinelift2_c.cpp:
     complete
     .text start:0x02131c14 end:0x02132404
 
@@ -80,7 +80,7 @@ src/d_a_obj_pile.c:
     complete
     .text start:0x02133938 end:0x02133968
 
-src/game/actors/d_a_hyuhyu.cpp:
+src/actors/daHyuhyu_c.cpp:
     complete
     .text start:0x02133968 end:0x021344e8
 

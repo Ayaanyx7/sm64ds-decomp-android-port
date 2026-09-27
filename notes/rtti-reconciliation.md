@@ -224,7 +224,7 @@ matched source is deferred, because renaming it means rewriting those sources, w
 drags every referencing file into the PR and turns `validate` red even though the rename
 is byte-safe.
 
-`0x02113a60` left this list when [ov036](../config/arm9/overlays/ov036/symbols.txt)/[daObjRcBuranko_c](../src/game/actors/d_a_obj_rc_buranko.cpp) was promoted to a single TU: by
+`0x02113a60` left this list when [ov036](../config/arm9/overlays/ov036/symbols.txt)/[daObjRcBuranko_c](../src/actors/daObjRcBuranko_c.cpp) was promoted to a single TU: by
 then nothing in `src/` referenced the coined spelling at all, its `include/decl_common.h`
 declaration was dead, and the promoted TU's manifest needs the cartridge's own `_ZTS`
 name to bank the record as `deadstrip-data`. It is now

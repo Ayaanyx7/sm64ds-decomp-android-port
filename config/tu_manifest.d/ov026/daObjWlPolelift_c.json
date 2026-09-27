@@ -1,8 +1,8 @@
 {
   "id": "ov026/daObjWlPolelift_c",
   "module": "ov026",
-  "source": "src/game/actors/d_a_obj_wl_polelift.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_wl_polelift.cpp",
+  "source": "src/actors/daObjWlPolelift_c.cpp",
+  "promoted_source": "src/actors/daObjWlPolelift_c.cpp",
   "status": "promoted",
   "boundary_confidence": "high",
   "boundary_evidence": [

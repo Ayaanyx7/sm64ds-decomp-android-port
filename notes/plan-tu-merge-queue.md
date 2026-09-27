@@ -440,9 +440,9 @@ tb.cmd_create(a)
 ```
 
 **Validated read-only against the tree**: over all 131 refused safe-pool files this
-recovers **130**. The single residual was [func_ov018_021118fc](../src/game/actors/d_a_pg_mthr.cpp) (Tier 2,
+recovers **130**. The single residual was [func_ov018_021118fc](../src/actors/daPgMthr_c.cpp) (Tier 2,
 [ov018](../config/arm9/overlays/ov018/symbols.txt)`/daPgMthr_c`; it lived in a per-function legacy source at the time and is now
-part (ROM ordinal 2) of the promoted `src/game/actors/d_a_pg_mthr.cpp`), and it fails for a different
+part (ROM ordinal 2) of the promoted `src/actors/daPgMthr_c.cpp`), and it fails for a different
 reason worth naming — its definition is
 `struct dActor_c* func_ov018_021118fc(char* c) {`, and `split_legacy_source`'s first-word
 test sees `struct` in `_DECL_KEYWORDS` and consumes the whole function as a shadow
@@ -519,7 +519,7 @@ reloc-destinations: clean            <- relocation destination identity
 
 A byte MATCH alone is **not** proof: `match.compare` wildcards every relocated word, so a
 member can reproduce the bytes while calling the wrong function. [ov077](../config/arm9/overlays/ov077/symbols.txt)'s
-[`daJgm_c::UpdateSpitState` (0x02124118)](../src/game/actors/d_a_jgm.cpp) called `ApproachLinear` where the ROM calls `ApproachLinear2` —
+[`daJgm_c::UpdateSpitState` (0x02124118)](../src/actors/daJgm_c.cpp) called `ApproachLinear` where the ROM calls `ApproachLinear2` —
 same signature shape, reported MATCH, cost a day. If any of the three could not run, the
 status is "not verified", never "probably fine".
 
@@ -861,7 +861,7 @@ p[0] = (int)_ZTV8Squasher + 8;     /* WRONG -- mwcc emits an extra ADD; the func
                                     * changes (999 word(s) differ) and the addend stays 0 */
 ```
 
-**The `+ 2` must be inside the cast.** `src/game/actors/d_a_obj_km2_ami_bou.cpp` documents this in a
+**The `+ 2` must be inside the cast.** `src/actors/daObjKm2_Ami_Bou_c.cpp` documents this in a
 17-line comment that predates this plan; roughly **88 of the 100 Tier-1 TUs** hand-store a
 vtable their own TU owns and will need the same edit. It is the most common reconcile step
 in the queue — a known step, not a blocker. *(An earlier revision of this section claimed

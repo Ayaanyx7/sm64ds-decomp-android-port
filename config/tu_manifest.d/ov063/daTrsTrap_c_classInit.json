@@ -47,10 +47,10 @@
   "id": "ov063/daTrsTrap_c_classInit",
   "module": "ov063",
   "notes": [
-    "Hand-merged deslop cleanup, not a tubuild create shadow: four legacy hand-rolled factories consolidated into d_a_trs_trap_classinits.cpp as `return new daTrsTrap_c()` each. The synthesized ctor reproduces the ROM sequence (operator new, dActor_c C2, vtable store, member C1s) exactly."
+    "Hand-merged deslop cleanup, not a tubuild create shadow: four legacy hand-rolled factories consolidated into daTrsTrap_c_classInit.cpp as `return new daTrsTrap_c()` each. The synthesized ctor reproduces the ROM sequence (operator new, dActor_c C2, vtable store, member C1s) exactly."
   ],
   "production_mode": "text-only",
-  "promoted_source": "src/game/actors/daTrsTrap_c/d_a_trs_trap_classinits.cpp",
+  "promoted_source": "src/actors/daTrsTrap_c_classInit.cpp",
   "sections": [
     {
       "end": "0x0211d3a0",
@@ -58,7 +58,7 @@
       "start": "0x0211d2a0"
     }
   ],
-  "source": "src/game/actors/daTrsTrap_c/d_a_trs_trap_classinits.cpp",
+  "source": "src/actors/daTrsTrap_c_classInit.cpp",
   "status": "promoted",
   "verification": {
     "comparison": "tools/match.py extract_func+compare (bytes/relocs) AND tools/objisolate.py plan() (relocation type/addend) AND tools/reloc_audit.py check_destinations() (relocation target identity), via tools/prepush_linkcheck.py --files",
@@ -70,7 +70,7 @@
     "flags": "-O4,p -enum int -lang c++ -char signed -interworking -proc arm946e -gccext,on -msgstyle gcc -Cpp_exceptions off",
     "functions_declared": 4,
     "functions_matched": 4,
-    "round": "tools/prepush_linkcheck.py --files src/game/actors/daTrsTrap_c/d_a_trs_trap_classinits.cpp -- 4 checked, 4 verified, 0 warnings, 0 blocking",
+    "round": "tools/prepush_linkcheck.py --files src/actors/daTrsTrap_c_classInit.cpp -- 4 checked, 4 verified, 0 warnings, 0 blocking",
     "toolchain": "tools/mwccarm/2004/b56/mwccarm.exe"
   }
 }

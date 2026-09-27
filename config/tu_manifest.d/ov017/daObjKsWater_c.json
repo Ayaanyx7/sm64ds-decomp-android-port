@@ -1,8 +1,8 @@
 {
   "id": "ov017/daObjKsWater_c",
   "module": "ov017",
-  "source": "src/game/actors/d_a_obj_ks_water.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_ks_water.cpp",
+  "source": "src/actors/daObjKsWater_c.cpp",
+  "promoted_source": "src/actors/daObjKsWater_c.cpp",
   "status": "promoted",
   "boundary_confidence": "high",
   "boundary_evidence": [

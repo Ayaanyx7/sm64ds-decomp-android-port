@@ -1,15 +1,15 @@
 {
   "id": "ov016/daObjKi_Fune_c",
   "module": "ov016",
-  "source": "src/game/actors/d_a_obj_ki_fune.cpp",
-  "promoted_source": "src/game/actors/d_a_obj_ki_fune.cpp",
+  "source": "src/actors/daObjKi_Fune_c.cpp",
+  "promoted_source": "src/actors/daObjKi_Fune_c.cpp",
   "status": "promoted",
   "boundary_confidence": "medium",
   "boundary_evidence": [
     "contiguous linker run: 0x211260c..0x21129a0, 7 function(s), from build/tu_map.json (tools/tu_map.py)",
     "class label(s): daObjKi_Fune_c",
     "module sinit corroboration: 5 sinit(s) / 5 .ctor entries, sinit_vs_tu=ok, corroborated=False (module-wide, NOT narrowed to this one TU -- see notes/tu-reconstruction-pilot-report.md sec 2 for the by-hand narrowing step)",
-    "the run above this one is the two-factory unit daObjKi_Fune_c_classInit_KI_FUNE_UP (0x021129a0) + daObjKi_Fune_c_classInit_KI_FUNE (0x021129d0); tu_map.py does not join it to this TU and it is deliberately left outside the promoted span. Both allocate 812 = 0x32c, the RTTI-proven size this class asserts, construct dBgActor_c and install _ZTV14daObjKi_Fune_c, so a factory join is arguable on the same registry/allocation/vptr evidence the sibling src/game/actors/d_a_obj_ki_ita.cpp used -- but that sibling had ONE factory to fold in, not two, and nothing measured here decides which of the two the single class body was written next to. The boundary therefore sits at 0x021129a0.",
+    "the run above this one is the two-factory unit daObjKi_Fune_c_classInit_KI_FUNE_UP (0x021129a0) + daObjKi_Fune_c_classInit_KI_FUNE (0x021129d0); tu_map.py does not join it to this TU and it is deliberately left outside the promoted span. Both allocate 812 = 0x32c, the RTTI-proven size this class asserts, construct dBgActor_c and install _ZTV14daObjKi_Fune_c, so a factory join is arguable on the same registry/allocation/vptr evidence the sibling src/actors/daObjKi_Ita_c.cpp used -- but that sibling had ONE factory to fold in, not two, and nothing measured here decides which of the two the single class body was written next to. The boundary therefore sits at 0x021129a0.",
     "the run below ends at 0x0211260c with src/d_a_moray.c, a different class; the D1 at 0x0211260c is this class's first function."
   ],
   "sections": [

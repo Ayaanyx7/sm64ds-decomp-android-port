@@ -2,7 +2,7 @@
   "boundary_confidence": "medium",
   "boundary_evidence": [
     "Hand-cut cleanup merge, not a tu_map cut: the five methods are the contiguous ROM run 0x0211cdec..0x0211d270, bounded below by the state-body block (0x0211c684..0x0211cdec, a later TU of its own) and above by the collision-callback pair (0x0211d270..0x0211d2a0).",
-    "The class's destructors (0x0211c600..0x0211c684) stay legacy single-function sources, and the four factories (0x0211d2a0..0x0211d3a0) ship in d_a_trs_trap_classinits.cpp under entry ov063/daTrsTrap_c_classInit: one delinks entry licenses one contiguous range, so the ROM-interleaved class cannot be one file.",
+    "The class's destructors (0x0211c600..0x0211c684) stay legacy single-function sources, and the four factories (0x0211d2a0..0x0211d3a0) ship in daTrsTrap_c_classInit.cpp under entry ov063/daTrsTrap_c_classInit: one delinks entry licenses one contiguous range, so the ROM-interleaved class cannot be one file.",
     "class label: daTrsTrap_c (ROM _ZTS at ov063 0x0211e9d8); _ZTV address point 0x0211ea88."
   ],
   "bss": [],
@@ -57,11 +57,11 @@
   "id": "ov063/daTrsTrap_c",
   "module": "ov063",
   "notes": [
-    "Hand-merged deslop cleanup (Big Boo's Haunt animated-furniture traps), not a tubuild create shadow: five legacy one-function sources consolidated into d_a_trs_trap.cpp with named fields, typed resource rows, and `return new` factories next door. See the file's own header comment for the split rationale and leftovers.",
+    "Hand-merged deslop cleanup (Big Boo's Haunt animated-furniture traps), not a tubuild create shadow: five legacy one-function sources consolidated into daTrsTrap_c.cpp with named fields, typed resource rows, and `return new` factories next door. See the file's own header comment for the split rationale and leftovers.",
     "InitResources keeps two load-bearing preheader shapes (offset table referenced by symbol at the use site; v16 written x, y, z); Behavior spells mStateTimer two ways to keep the increment and reset address computations apart. Both are commented at the code."
   ],
   "production_mode": "text-only",
-  "promoted_source": "src/game/actors/daTrsTrap_c/d_a_trs_trap.cpp",
+  "promoted_source": "src/actors/daTrsTrap_c.cpp",
   "sections": [
     {
       "end": "0x0211d270",
@@ -69,7 +69,7 @@
       "start": "0x0211cdec"
     }
   ],
-  "source": "src/game/actors/daTrsTrap_c/d_a_trs_trap.cpp",
+  "source": "src/actors/daTrsTrap_c.cpp",
   "status": "promoted",
   "verification": {
     "comparison": "tools/match.py extract_func+compare (bytes/relocs) AND tools/objisolate.py plan() (relocation type/addend) AND tools/reloc_audit.py check_destinations() (relocation target identity), via tools/prepush_linkcheck.py --files",
@@ -81,7 +81,7 @@
     "flags": "-O4,p -enum int -lang c++ -char signed -interworking -proc arm946e -gccext,on -msgstyle gcc -Cpp_exceptions off",
     "functions_declared": 5,
     "functions_matched": 5,
-    "round": "tools/prepush_linkcheck.py --files src/game/actors/daTrsTrap_c/d_a_trs_trap.cpp -- 5 checked, 5 verified, 0 warnings, 0 blocking",
+    "round": "tools/prepush_linkcheck.py --files src/actors/daTrsTrap_c.cpp -- 5 checked, 5 verified, 0 warnings, 0 blocking",
     "toolchain": "tools/mwccarm/2004/b56/mwccarm.exe"
   }
 }

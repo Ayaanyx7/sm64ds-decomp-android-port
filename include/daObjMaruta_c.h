@@ -67,7 +67,7 @@ struct daObjMaruta_c : dBgActor_c {
     virtual ~daObjMaruta_c() {}
 
     /* Slot 27, this class's own override, defined out of line in
-       src/game/actors/d_a_obj_maruta.cpp. LAYOUT-NEUTRAL: it
+       src/actors/daObjMaruta_c.cpp. LAYOUT-NEUTRAL: it
        re-uses the slot dActor_c already holds rather than appending one.
 
        Because the destructor above is inline this class has no key function,

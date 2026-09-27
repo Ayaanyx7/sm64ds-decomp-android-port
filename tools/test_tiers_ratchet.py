@@ -856,7 +856,7 @@ class OrphanDestinationSplit(unittest.TestCase):
         # omits a file that exists but is not staged, so between writing a promoted
         # destination and adding it the destination is enrolled with many members AND
         # untracked. Live shape: `Cloud_Spawn.c#_ZN11daObjKumo_cD1Ev` ->
-        # src/game/actors/d_a_obj_kumo.cpp, 8 enrolled members, manifest enrols
+        # src/actors/daObjKumo_c.cpp, 8 enrolled members, manifest enrols
         # daObjKumo_c_classInit. That legacy file sat under src/ and is not in the tree
         # any more -- which is the whole point here -- so it is deliberately not spelled
         # as a repo-rooted path: check_dead_references.py would read the spelling as a
@@ -1095,7 +1095,7 @@ class OrphanGateEndToEnd(SyntheticTree, unittest.TestCase):
         print it under a PASS and return 0.
         """
         legacy = "src/_ZN11RickshawBdwD1Ev.cpp"
-        dest = "src/game/actors/d_a_obj_km1_kurumajiku.cpp"
+        dest = "src/actors/daObjKm1_Kurumajiku_c.cpp"
         code, text = self._run(
             {legacy}, [dest], {dest: ["First", "Second"]}, ["--check"],
             moves={legacy: ("ov043/daObjKm1_Kurumajiku_c", dest)},
@@ -1331,7 +1331,7 @@ class UpdateBehaviourPin(SyntheticTree, unittest.TestCase):
         the dangling identity and the evidence of the defect with it.
         """
         legacy = "src/_ZN11RickshawBdwD1Ev.cpp"
-        dest = "src/game/actors/d_a_obj_km1_kurumajiku.cpp"
+        dest = "src/actors/daObjKm1_Kurumajiku_c.cpp"
         code, text, exceptions, _ = self._update(
             {legacy}, [dest], {dest: ["First", "Second"]}, [],
             moves={legacy: ("ov043/daObjKm1_Kurumajiku_c", dest)},
