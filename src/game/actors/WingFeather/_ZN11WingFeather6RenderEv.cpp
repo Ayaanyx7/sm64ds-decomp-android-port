@@ -2,21 +2,14 @@
 // @symbol _ZN11WingFeather6RenderEv
 /* recovered: named members + shared header, real C++ method */
 #include "WingFeather.h"
-struct Sub {
-    virtual ~Sub() {}
-    virtual void a() {}
-    virtual void b() {}
-    virtual void c() {}
-    virtual int f4(int) = 0;
-};
 
 int WingFeather::Render()
 {
-    unsigned char b = *(unsigned char*)((char*)&mLifeTimer);
-    if (b < 0x2d) {
-        if (b & 1) return 1;
+    /* the last 45 frames on the ground blink: odd values skip the draw */
+    u8 life = mLifeTimer;
+    if (life < 0x2d) {
+        if (life & 1) return 1;
     }
-    Sub *sub = (Sub*)((char*)&mModel);
-    sub->f4(0);
+    mModel.Render(0);
     return 1;
 }
