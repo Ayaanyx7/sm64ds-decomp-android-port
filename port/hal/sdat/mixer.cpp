@@ -420,6 +420,22 @@ void sd_mix_set_sweep(int ch, int sweepPitch, int sweepLength)
     c.sweepCounter = 0;
 }
 
+/* The track's envelope override (-1 = keep the instrument's), converted the
+   way the ARM7's setters convert it: attack 0x037FC3FC (255 - a below 0x6d,
+   the 19-entry table above), decay 0x037FC3E0 and release 0x037FC3BC
+   (0x037FBDB4, cnv_fall here), sustain 0x037FC3D8 stored raw and turned into
+   a level where the decay reads it. The sustain level uses the same
+   conversion sd_mix_start gives the instrument's own sustain. */
+void sd_mix_set_env(int ch, int attack, int decay, int sustain, int release)
+{
+    if (ch < 0 || ch >= SD_CHANNELS || !g_ch[ch].active) return;
+    Channel &c = g_ch[ch];
+    if (attack >= 0) c.attackCoef = cnv_attack(attack);
+    if (decay >= 0) c.decayRate = cnv_fall(decay);
+    if (sustain >= 0) c.sustainLevel = sd_cnv_vol(sustain) * 128;
+    if (release >= 0) c.releaseRate = cnv_fall(release);
+}
+
 /* The track's modulation fields, as the track update copies them onto every
    channel it owns each frame. The counters are the channel's and are left
    alone. */

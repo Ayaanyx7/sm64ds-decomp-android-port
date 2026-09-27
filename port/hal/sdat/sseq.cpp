@@ -124,6 +124,12 @@ struct Track {
      * 0xE0 and by TRACK_PARAM 0x19 / 0x1a from the game, copied onto the
      * track's sounding channels every frame; the channel runs the LFO. */
     int modTarget, modSpeed, modDepth, modRange, modDelay;
+    /* THE TRACK'S ENVELOPE OVERRIDE (track +0x0e attack, +0x0f decay, +0x10
+     * sustain, +0x11 release; 0xFF = use the instrument's, TrackInit's
+     * 0x037FDB0C). 0xD0..0xD3 set them and every note-on after that hands
+     * each one that is not 0xFF to its channel (0x037FD568..0x037FD5B4),
+     * over whatever the instrument's own ADSR said. */
+    int envAttack, envDecay, envSustain, envRelease;
     int noteWait;           // C7: notes block the track for their duration
     // A note played with duration 0 under noteWait blocks the track until the
     // CHANNELS it owns have ended, rather than for a tick count. That is what
@@ -347,6 +353,27 @@ double pitch_units_scale(int units)
  * WHAT THE PORT DID BEFORE: parsed 0xC9 / 0xCE / 0xCF / 0xE3 and dropped
  * them, so every portamento and every sweep in the game played as a flat
  * note at its target pitch. 424 SEQARC entries set a portamento key. */
+/* The track's envelope override onto the channel it just started or tied
+ * onto, each field only when it is not 0xFF (0x037FD568..0x037FD5B4).
+ *
+ * WHAT THE PORT DID BEFORE: parsed 0xD0..0xD3 and dropped them, so every
+ * voice ran its INSTRUMENT's envelope. 454 SEQARC entries set one, and the
+ * ones the forum named are exactly this shape: the red coin (SSAR 2 entries
+ * 47..55) asks for sustain 0 and decay 124, the stair timer's tick (SSAR 2
+ * 56 / 57) for sustain 0 and decay 117 -- short blips that die away while
+ * the note is still held -- and without the override they held at the
+ * instrument's sustain for the note's whole length and then tailed off at
+ * the instrument's release. */
+void note_env(const Track &tk, int ch)
+{
+    if (tk.envAttack != 0xff || tk.envDecay != 0xff || tk.envSustain != 0xff
+        || tk.envRelease != 0xff)
+        sd_mix_set_env(ch, tk.envAttack == 0xff ? -1 : tk.envAttack,
+                       tk.envDecay == 0xff ? -1 : tk.envDecay,
+                       tk.envSustain == 0xff ? -1 : tk.envSustain,
+                       tk.envRelease == 0xff ? -1 : tk.envRelease);
+}
+
 void note_sweep(const Player &pl, const Track &tk, int ch, int key, int ticks)
 {
     int sweep = tk.sweepPitch;
@@ -578,6 +605,7 @@ void start_note(Player &pl, int pi, int ti, Track &tk, int note, int vel,
             g_note[held].released  = 0;
             sd_mix_set(held, db10, pan, rate);
             sd_mix_set_pitch_base(held, baseRate, pitchUnits);
+            note_env(tk, held);
             note_sweep(pl, tk, held, key, ticks);
             SD_VT("note p%d t%d key %d TIED onto chan %d (no new voice)\n",
                   pi, ti, key, held);
@@ -602,6 +630,7 @@ void start_note(Player &pl, int pi, int ti, Track &tk, int note, int vel,
 
     sd_mix_start(ch, &w, &n, db10, pan, rate, prio);
     sd_mix_set_pitch_base(ch, baseRate, pitchUnits);
+    note_env(tk, ch);
     note_sweep(pl, tk, ch, key, ticks);
     g_note[ch].active = 1;
     g_note[ch].player = pi;
@@ -826,6 +855,8 @@ int run_track(Player &pl, int pi, int ti)
                 t2.bendRange = 2; t2.priority = 64; t2.noteWait = 1;
                 t2.portaKey = 60;       /* TrackInit, 0x037FDB28 */
                 t2.modSpeed = 16; t2.modRange = 1;      /* 0x037FBFBC */
+                t2.envAttack = t2.envDecay = 0xff;      /* 0x037FDB0C */
+                t2.envSustain = t2.envRelease = 0xff;
                 t2.prog = 0;
             }
             break;
@@ -932,11 +963,13 @@ int run_track(Player &pl, int pi, int ti)
             { int v = argS16(); if (condition) tk.modDelay = v & 0xffff; }
             break;
 
-        // Accepted and parsed, but not rendered: the per-track ADSR
-        // override. Argument lengths are correct so the stream stays in
-        // sync; the effect is simply not applied yet.
-        case 0xd0: case 0xd1: case 0xd2:
-        case 0xd3: case 0xd6:
+        /* THE ENVELOPE OVERRIDE, the same table: 0xD0 attack (+0x0e), 0xD1
+           decay (+0x0f), 0xD2 sustain (+0x10), 0xD3 release (+0x11). */
+        case 0xd0: { int v = argU8(); if (condition) tk.envAttack = v & 0xff; break; }
+        case 0xd1: { int v = argU8(); if (condition) tk.envDecay = v & 0xff; break; }
+        case 0xd2: { int v = argU8(); if (condition) tk.envSustain = v & 0xff; break; }
+        case 0xd3: { int v = argU8(); if (condition) tk.envRelease = v & 0xff; break; }
+        case 0xd6:                              // print variable: debug only
             argU8();
             break;
         case 0xe3:                              // sweep pitch, track +0x16
@@ -1123,6 +1156,8 @@ int sd_seq_start(int p, const sd_u8 *seqBase, sd_u32 startOff,
     t0.bendRange = 2; t0.priority = 64; t0.noteWait = 1;
     t0.portaKey = 60;           /* TrackInit, 0x037FDB28 */
     t0.modSpeed = 16; t0.modRange = 1;          /* 0x037FBFBC */
+    t0.envAttack = t0.envDecay = 0xff;          /* 0x037FDB0C */
+    t0.envSustain = t0.envRelease = 0xff;
 
     // A multi-track sequence opens with 0xFE <u16 mask>; track 0's own code
     // follows the 0x93 open-track commands, so nothing special is needed

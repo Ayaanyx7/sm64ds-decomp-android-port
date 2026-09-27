@@ -149,6 +149,8 @@ void sd_mix_set_rate(int ch, double rate);      // ditto, playback rate only
 void sd_mix_set_pitch_base(int ch, double baseStep, int userPitch);
 void sd_mix_set_user_pitch(int ch, int units);
 void sd_mix_set_sweep(int ch, int sweepPitch, int sweepLength);
+// The track's envelope override at a note-on: -1 keeps the instrument's.
+void sd_mix_set_env(int ch, int attack, int decay, int sustain, int release);
 // The channel's LFO parameters (target 0 pitch / 1 volume / 2 pan, speed,
 // depth, range, delay), copied from the owning track every frame.
 void sd_mix_set_lfo(int ch, int target, int speed, int depth, int range,
