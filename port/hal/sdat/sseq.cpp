@@ -187,6 +187,7 @@ struct NoteSlot {
     int ticks;
     int basePan;            // pan before the player's own bias
     int baseDb10;           // volume before the player's own attenuation
+    int velocity;           // ch+0x09, the note's own 0..127 level
     // Playback rate for (key - baseNote) ALONE -- the ROM's
     // (chn->midiKey - chn->rootMidiKey) * 0x40 term and nothing else. Every
     // other pitch input the track has is re-applied to this every frame by
@@ -353,6 +354,18 @@ double pitch_units_scale(int units)
  * WHAT THE PORT DID BEFORE: parsed 0xC9 / 0xCE / 0xCF / 0xE3 and dropped
  * them, so every portamento and every sweep in the game played as a flat
  * note at its target pitch. 424 SEQARC entries set a portamento key. */
+/* A note's own level before the two ext faders: the velocity term the
+ * channel update adds (0x037FC5E0) plus the track update's volume +
+ * expression + player volume (0x037FD694..0x037FD6B0), all through the
+ * ARM7's table. Computed at the note-on AND every frame after it while the
+ * track owns the channel -- see player_update_channels. */
+int note_level_db10(const Player &pl, const Track &tk, int vel)
+{
+    int db10 = sd_cnv_vol(vel) + sd_cnv_vol(tk.volume)
+             + sd_cnv_vol(tk.expression) + sd_cnv_vol(pl.volume);
+    return db10 < -723 ? -723 : db10;
+}
+
 /* The track's envelope override onto the channel it just started or tied
  * onto, each field only when it is not 0xFF (0x037FD568..0x037FD5B4).
  *
@@ -493,9 +506,7 @@ void start_note(Player &pl, int pi, int ti, Track &tk, int note, int vel,
         return;
     }
 
-    int baseDb10 = sd_cnv_vol(vel) + sd_cnv_vol(tk.volume)
-                 + sd_cnv_vol(tk.expression) + sd_cnv_vol(pl.volume);
-    if (baseDb10 < -723) baseDb10 = -723;
+    int baseDb10 = note_level_db10(pl, tk, vel);
     int db10 = baseDb10 + pl.volDb10 + tk.volDb10;
     if (db10 < -723) db10 = -723;
 
@@ -599,6 +610,7 @@ void start_note(Player &pl, int pi, int ti, Track &tk, int note, int vel,
         if (held >= 0) {
             g_note[held].basePan   = basePan;
             g_note[held].baseDb10  = baseDb10;
+            g_note[held].velocity  = vel;
             g_note[held].baseRate  = baseRate;
             g_note[held].lastUnits = pitchUnits;
             g_note[held].ticks     = -1;   /* tie: no scheduled note-off */
@@ -637,6 +649,7 @@ void start_note(Player &pl, int pi, int ti, Track &tk, int note, int vel,
     g_note[ch].track = ti;
     g_note[ch].basePan = basePan;
     g_note[ch].baseDb10 = baseDb10;
+    g_note[ch].velocity = vel;
     g_note[ch].baseRate = baseRate;
     g_note[ch].lastUnits = pitchUnits;
     // The numeric dump. Every input the DS's own pitch is made of, in the
@@ -1229,6 +1242,8 @@ static void retune_note_pitch(int i)
  * The port has no per-track channel list -- ownership is recorded against the
  * channel instead (see NoteSlot) -- so the same relation is walked the other
  * way round: sixteen tests per player per frame. */
+static void retune_note_vol(int i);
+
 static void player_update_channels(int p)
 {
     for (int i = 0; i < SD_CHANNELS; i++) {
@@ -1240,6 +1255,18 @@ static void player_update_channels(int p)
             const Track &tk = g_pl[p].tr[g_note[i].track];
             sd_mix_set_lfo(i, tk.modTarget, tk.modSpeed, tk.modDepth,
                            tk.modRange, tk.modDelay);
+            /* AND THE TRACK'S VOLUME, the same update's first line
+               (0x037FD684..0x037FD6C0): SQ[player volume] + SQ[track volume]
+               + SQ[track expression] + both faders into ch+0x0C, every
+               frame. The port folded the three 0..127 levels into the note
+               once, at its note-on, so a 0xC1 / 0xD5 / 0xC2 ramp written
+               while a note held -- a fade-in, a fade-out, a swell -- never
+               reached the note; it only moved the NEXT note's level. */
+            const int b = note_level_db10(g_pl[p], tk, g_note[i].velocity);
+            if (b != g_note[i].baseDb10) {
+                g_note[i].baseDb10 = b;
+                retune_note_vol(i);
+            }
         }
     }
 }
