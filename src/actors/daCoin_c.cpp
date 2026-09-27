@@ -18,6 +18,8 @@
 
 #include "common.h"
 #include "daCoin_c.h"
+#include "SharedFilePtr.h"
+#include "Model.h"
 
 /* The .c shards spell false/true as enumerators. In this C++ TU those words
  * are keywords, and mwccarm still honors the object-like macros the
@@ -805,6 +807,12 @@ void func_ov002_020b2150(char* c){
 }
 
 /* -------------------------------------------------------------------------- */
+/* Particle::System::NewSimple takes its coordinates as Fix12<int>, which this
+ * tree still spells as a plain s32, so the call is reached through its mangled
+ * name. The declaration must carry C linkage: a C++-linkage prototype of that
+ * identifier mangles a second time and names a symbol nothing defines. */
+extern "C" void *_ZN8Particle6System9NewSimpleEj5Fix12IiES2_S2_(unsigned int id, Fix12i x, Fix12i y, Fix12i z);
+
 // @symbol _ZN8daCoin_c16CleanupResourcesEv
 s32 daCoin_c::CleanupResources()
 {
@@ -812,21 +820,16 @@ s32 daCoin_c::CleanupResources()
      * type loaded, gives up its star-tracking slot, decrements the live-coin count
      * on the puzzle manager that spawned it, and -- unless it is disappearing on a
      * timer -- puts up the collection sparkle a little above itself. */
-
-
-
-    void _ZN13SharedFilePtr7ReleaseEv(char *p);
-    void _ZN8Particle6System9NewSimpleEj5Fix12IiES2_S2_(unsigned int a, Fix12i x, Fix12i y, Fix12i z);
     extern char data_ov002_0210d9a8;
     extern char *data_ov002_020ff06c[];
     extern char *data_ov002_020ff060[];
 
     dActor_c *o;
     int b = (int)(actorID == 0x121);
-    if (b != 0) _ZN13SharedFilePtr7ReleaseEv(&data_ov002_0210d9a8);
+    if (b != 0) ((SharedFilePtr *)&data_ov002_0210d9a8)->Release();
     if (mCoinType == 2) {
-        _ZN13SharedFilePtr7ReleaseEv(data_ov002_020ff06c[mCoinType]);
-        _ZN13SharedFilePtr7ReleaseEv(data_ov002_020ff060[mCoinType]);
+        ((SharedFilePtr *)data_ov002_020ff06c[mCoinType])->Release();
+        ((SharedFilePtr *)data_ov002_020ff060[mCoinType])->Release();
     }
     UntrackStar(mTrackStarID);
     o = dActor_c::FindWithID(mPuzzleManagerID);
@@ -881,9 +884,7 @@ int daCoin_c::Render()
 // @symbol _ZN8daCoin_c8BehaviorEv
 extern "C" {
 extern void _ZN5Sound9PlayBank3EjRK7Vector3(unsigned int id, char *pos);
-extern void _ZN5dCc_c5ClearEv(char *c);
 extern int LenVec3(char *v);
-extern void _ZN5dCc_c6UpdateEv(char *c);
 }
 int daCoin_c::Behavior()
 {
@@ -908,7 +909,7 @@ int daCoin_c::Behavior()
     *(short *)(((int)((char *)this) + 0x8e)) += 0xc00;
     if (func_ov002_020b12ec(((char *)this)) != 0) {
         func_ov002_020b14d8(((char *)this));
-        _ZN5dCc_c5ClearEv((char *)&mdCc_c);
+        mdCc_c.Clear();
         return 1;
     }
     func_ov002_020b10e4(((char *)this));
@@ -916,17 +917,17 @@ int daCoin_c::Behavior()
     if (func_ov002_020b19dc(((char *)this)) != 0) return 1;
     (((C *)((char *)this))->*data_ov002_0210dc70[mBehaviorType])();
     if ((int)(data_0209f2d8 == 1) == 0 && (int)((mFlags & 8) != 0) != 0) {
-        _ZN5dCc_c5ClearEv((char *)&mdCc_c);
+        mdCc_c.Clear();
         if (mNoClsnTimer == 0 && LenVec3((char *)&mCamSpacePosX) < 0x64000) {
             if (mCoinType != 1 || mInBrickBlock == 0)
-                _ZN5dCc_c6UpdateEv((char *)&mdCc_c);
+                mdCc_c.Update();
         }
     } else {
         func_ov002_020b14d8(((char *)this));
-        _ZN5dCc_c5ClearEv((char *)&mdCc_c);
+        mdCc_c.Clear();
         if (mNoClsnTimer == 0) {
             if (mCoinType != 1 || mInBrickBlock == 0)
-                _ZN5dCc_c6UpdateEv((char *)&mdCc_c);
+                mdCc_c.Update();
         }
     }
     return 1;
@@ -935,7 +936,6 @@ int daCoin_c::Behavior()
 /* -------------------------------------------------------------------------- */
 // @symbol _ZN8daCoin_c13InitResourcesEv
 extern "C" {
-extern void* _ZN5Model8LoadFileER13SharedFilePtr(void* sfp);
 extern int SublevelToLevel(int i);
 extern void SetStarMarker(int i, void* actor, int v2);
 extern int _ZN9ModelBase7SetFileEP8BMD_Fileii(void* thiz, void* bmd, int a, int b);
@@ -1062,7 +1062,7 @@ shared140:;
         b = (b == 0x121);
         if (b) {
             mSpawnFilter = (u8)((param1 >> 4) & 7);
-            _ZN5Model8LoadFileER13SharedFilePtr(&data_ov002_0210d9a8);
+            Model::LoadFile(*(SharedFilePtr *)&data_ov002_0210d9a8);
             mCoinType = 1;
             if (SublevelToLevel(data_0209f2f8) == 0x13 ||
                 mSpawnFilter == data_0209f220) {
@@ -1098,8 +1098,8 @@ shared140:;
             return 0;
         }
     } else {
-        _ZN5Model8LoadFileER13SharedFilePtr(data_ov002_020ff06c[j]);
-        _ZN5Model8LoadFileER13SharedFilePtr(data_ov002_020ff060[mCoinType]);
+        Model::LoadFile(*(SharedFilePtr *)data_ov002_020ff06c[j]);
+        Model::LoadFile(*(SharedFilePtr *)data_ov002_020ff060[mCoinType]);
         if (_ZN9ModelBase7SetFileEP8BMD_Fileii(&mCommonModel1, data_ov002_020ff06c[mCoinType]->bmd, 1, 1) == 0) {
             return 0;
         }

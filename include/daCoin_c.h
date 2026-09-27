@@ -42,34 +42,32 @@
  * slot 9 (Render) -- all still fBase_c's own slots in dActor_c -- plus 18
  * (OnYoshiTryEat) and 19 (OnTurnIntoEgg). Every other slot holds the base's
  * own word and is inherited, so it is deliberately not redeclared here.
- * InitResources and CleanupResources are defined as extern "C" free
- * functions under their mangled names (src/_ZN8daCoin_c13InitResourcesEv.c,
- * src/_ZN8daCoin_c16CleanupResourcesEv.c), the same idiom fBase_c.h itself uses
- * for slot 0 -- declaring them here only fills the vtable slot, it does not
- * make this TU or theirs the key function.
+ * Every override, InitResources and CleanupResources included, is defined as
+ * a real member in src/actors/daCoin_c.cpp. The out-of-line destructor is the
+ * key function, so that TU owns the vtable.
  */
 struct daCoin_c : dActor_c {
     s32 mEatingPlayer;            /* 0x0d0 */
     s32 mPuzzleManagerID;            /* 0x0d4 */
     /* CommonModel member, named by the class's own destructor calling
        CommonModel's D1 at +0x0d8 -- a relocation the ROM build
-       checks. Was a u8 marker. [_ZN8daCoin_cD0Ev.c] */
+       checks. Was a u8 marker. [daCoin_c::~daCoin_c, src/actors/daCoin_c.cpp] */
     CommonModel mCommonModel1;            /* 0x0d8 */
     /* CommonModel member, named by the class's own destructor calling
        CommonModel's D1 at +0x114 -- a relocation the ROM build
-       checks. Was a u8 marker. [_ZN8daCoin_cD0Ev.c] */
+       checks. Was a u8 marker. [daCoin_c::~daCoin_c, src/actors/daCoin_c.cpp] */
     CommonModel mCommonModel2;            /* 0x114 */
     /* ShadowModel member, named by the class's own destructor calling
        ShadowModel's D1 at +0x150 -- a relocation the ROM build
-       checks. Was a u8 marker. [_ZN8daCoin_cD0Ev.c] */
+       checks. Was a u8 marker. [daCoin_c::~daCoin_c, src/actors/daCoin_c.cpp] */
     ShadowModel mShadowModel;            /* 0x150 */
     /* dCcAc_c member, named by the class's own destructor calling
        dCcAc_c's D1 at +0x178 -- a relocation the ROM build
-       checks. Was a u8 marker. [_ZN8daCoin_cD0Ev.c] */
+       checks. Was a u8 marker. [daCoin_c::~daCoin_c, src/actors/daCoin_c.cpp] */
     dCcAc_c mdCc_c;            /* 0x178 */
     /* dBgCh_Actr member, named by the class's own destructor calling
        dBgCh_Actr's D1 at +0x1ac -- a relocation the ROM build
-       checks. Was a u8 marker. [_ZN8daCoin_cD0Ev.c] */
+       checks. Was a u8 marker. [daCoin_c::~daCoin_c, src/actors/daCoin_c.cpp] */
     dBgCh_Actr mWithMeshClsn;            /* 0x1ac */
     Matrix4x3 mShadowMat;        /* 0x368 */
     s32 mFloorPosY;            /* 0x398 */
@@ -84,7 +82,7 @@ struct daCoin_c : dActor_c {
        from (src/stage/LevelObjects.cpp). A red coin
        claims a star-marker slot only when it matches (or the level is 0x13); a
        blue coin with a filter under 8 clears bit 0 of mCoinFlags.
-       [_ZN8daCoin_c13InitResourcesEv.cpp] */
+       [daCoin_c::InitResources, src/actors/daCoin_c.cpp] */
     u8  mSpawnFilter;            /* 0x3ab */
     s8  mTrackStarID;            /* 0x3ac */
     u8  pad_3ad[0x1];
@@ -92,8 +90,8 @@ struct daCoin_c : dActor_c {
        Render entirely; Behavior tests bits 0 and 1. Every read-modify-write of
        it keeps its raw `*(u8*)((int)c + 0x3ae)` spelling on purpose -- see the
        "FOUR SITES KEEP RAW OFFSETS" note in
-       src/_ZN8daCoin_c13InitResourcesEv.cpp. [_ZN8daCoin_c6RenderEv.cpp,
-       _ZN8daCoin_c8BehaviorEv.cpp] */
+       daCoin_c::InitResources (src/actors/daCoin_c.cpp). [daCoin_c::Render,
+       daCoin_c::Behavior] */
     u8  mCoinFlags;            /* 0x3ae */
     u8  pad_3af[0x1];
     u8  mInBrickBlock;            /* 0x3b0 */
