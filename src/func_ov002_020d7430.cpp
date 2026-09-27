@@ -2,6 +2,7 @@
 // @symbol func_ov002_020d7430
 /* recovered: shared common types */
 #include "common.h"
+#include "Player.h"
 
 struct Obj {
   virtual int v0(); virtual int v1(); virtual int v2(); virtual int v3();
@@ -12,7 +13,6 @@ struct Obj {
 };
 extern "C" {
 extern void _ZN6Player4HurtERK7Vector3j5Fix12IiEjjj(char* c, Vector3* v, unsigned int a, int fix, unsigned int b, unsigned int d, unsigned int e);
-extern void func_ov002_020c9e18(char* c);
 extern int _ZN6Player7IsStateERNS_5StateE(char* c, void* s);
 extern void _ZN6Player11ChangeStateERNS_5StateE(char* c, void* s);
 extern void func_ov002_020d718c(char* c);
@@ -29,7 +29,7 @@ void func_ov002_020d7430(char* c){
     _ZN6Player4HurtERK7Vector3j5Fix12IiEjjj(c, &v, 1, 0xc000, 1, 0, 0);
     return;
   }
-  func_ov002_020c9e18(c);
+  ((Player *)(c))->func_ov002_020c9e18();
   o = *(Obj**)(c+0x360);
   o->v19(c);
   if(_ZN6Player7IsStateERNS_5StateE(c, &data_ov002_02110034)){
