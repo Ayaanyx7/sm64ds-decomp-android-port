@@ -153,6 +153,7 @@ static Fix12i hal_fade_speed(unsigned frames, int backward)
 /* the wipe picture's ROM callees and tables (THE WIPE'S PICTURE, below) */
 extern "C" {
 void _ZN5ModelC1Ev(void *thiz);
+void _ZN5ModelD1Ev(void *thiz);
 void Matrix4x3_FromTranslation(void *m, int x, int y, int z);
 void Matrix4x3_ApplyInPlaceToScale(void *m, int x, int y, int z);
 void Matrix4x3_ApplyInPlaceToRotationX(void *m, short ang);
@@ -180,7 +181,7 @@ int hal_wipe_receiver_ok(const void *self);
 void hal_wipe_shape_trap(const char *slot, const void *self);
 
 /* THE WIPE'S PICTURE (see the block under the array): does this object carry
-   a loaded wipe mesh, loading it on first use, and the ROM's own
+   the wipe mesh this level's boot loaded, and the ROM's own
    FaderWipe::AdvanceFade statements with the mesh draw handed to the render
    phase. */
 int hal_wipe_mesh_ready(void *self);
@@ -444,8 +445,20 @@ struct HalFaderWipe {
 
 namespace {
 
-/* Seven, the count Stage::InitResources passes. */
+/* Seven, the count Stage::InitResources passes.
+
+   INSIDE THE SAVE STATE'S SPAN. On the cartridge the seven wipes are heap
+   objects (Stage::InitResources builds them with func_02073470), so a snapshot
+   of the heap carries them, meshes and interpolators alike. Here each wipe's
+   Model words point at blocks the level boot carves out of the heap arena
+   (port_fader_wipes_load, below), and hal/lk6_savestate.cpp rolls that arena
+   back on a restore: the words have to roll back with it, or a restore hands
+   the next level change's release a pointer into a block the restored arena
+   never handed out. data_0209f5e8, the eighth object of this class, has been
+   in the span since gate 31 for the same reason. */
+DSSTATE_BEGIN
 HalFaderWipe hal_wipes[7];
+DSSTATE_END
 
 int hal_wipe_index(const void *self)
 {
@@ -497,12 +510,13 @@ void hal_wipe_shape_trap(const char *slot, const void *self)
  * AdvanceFade was FaderColor's whole-screen EVY fade on both engines.
  *
  * WHAT RUNS NOW, per wipe, in two halves:
- *   LOAD. On a wipe's first driven advance (and again after every level
- *   change, because port_fader_wipes_reset clears the model words the way a
- *   fresh Stage's pool would start them), Model's constructor and then
- *   FaderWipe::LoadAndSetFile run on the wipe's own +0x10 Model with the file
- *   id Stage::InitResources would pass for this level: data_02075600 in VS
- *   off archive 0xbf, data_020755f0 on level 5, data_020755e0 otherwise.
+ *   LOAD. At every level boot, where Stage::InitResources runs its wipe
+ *   loop (port_fader_wipes_load, called from hal/level_boot.cpp), Model's
+ *   constructor and then FaderWipe::LoadAndSetFile run on each wipe's own
+ *   +0x10 Model with the file id Stage::InitResources passes for this level:
+ *   data_02075600 in VS off archive 0xbf, data_020755f0 on level 5,
+ *   data_020755e0 otherwise. The level change frees them again
+ *   (port_fader_wipes_reset), as Stage::CleanupResources does.
  *   STEP. FaderWipe::AdvanceFade's statements in its order (the step is the
  *   matched Fader::AdvanceInterp, the brightness writes are the matched
  *   SetBlendBrightness), except that the mesh's ModelComponents::Render is
@@ -527,54 +541,142 @@ int hal_wipe_mesh_off(void)
     return v;
 }
 
+/* FaderWipe's destructor, its Model half: Model::~Model frees the transform
+   buffer DoSetFile allocated and ModelBase::~ModelBase frees the file
+   (src/_ZN5ModelD1Ev.cpp, src/_ZN9ModelBaseD2Ev.cpp), which is all
+   Stage::CleanupResources' func_02073244(WIPES, 0x60, 8, ~FaderWipe) frees per
+   wipe. The rest of that destructor chain only stores vtable pointers, which
+   these host objects must keep (their table is ??_7HalFaderWipe@@6B@), so the
+   Model's words go back to zero, the state the pool starts in. Returns how
+   many wipes held a mesh. */
+int hal_wipes_release(void)
+{
+    int n = 0;
+    for (int i = 0; i < 7; ++i) {
+        unsigned char *model = hal_wipes[i].model;
+        if (*(void **)model) {
+            if (*(void **)(model + 4))
+                ++n;
+            _ZN5ModelD1Ev(model);
+        }
+        for (int b = 0; b < 0x50; ++b)
+            model[b] = 0;
+    }
+    return n;
+}
+
+/* SM64DS_WIPE_TRACE=1: what each wipe's mesh reads out of texture VRAM. At the
+   load, every texture and palette span the file was given (texture slots at
+   0x06800000 + (flags & 0xffff) << 3, palette slots at 0x06880000 +
+   vramOffset: the offsets LoadTexAndPal wrote) and an FNV-1a hash of their
+   bytes; at the wipe's first draw after that load, the same spans hashed
+   again, and the PREVIOUS load's spans hashed now -- which is exactly what a
+   mesh kept from the previous level would read. Inert unset. */
+struct HalWipeSpans {
+    int n;
+    unsigned addr[8], size[8];
+    unsigned hash;
+    int level;
+};
+HalWipeSpans hal_wipe_spans_cur[7], hal_wipe_spans_prev[7];
+int hal_wipe_drawn_since_load[7];
+
+int hal_wipe_trace_on(void)
+{
+    static int v = -1;
+    if (v < 0) {
+        const char *e = std::getenv("SM64DS_WIPE_TRACE");
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v;
+}
+
+unsigned hal_wipe_spans_hash(const HalWipeSpans &r)
+{
+    unsigned h = 2166136261u;
+    for (int k = 0; k < r.n; ++k) {
+        const unsigned char *p = (const unsigned char *)(std::size_t)r.addr[k];
+        for (unsigned b = 0; b < r.size[k]; ++b)
+            h = (h ^ p[b]) * 16777619u;
+    }
+    return h;
+}
+
+void hal_wipe_tex_note(int i)
+{
+    if (!hal_wipe_trace_on())
+        return;
+    const unsigned char *f = *(const unsigned char *const *)(hal_wipes[i].model + 4);
+    HalWipeSpans r = {};
+    const unsigned ntex = *(const unsigned *)(f + 0x14);
+    const unsigned char *tex = *(const unsigned char *const *)(f + 0x18);
+    for (unsigned t = 0; t < ntex && r.n < 8; ++t, tex += 0x14) {
+        r.addr[r.n] = 0x06800000u + ((*(const unsigned *)(tex + 0x10) & 0xffffu) << 3);
+        r.size[r.n] = *(const unsigned *)(tex + 8);
+        ++r.n;
+    }
+    const unsigned npal = *(const unsigned *)(f + 0x1c);
+    const unsigned char *pal = *(const unsigned char *const *)(f + 0x20);
+    for (unsigned t = 0; t < npal && r.n < 8; ++t, pal += 0x10) {
+        r.addr[r.n] = 0x06880000u + *(const unsigned *)(pal + 0xc);
+        r.size[r.n] = *(const unsigned *)(pal + 8);
+        ++r.n;
+    }
+    r.hash = hal_wipe_spans_hash(r);
+    r.level = (int)data_0209f2f8;
+    if (hal_wipe_spans_cur[i].n)
+        hal_wipe_spans_prev[i] = hal_wipe_spans_cur[i];
+    hal_wipe_spans_cur[i] = r;
+    hal_wipe_drawn_since_load[i] = 0;
+    std::fprintf(stderr, "  [wipe-trace] load wipe %d level %d: %d span(s), "
+                 "first 0x%08x+0x%x, vram fnv %08x\n", i, r.level, r.n,
+                 r.n ? r.addr[0] : 0, r.n ? r.size[0] : 0, r.hash);
+}
+
+void hal_wipe_tex_draw_note(int i)
+{
+    if (!hal_wipe_trace_on() || i < 0 || i >= 7 || hal_wipe_drawn_since_load[i])
+        return;
+    hal_wipe_drawn_since_load[i] = 1;
+    const HalWipeSpans &c = hal_wipe_spans_cur[i];
+    const HalWipeSpans &p = hal_wipe_spans_prev[i];
+    const unsigned now = hal_wipe_spans_hash(c);
+    std::fprintf(stderr, "  [wipe-trace] draw wipe %d level %d: its spans "
+                 "(first 0x%08x) fnv %08x at load, %08x now (%s)",
+                 i, (int)data_0209f2f8, c.n ? c.addr[0] : 0, c.hash, now,
+                 now == c.hash ? "same" : "CHANGED");
+    if (p.n) {
+        const unsigned pnow = hal_wipe_spans_hash(p);
+        std::fprintf(stderr, "; level %d's spans (first 0x%08x) fnv %08x at "
+                     "their load, %08x now (%s)", p.level, p.addr[0], p.hash,
+                     pnow, pnow == p.hash ? "same" : "CHANGED");
+    }
+    std::fprintf(stderr, "\n");
+}
+
 int hal_wipe_mesh_ready(void *self)
 {
     const int i = hal_wipe_index(self);
     if (i < 0 || i >= 7 || self != (void *)&hal_wipes[i] ||
         hal_wipe_mesh_off())
         return 0;
-    unsigned char *model = (unsigned char *)self + 0x10;
-    if (*(void **)(model + 4))              /* Model::modelFile */
+    /* The mesh is the level boot's (port_fader_wipes_load, the line
+       Stage::InitResources runs between the twelve preloads and
+       Stage::LoadModel), loaded into this level's texture VRAM and freed at
+       the level change with the wipe (port_fader_wipes_reset). Nothing loads
+       here any more: a wipe whose file did not load keeps the whole-screen
+       fade, and a boot that never ran the load (SM64DS_LEGACY_BOOT) says so
+       once. */
+    if (*(void **)(hal_wipes[i].model + 4))     /* Model::modelFile */
         return 1;
-    /* Stage::InitResources' table choice, src/_ZN5Stage13InitResourcesEv.cpp
-       :360-368. Its first arm is VS only (data_0209f2d8 == 1), which this port
-       does not run. */
-    const unsigned short id = (data_0209f2f8 == 5) ? data_020755f0[i]
-                                                   : data_020755e0[i];
-    /* ONE LOAD PER FILE, KEPT. The cartridge loads the seven meshes into each
-       Stage's own heap and loses them with it. Here the load lands on the
-       heap that is current at phase 2, which outlives the level, and
-       port_fader_wipes_reset clears the wipe's Model words at every level
-       change the way a fresh pool starts them. Loading again after every
-       change would leave a mesh behind on every change, and the root heap
-       would stop being flat across repeated entries of one level (the
-       no-leak shape hal/level_change.cpp's [lvl] line watches). So each file
-       is loaded once, the loaded Model's 0x50 bytes are kept, and a wipe
-       that needs that file again gets those bytes back: at most six files,
-       once each. */
-    static struct { unsigned short id; unsigned char failed;
-                    unsigned char bytes[0x50]; } cache[8];
-    static int ncache;
-    for (int k = 0; k < ncache; ++k)
-        if (cache[k].id == id) {
-            if (cache[k].failed) return 0;
-            for (int b = 0; b < 0x50; ++b) model[b] = cache[k].bytes[b];
-            return 1;
-        }
-    if (ncache >= 8)
-        return 0;
-    if (!*(void **)model)                   /* no Model vptr: construct it */
-        _ZN5ModelC1Ev(model);
-    _ZN9FaderWipe14LoadAndSetFileEt(self, id);
-    const int ok = *(void **)(model + 4) != 0;
-    cache[ncache].id = id;
-    cache[ncache].failed = ok ? 0 : 1;
-    for (int b = 0; b < 0x50; ++b) cache[ncache].bytes[b] = model[b];
-    ++ncache;
-    std::fprintf(stderr, "  [wipe] mesh for wipe %d (ov0 file 0x%04x, level "
-                 "%d): %s\n", i, id, (int)data_0209f2f8,
-                 ok ? "loaded" : "NOT loaded, the whole-screen fade stays");
-    return ok;
+    static int said;
+    if (!said) {
+        said = 1;
+        std::fprintf(stderr, "  [wipe] wipe %d has no mesh on level %d (the "
+                     "level boot did not load it): the whole-screen fade "
+                     "stays\n", i, (int)data_0209f2f8);
+    }
+    return 0;
 }
 
 int hal_wipe_advance_rom(void *self)
@@ -883,14 +985,80 @@ void port_frame_phase2(void)
 void port_fader_wipes_reset(void)
 {
     g_wipe_draw = 0;        /* a mesh queued by the outgoing level's last advance */
+    const int freed = hal_wipes_release();
+    if (freed)
+        std::fprintf(stderr, "  [wipe] level %d's %d wipe mesh(es) freed with "
+                     "the level (Stage::CleanupResources' FaderWipe "
+                     "destructors)\n", (int)data_0209f2f8, freed);
     for (int i = 0; i < 7; ++i) {
         hal_wipes[i].currInterp = 0x1000;
         hal_wipes[i].speed = 0;
         hal_wipes[i].color = 0;
         hal_wipes[i].unk0e = 0;
-        for (int b = 0; b < 0x50; ++b)
-            hal_wipes[i].model[b] = 0;
     }
+}
+
+/* ---- THE SEVEN WIPE MESHES, LOADED AT EVERY LEVEL BOOT --------------------
+ *
+ * Stage::InitResources :360-375, after the twelve shared preloads and before
+ * Stage::LoadModel:
+ *
+ *     faderTbl = VS ? data_02075600 : level 5 ? data_020755f0 : data_020755e0;
+ *     WIPES = func_02073470(7, 0x60, 8, FaderWipe::FaderWipe, ~FaderWipe);
+ *     for (i = 0; i < 7; i++) FaderWipe::LoadAndSetFile(&WIPES[i], faderTbl[i]);
+ *
+ * and Stage::CleanupResources :102 destroys the array again, so each wipe's
+ * file, its texture upload and its transform buffer belong to one level. The
+ * port boots every level through hal/level_boot.cpp's copy of that body,
+ * which calls this at the same point; the teardown half is
+ * port_fader_wipes_reset above, in the level change's teardown beside
+ * CleanCommonModelDataArr and port_model_vram_reset.
+ *
+ * WHY PER LEVEL AND NOT ONCE. Model::LoadTexAndPal uploads the file's
+ * textures and palettes at the level's VRAM cursors and writes those offsets
+ * INTO THE FILE (src/_ZN5Model13LoadTexAndPalER8BMD_File.cpp :38, :55, :60),
+ * and every level boot rewinds the cursors (port_model_vram_reset, the ROM's
+ * InitialiseVramGlobals) and uploads its own textures from the bottom again.
+ * 0.5.1 loaded each file once per process and gave later levels the kept
+ * Model back: the mesh then read whatever the NEW level had put at the first
+ * level's offsets, which is the iris "with a face in it" players saw on a
+ * death, a level exit and the cannon. The ROM never keeps one: the load here
+ * uploads into this level's VRAM, and the release frees it with the level.
+ *
+ * The VS arm of the table choice is omitted (VS is not run by this port). The
+ * pool is this file's static array rather than a heap array (see
+ * hal/stage_bridges.cpp's st_wipes_withdraw for why), so the constructor half
+ * is the embedded Model's own, which is the only part of FaderWipe's
+ * constructor a load reads; the interpolator words are port_fader_wipes_reset's.
+ *
+ * A mesh still held here means the boot came by a path whose teardown did not
+ * release it (the title route after a Save and Quit, a level-to-scene
+ * crossing): it is released first, as the ROM's teardown would have. */
+extern "C" void port_fader_wipes_load(void)
+{
+    if (hal_wipe_mesh_off())
+        return;
+    const int stale = hal_wipes_release();
+    const unsigned short *tbl = (data_0209f2f8 == 5) ? data_020755f0
+                                                     : data_020755e0;
+    int loaded = 0;
+    for (int i = 0; i < 7; ++i) {
+        _ZN5ModelC1Ev(hal_wipes[i].model);
+        _ZN9FaderWipe14LoadAndSetFileEt(&hal_wipes[i], tbl[i]);
+        if (*(void **)(hal_wipes[i].model + 4)) {
+            ++loaded;
+            hal_wipe_tex_note(i);
+        } else {
+            std::fprintf(stderr, "  [wipe] mesh for wipe %d (ov0 file 0x%04x, "
+                         "level %d) NOT loaded: that wipe keeps the "
+                         "whole-screen fade\n", i, tbl[i], (int)data_0209f2f8);
+        }
+    }
+    std::fprintf(stderr, "  [wipe] level %d boot: %d/7 wipe meshes loaded "
+                 "(Stage::InitResources' FaderWipe::LoadAndSetFile loop)%s\n",
+                 (int)data_0209f2f8, loaded,
+                 stale ? "; the previous level's were still held and were "
+                         "freed first" : "");
 }
 
 /* THE WIPE MESH'S DRAW, for the render phase (THE WIPE'S PICTURE, above):
@@ -904,6 +1072,7 @@ extern "C" void port_fader_wipe_render(void)
         return;
     static int mtx[12];
     const int sc = g_wipe_draw_scale;
+    hal_wipe_tex_draw_note(hal_wipe_index(g_wipe_draw));
     Matrix4x3_FromTranslation(mtx, 0, 0, -0x1000);
     Matrix4x3_ApplyInPlaceToScale(mtx, sc, sc, sc);
     Matrix4x3_ApplyInPlaceToRotationX(mtx, 0x4000);

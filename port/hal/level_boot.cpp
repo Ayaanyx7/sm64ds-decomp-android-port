@@ -2753,6 +2753,7 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn);
    src, on slice_gate26.txt:29 and already linked. */
 extern "C" void *port_stage_object(void);
 extern "C" void _ZN5Stage9LoadModelEv(char *self);
+extern "C" void port_fader_wipes_load(void);   /* hal/fader_wipes.cpp */
 
 void *port_stage_a_boot(void *mc, int spawn)
 {
@@ -3849,6 +3850,12 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
        A1 geometry regression has no course. */
     if (spawn)
         port_boot_course_sound((int)data_0209f2f8);
+
+    /* THE SEVEN FADER-WIPE MESHES, Stage::InitResources :369-376: the loop
+       between the twelve shared preloads and Stage::LoadModel below, run at
+       every level boot so each wipe's textures are uploaded into this level's
+       VRAM (hal/fader_wipes.cpp, port_fader_wipes_load, has the why). */
+    port_fader_wipes_load();
 
     /* ---- THE LEVEL MODEL, WHERE THE ROM LOADS IT (run link60, lane SL0) ---
        Stage::InitResources calls Stage::LoadModel at its line 361 and
