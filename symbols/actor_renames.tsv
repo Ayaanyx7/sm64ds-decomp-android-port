@@ -49,12 +49,12 @@ ov002	0x020b0a84	func_ov002_020b0a84	_ZN11daChScene_c8BehaviorEv	vtable slot 6 (
 ov002	0x020b0d88	func_ov002_020b0d88	_ZN11daChScene_c13InitResourcesEv	vtable slot 0 (was _ZN11VirtualDoor13InitResourcesEv)
 ov002	0x020b0f24	func_ov002_020b0f24	daChScene_c_Spawn	spawnfunc
 ov002	0x020b0f24	daChScene_c_Spawn	daChScene_c_classInit	reconstructed classInit; ROM RTTI+factory shape+unique class factory+later EAD lineage; exact SM64DS spelling not preserved
-ov002	0x020b0f54	func_ov002_020b0f54	_ZN4CoinD1Ev	vtable slot 16
-ov002	0x020b0fa4	func_ov002_020b0fa4	_ZN4CoinD0Ev	vtable slot 17
-ov002	0x020b2198	func_ov002_020b2198	_ZN4Coin16CleanupResourcesEv	vtable slot 3
-ov002	0x020b2284	func_ov002_020b2284	_ZN4Coin6RenderEv	vtable slot 9
-ov002	0x020b2324	func_ov002_020b2324	_ZN4Coin8BehaviorEv	vtable slot 6
-ov002	0x020b2508	func_ov002_020b2508	_ZN4Coin13InitResourcesEv	vtable slot 0
+ov002	0x020b0f54	func_ov002_020b0f54	_ZN8daCoin_cD1Ev	vtable slot 16
+ov002	0x020b0fa4	func_ov002_020b0fa4	_ZN8daCoin_cD0Ev	vtable slot 17
+ov002	0x020b2198	func_ov002_020b2198	_ZN8daCoin_c16CleanupResourcesEv	vtable slot 3
+ov002	0x020b2284	func_ov002_020b2284	_ZN8daCoin_c6RenderEv	vtable slot 9
+ov002	0x020b2324	func_ov002_020b2324	_ZN8daCoin_c8BehaviorEv	vtable slot 6
+ov002	0x020b2508	func_ov002_020b2508	_ZN8daCoin_c13InitResourcesEv	vtable slot 0
 ov002	0x020b2a98	func_ov002_020b2a98	BlueCoin_Spawn	spawnfunc
 ov002	0x020b2a98	BlueCoin_Spawn	daCoin_c_classInit_BLUE_COIN	reconstructed classInit; ROM RTTI+factory shape+unique class factory+later EAD lineage; exact SM64DS spelling not preserved
 ov002	0x020b2af0	func_ov002_020b2af0	RedCoin_Spawn	spawnfunc
@@ -344,7 +344,7 @@ ov002	0x021087ac	data_ov002_021087ac	RedCoin_SpawnInfo	spawninfo
 ov002	0x021087ac	RedCoin_SpawnInfo	g_profile_RED_COIN	reconstructed profile global; literal ROM ID RED_COIN+registry role+later EAD lineage; exact SM64DS spelling not preserved
 ov002	0x021087c8	data_ov002_021087c8	BlueCoin_SpawnInfo	spawninfo
 ov002	0x021087c8	BlueCoin_SpawnInfo	g_profile_BLUE_COIN	reconstructed profile global; literal ROM ID BLUE_COIN+registry role+later EAD lineage; exact SM64DS spelling not preserved
-ov002	0x021087ec	data_ov002_021087ec	_ZTV4Coin	vtable alloc=0x3b4
+ov002	0x021087ec	data_ov002_021087ec	_ZTV8daCoin_c	vtable alloc=0x3b4
 ov002	0x02108884	data_ov002_02108884	daFeather_c_SpawnInfo	spawninfo
 ov002	0x02108884	daFeather_c_SpawnInfo	g_profile_FEATHER	reconstructed profile global; literal ROM ID FEATHER+registry role+later EAD lineage; exact SM64DS spelling not preserved
 ov002	0x021088a8	data_ov002_021088a8	_ZTV11daFeather_c	vtable alloc=0x388
