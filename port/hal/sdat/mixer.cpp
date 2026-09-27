@@ -75,6 +75,31 @@ struct Channel {
     int pan;            // 0..127
     int priority;
     unsigned seq;       // bumped on every start, so stale handles are inert
+
+    /* THE CHANNEL'S OWN PITCH, as SM64DS's ARM7 composes it every frame in its
+       channel update (0x037FC5F4..0x037FC668, called once per 192 Hz frame for
+       every active channel whether or not a track still owns it):
+
+           pitch = (key - root) * 64 + sweep + userPitch + lfo
+
+       baseStep is the (key - root) term as a playback rate, userPitch the
+       track's bend + ext pitch (ch+0x0E, written by the track update while the
+       track owns the channel), and the sweep is the channel's own countdown
+       (ch+0x32 sweepPitch, +0x18 sweepLength, +0x14 sweepCounter; 0x037FBC34):
+       sweepPitch * (length - counter) / length while counter < length, the
+       counter stepping once per frame. It is what portamento and the 0xE3
+       sweep play through, and it keeps moving after the track lets go of the
+       channel, which is why it lives here and not in the sequencer.
+
+       pitchUnits is the total last turned into `step`, so a voice whose pitch
+       did not move this frame costs no pow(). hasBase is 0 for a channel the
+       sequencer never described (nothing then retunes it). */
+    int hasBase;
+    double baseStep;
+    int userPitch;
+    int sweepPitch, sweepLength, sweepCounter;
+    int modPitch;       // the sweep (and modulation) share of pitchUnits
+    int pitchUnits;
 };
 
 Channel g_ch[SD_CHANNELS];
@@ -317,6 +342,67 @@ void sd_mix_set_rate(int ch, double rate)
     if (rate > 0.0) g_ch[ch].step = rate;
 }
 
+namespace {
+
+/* 1/64 of a semitone as a playback-rate multiplier. The same expression the
+   sequencer has always used (sseq.cpp pitch_units_scale), so a voice whose
+   pitch terms are all zero apart from the track's comes out at the rate it
+   always did, to the last bit. */
+double units_scale(int units)
+{
+    return pow(2.0, (double)units / 64.0 / 12.0);
+}
+
+/* Turn the channel's total pitch into its playback rate, if it moved. The
+   same refusal the sequencer applies at the note-on: a rate outside (0, 64]
+   is left where it was rather than stopping a voice that is sounding. */
+void apply_pitch(Channel &c)
+{
+    if (!c.hasBase) return;
+    const int units = c.userPitch + c.modPitch;
+    if (units == c.pitchUnits) return;
+    c.pitchUnits = units;
+    const double rate = c.baseStep * units_scale(units);
+    if (rate > 0.0 && rate <= 64.0) c.step = rate;
+}
+
+}  // namespace
+
+/* The note-on half of the channel's pitch: its (key - root) rate and the
+   track pitch it starts under. The caller has already started the channel at
+   baseStep * scale(userPitch), so this records the parts without moving it. */
+void sd_mix_set_pitch_base(int ch, double baseStep, int userPitch)
+{
+    if (ch < 0 || ch >= SD_CHANNELS || !g_ch[ch].active) return;
+    Channel &c = g_ch[ch];
+    c.hasBase = 1;
+    c.baseStep = baseStep;
+    c.userPitch = userPitch;
+    c.modPitch = 0;             // the rate the caller set carries no sweep yet
+    c.pitchUnits = userPitch;
+}
+
+/* ch+0x0E, the track's bend + ext pitch. Applied at once, as the port's
+   TRACK_PARAM 0x0c path always has been. */
+void sd_mix_set_user_pitch(int ch, int units)
+{
+    if (ch < 0 || ch >= SD_CHANNELS || !g_ch[ch].active) return;
+    g_ch[ch].userPitch = units;
+    apply_pitch(g_ch[ch]);
+}
+
+/* The sweep a note starts with (the note-on at 0x037FD5B8..0x037FD61C):
+   sweepPitch in 1/64 semitones, sweepLength in 192 Hz frames, the counter
+   back to 0. The first frame plays the whole offset. */
+void sd_mix_set_sweep(int ch, int sweepPitch, int sweepLength)
+{
+    if (ch < 0 || ch >= SD_CHANNELS || !g_ch[ch].active) return;
+    Channel &c = g_ch[ch];
+    c.sweepPitch = sweepPitch;
+    c.sweepLength = sweepLength;
+    c.sweepCounter = 0;
+}
+
 /* The release rate this channel fades at, in the envelope's own units per
    192 Hz tick, and how many ticks it needs to reach the -72.3 dB floor from
    where it is now. A channel holds its slot and its full allocation priority
@@ -454,6 +540,16 @@ void sd_mix_frame(void)
     for (int i = 0; i < SD_CHANNELS; i++) {
         Channel &c = g_ch[i];
         if (!c.active) continue;
+        /* The sweep term, 0x037FBC34: read at the current counter, then the
+           counter steps. The division is the ROM's 64-bit signed one. */
+        int sweep = 0;
+        if (c.sweepPitch != 0 && c.sweepCounter < c.sweepLength) {
+            sweep = (int)((long long)c.sweepPitch
+                          * (c.sweepLength - c.sweepCounter) / c.sweepLength);
+            c.sweepCounter++;
+        }
+        c.modPitch = sweep;
+        apply_pitch(c);
         switch (c.state) {
         case ENV_ATTACK:
             // ampl is negative and climbs toward 0 multiplicatively.

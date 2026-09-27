@@ -142,6 +142,13 @@ void sd_mix_set(int ch, int volume_db10, int pan, double rate);
 void sd_mix_set_pan(int ch, int pan);   // retune a voice already sounding
 void sd_mix_set_vol(int ch, int volume_db10);   // ditto, volume only
 void sd_mix_set_rate(int ch, double rate);      // ditto, playback rate only
+// The channel's own pitch, composed every frame the way SM64DS's ARM7 channel
+// update does: (key - root) as baseStep, the track's bend + ext pitch as
+// userPitch, plus the channel's sweep (portamento / 0xE3), all in 1/64
+// semitones. See the Channel fields in mixer.cpp.
+void sd_mix_set_pitch_base(int ch, double baseStep, int userPitch);
+void sd_mix_set_user_pitch(int ch, int units);
+void sd_mix_set_sweep(int ch, int sweepPitch, int sweepLength);
 void sd_mix_frame(void);              // advance every envelope one 192Hz frame
 void sd_mix_render(sd_s16 *dst, int frames);   // stereo interleaved
 // Lane VOICE: an extra fill run over the finished stereo block, AFTER the host

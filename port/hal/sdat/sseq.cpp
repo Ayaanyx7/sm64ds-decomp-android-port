@@ -112,6 +112,12 @@ struct Track {
     //            sweeps it over -0x300..0, exactly one octave down.
     int volDb10;
     int pitch;
+    /* PORTAMENTO AND SWEEP, the track half (SM64DS ARM7 track +0x14 portaKey,
+     * +0x15 portaTime, +0x16 sweepPitch, flags bit 5 portamento; TrackInit at
+     * 0x037FDA74 sets the key to 60 and the rest to 0). A note-on hands the
+     * channel a sweep made of them and the channel plays it out on its own;
+     * see note_sweep. */
+    int portaKey, portaOn, portaTime, sweepPitch;
     int noteWait;           // C7: notes block the track for their duration
     // A note played with duration 0 under noteWait blocks the track until the
     // CHANNELS it owns have ended, rather than for a tick count. That is what
@@ -316,6 +322,39 @@ int track_pitch_units(const Track &tk)
 double pitch_units_scale(int units)
 {
     return pow(2.0, (double)units / 64.0 / 12.0);
+}
+
+/* THE SWEEP A NOTE STARTS WITH, SM64DS's note-on at 0x037FD5B8..0x037FD61C.
+ *
+ *   sweepPitch  = track sweep (0xE3), plus (portaKey - key) * 64 when
+ *                 portamento is on, stored back as an s16
+ *   sweepLength = portaTime == 0 ? the note's length in 192 Hz frames
+ *                                : (portaTime^2 * |sweepPitch|) >> 11
+ *
+ * and the channel then counts it down itself (mixer.cpp, 0x037FBC34). The
+ * note's length in frames is the note-on's own conversion at 0x037FD42C:
+ * (ticks * 240 + rate - 1) / rate with rate = tempo * tempoRatio >> 8, and
+ * the port's tempoRatio is the ROM's default 256, so rate is the tempo. A
+ * duration-0 note converts to 0 frames, so with portaTime 0 it does not
+ * sweep at all; that is the ROM's arithmetic too.
+ *
+ * WHAT THE PORT DID BEFORE: parsed 0xC9 / 0xCE / 0xCF / 0xE3 and dropped
+ * them, so every portamento and every sweep in the game played as a flat
+ * note at its target pitch. 424 SEQARC entries set a portamento key. */
+void note_sweep(const Player &pl, const Track &tk, int ch, int key, int ticks)
+{
+    int sweep = tk.sweepPitch;
+    if (tk.portaOn) sweep += (sd_s16)((tk.portaKey - key) << 6);
+    sweep = (sd_s16)sweep;
+    int length;
+    if (tk.portaTime == 0) {
+        const int rate = pl.tempo;
+        length = rate > 0 ? (ticks * 240 + rate - 1) / rate : 0;
+    } else {
+        const int mag = sweep < 0 ? -sweep : sweep;
+        length = (tk.portaTime * tk.portaTime * mag) >> 11;
+    }
+    sd_mix_set_sweep(ch, sweep, length);
 }
 
 /* The channel this track owns, or -1. The ARM7 keeps a real linked list --
@@ -532,6 +571,8 @@ void start_note(Player &pl, int pi, int ti, Track &tk, int note, int vel,
             g_note[held].ticks     = -1;   /* tie: no scheduled note-off */
             g_note[held].released  = 0;
             sd_mix_set(held, db10, pan, rate);
+            sd_mix_set_pitch_base(held, baseRate, pitchUnits);
+            note_sweep(pl, tk, held, key, ticks);
             SD_VT("note p%d t%d key %d TIED onto chan %d (no new voice)\n",
                   pi, ti, key, held);
             SD_PD("tie f=%d p=%d t=%d ch=%d key=%d\n", g_frame, pi, ti, held,
@@ -554,6 +595,8 @@ void start_note(Player &pl, int pi, int ti, Track &tk, int note, int vel,
               g_note[ch].player, g_note[ch].track);
 
     sd_mix_start(ch, &w, &n, db10, pan, rate, prio);
+    sd_mix_set_pitch_base(ch, baseRate, pitchUnits);
+    note_sweep(pl, tk, ch, key, ticks);
     g_note[ch].active = 1;
     g_note[ch].player = pi;
     g_note[ch].track = ti;
@@ -657,6 +700,12 @@ int run_track(Player &pl, int pi, int ti)
             int vel = s[tk.pc++];
             sd_u32 dur = argVarlen();
             if (condition) start_note(pl, pi, ti, tk, op, vel, (int)dur);
+            /* 0x037FCCC0: every note that runs leaves its key as the next
+               portamento start, whether or not it found a voice. */
+            if (condition) {
+                int k = op + tk.transpose;
+                tk.portaKey = k < 0 ? 0 : (k > 127 ? 127 : k);
+            }
             // SND_seq.c lines 936 to 939. Duration 0 does not mean "wait no
             // time", it means "wait for the note itself", and that is what
             // holds a one-shot's track open until its sample has finished.
@@ -769,6 +818,7 @@ int run_track(Player &pl, int pi, int ti)
                 // as track 0; a 0xC6 in the opened track overrides it.
                 /* Same TrackInit default as track 0; 0xC6 overrides it. */
                 t2.bendRange = 2; t2.priority = 64; t2.noteWait = 1;
+                t2.portaKey = 60;       /* TrackInit, 0x037FDB28 */
                 t2.prog = 0;
             }
             break;
@@ -843,17 +893,40 @@ int run_track(Player &pl, int pi, int ti)
             break; }
         case 0xd5: { int v = argU8(); if (condition) tk.expression = v; break; }
 
-        // Accepted and parsed, but not rendered: portamento, modulation and
-        // the per-track ADSR override. Argument lengths are correct so the
-        // stream stays in sync; the effect is simply not applied yet.
-        case 0xc9: case 0xca: case 0xcb: case 0xcc: case 0xcd:
-        case 0xce: case 0xcf: case 0xd0: case 0xd1: case 0xd2:
+        /* PORTAMENTO, SM64DS's opcode table at 0x037FCE94. 0xC9 sets the key
+           the next note glides FROM (plus the track's transpose) and turns
+           portamento on; 0xCE turns it on or off; 0xCF sets its time. 0xC9
+           and 0xCE also release and free the track's voices -- both call
+           0x037FD948, the routine 0xC8 and 0xFF go through -- so they end
+           here the same way TIE does. */
+        case 0xc9: { int v = argU8();
+            if (condition) {
+                tk.portaKey = (sd_u8)(v + tk.transpose);
+                tk.portaOn = 1;
+                track_stop(pi, ti, "portamento key set");
+            }
+            break; }
+        case 0xce: { int v = argU8();
+            if (condition) {
+                tk.portaOn = v & 1;
+                track_stop(pi, ti, "portamento switched");
+            }
+            break; }
+        case 0xcf: { int v = argU8(); if (condition) tk.portaTime = v; break; }
+
+        // Accepted and parsed, but not rendered: modulation and the per-track
+        // ADSR override. Argument lengths are correct so the stream stays in
+        // sync; the effect is simply not applied yet.
+        case 0xca: case 0xcb: case 0xcc: case 0xcd:
+        case 0xd0: case 0xd1: case 0xd2:
         case 0xd3: case 0xd6:
             argU8();
             break;
         case 0xe0:                              // modulation delay
-        case 0xe3:                              // sweep pitch
             argS16();
+            break;
+        case 0xe3:                              // sweep pitch, track +0x16
+            { int v = argS16(); if (condition) tk.sweepPitch = (sd_s16)v; }
             break;
         case 0xe1:                              // tempo
             { int v = argS16(); if (condition && v > 0) pl.tempo = v; }
@@ -1034,6 +1107,7 @@ int sd_seq_start(int p, const sd_u8 *seqBase, sd_u32 startOff,
     /* TrackInit at 0x037FDA74: mov r1,#0x40 / strb r1,[r4,#0x12]. The
        player's cpr is NOT folded in here; see the sum at the note-on. */
     t0.bendRange = 2; t0.priority = 64; t0.noteWait = 1;
+    t0.portaKey = 60;           /* TrackInit, 0x037FDB28 */
 
     // A multi-track sequence opens with 0xFE <u16 mask>; track 0's own code
     // follows the 0x93 open-track commands, so nothing special is needed
@@ -1081,13 +1155,12 @@ static void retune_note_pitch(int i)
               g_note[i].baseRate * pitch_units_scale(units));
         g_note[i].lastUnits = units;
     }
-    double rate = g_note[i].baseRate * pitch_units_scale(units);
-    /* The same refusal start_note applies, on the same side. A voice already
-       sounding is left at the rate it has rather than stopped: the ROM's own
-       driver clamps the timer reload (SND_CalcTimer returns 0xFFFF at the
-       ends), and dropping a live note here would turn an out-of-range trim
-       into a silence the DS does not have. */
-    if (rate > 0.0 && rate <= 64.0) sd_mix_set_rate(i, rate);
+    /* The channel turns it into a rate, together with its own sweep (see
+       sd_mix_set_user_pitch). The same refusal start_note applies happens
+       there: a voice already sounding is left at the rate it has rather than
+       stopped, as the ROM's own driver clamps the timer reload (SND_CalcTimer
+       returns 0xFFFF at the ends) rather than silencing a live note. */
+    sd_mix_set_user_pitch(i, units);
 }
 
 /* PlayerUpdateChannel: SND_SeqMain runs PlayerSeqMain (all this frame's ticks)
