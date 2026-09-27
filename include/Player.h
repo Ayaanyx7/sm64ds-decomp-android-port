@@ -746,6 +746,27 @@ struct Player : dActor_c {
     int func_ov002_020c04e0();
     int func_ov002_020c0688();
     int func_ov002_020c0cbc();
+
+    void func_ov002_020c1234();
+    void func_ov002_020c133c();
+    int func_ov002_020c231c();
+    void func_ov002_020c29d4();
+    void func_ov002_020c2e78();
+    void func_ov002_020c38a0();
+    int func_ov002_020c3a48();
+    void func_ov002_020c3bdc();
+    void func_ov002_020c3cf0();
+    int func_ov002_020c3ea0();
+    int func_ov002_020c4188();
+    int func_ov002_020c44c4();
+    int func_ov002_020c47f4();
+    void func_ov002_020c5444();
+    int func_ov002_020c5d0c();
+    int func_ov002_020c61ac();
+    int func_ov002_020c6538();
+    int func_ov002_020c6908();
+    int func_ov002_020c6adc();
+    void func_ov002_020c6fe4();
 };
 
 /* Hold both claims with the compiler rather than a comment. State's 0x18 is

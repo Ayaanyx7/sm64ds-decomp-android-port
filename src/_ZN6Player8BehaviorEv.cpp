@@ -116,7 +116,7 @@ int Player::Behavior()
     data_020a0e40 = mPlayerNo;
 after_player_slot:
 
-    if (func_ov002_020c4188(((char *)this)) != 0)
+    if (func_ov002_020c4188() != 0)
         return 1;
 
     DecIfAbove0_Short(&mStateTimer);
@@ -174,7 +174,7 @@ after_player_slot:
         }
     }
 
-    func_ov002_020c2e78(((char *)this));
+    func_ov002_020c2e78();
     func_ov002_020ca940(((char *)this));
     func_ov002_020d8158(((char *)this));
 
