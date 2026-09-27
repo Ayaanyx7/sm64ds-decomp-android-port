@@ -1288,6 +1288,286 @@ int twod_old_on()
     return v;
 }
 
+/* ---- THE UNCHANGED-FRAME SKIP ---------------------------------------------------
+ *
+ * Most frames the bottom screen is the same picture as the frame before (the map
+ * holds still, the menus wait for input), and scan_fast redrew all of it anyway.
+ * So the scan-out remembers, per destination framebuffer, EVERY INPUT it read and
+ * the picture it drew, and when every input is byte-for-byte what it was it hands
+ * back that picture instead of drawing it again.
+ *
+ * NOT DIRTY BITS AND NOT A HASH: a byte comparison against a saved copy, so a
+ * change can only be missed if an input is left out of the list, and the list is
+ * built from the same register values the drawing reads (scan_spans). The inputs:
+ *
+ *   - the DISPCNT_B value after the host's suppression, and the OAM source;
+ *   - engine B's whole register block 0x04001000..0x0400106F (BG control,
+ *     scroll, affine, windows, BLDCNT / BLDALPHA / BLDY, master brightness);
+ *   - the host's per-entry sprite answers (skip[], from obj_decide);
+ *   - the per-line window record (ntr::rt_window_rows), whether it is live and
+ *     all 192 lines of it;
+ *   - memory: engine B's BG and OBJ palettes, its OAM (wherever the host points
+ *     it), and for each enabled BG and each drawn sprite the exact VRAM span its
+ *     arithmetic can reach (map, tile data, bitmap, extended palettes).
+ *
+ * If a span list would not fit, or anything is new, the frame is drawn. Two
+ * destinations are remembered (the panel's g_sub and the save menu's
+ * g_sub_menu, which a swapped frame scans with a different suppression mask).
+ * SM64DS_TWOD_NOCACHE=1 draws every frame (scan_fast); SM64DS_TWOD_VERIFY=1
+ * still compares every handed-back picture against a fresh scan_ref. */
+struct Span {
+    uint32_t lo, hi;
+};
+
+constexpr int kMaxSpans = 192;
+
+struct ScanKey {
+    uint32_t dispcnt;
+    uint32_t oam_src;
+    uint32_t rows_on;
+    uint8_t regs[0x70];
+    uint8_t skip[128];
+    uint32_t rows[192];
+};
+
+struct ScanSlot {
+    const SubFramebuffer *dst;
+    bool valid;
+    ScanKey key;
+    int nspan;
+    Span span[kMaxSpans];
+    uint8_t *bytes;
+    size_t cap;
+    uint32_t out[SUB_H][SUB_W];
+};
+
+ScanSlot *g_scan_slot[2];
+unsigned g_scan_next;
+long g_scan_hits, g_scan_draws;
+
+inline int span_add(Span *v, int n, uint32_t lo, uint32_t hi)
+{
+    if (n < 0) return n;
+    if (n >= kMaxSpans) return -1;
+    v[n].lo = lo;
+    v[n].hi = hi;
+    return n + 1;
+}
+
+/* What one BG's sampler can read, from the same fields read_bg filled in. */
+int bg_spans(const BgLayer &c, Span *v, int n)
+{
+    switch (c.kind) {
+    case BG_TEXT:
+        n = span_add(v, n, c.screen,
+                     c.screen + (uint32_t)((c.map_w >> 5) * (c.map_h >> 5)) * 0x800u);
+        n = span_add(v, n, c.chars, c.chars + (c.bpp8 ? 0x10000u : 0x8000u));
+        break;
+    case BG_AFFINE:
+        n = span_add(v, n, c.screen,
+                     c.screen + (uint32_t)((c.map_w >> 3) * (c.map_h >> 3)));
+        n = span_add(v, n, c.chars, c.chars + (c.bpp8 ? 256u * 64u : 256u * 32u));
+        break;
+    case BG_EXT_AFFINE:
+        n = span_add(v, n, c.screen,
+                     c.screen + (uint32_t)((c.map_w >> 3) * (c.map_h >> 3)) * 2u);
+        n = span_add(v, n, c.chars, c.chars + 0x10000u);
+        break;
+    case BG_BITMAP_256:
+        n = span_add(v, n, c.screen, c.screen + (uint32_t)(c.map_w * c.map_h));
+        break;
+    case BG_BITMAP_DIRECT:
+        n = span_add(v, n, c.screen, c.screen + (uint32_t)(c.map_w * c.map_h) * 2u);
+        break;
+    default:
+        return n;
+    }
+    if (c.ext) n = span_add(v, n, c.ext, c.ext + 0x2000u);
+    return n;
+}
+
+/* What raster_obj can read in OBJ VRAM, entry by entry, with raster_obj's own
+   filters (skip[], the disable bit, shape 3) and its own address arithmetic. */
+int obj_spans(uint32_t dispcnt, const uint8_t *skip, Span *v, int n)
+{
+    if (!((dispcnt >> 12) & 1)) return n;
+    static const int kSizes[3][4][2] = {
+        {{8, 8}, {16, 16}, {32, 32}, {64, 64}},
+        {{16, 8}, {32, 8}, {32, 16}, {64, 32}},
+        {{8, 16}, {8, 32}, {16, 32}, {32, 64}},
+    };
+    const uint32_t boundary = 32u << ((dispcnt >> 20) & 3);
+    const bool map1d = (dispcnt >> 4) & 1;
+    const uint32_t oam_b = g_oam_src_b ? g_oam_src_b : kOamBase;
+    bool c256_any = false;
+    for (int i = 127; i >= 0; --i) {
+        if (skip[i]) continue;
+        const uint16_t a0 = rd16(oam_b + i * 8u);
+        const uint16_t a1 = rd16(oam_b + i * 8u + 2);
+        const uint16_t a2 = rd16(oam_b + i * 8u + 4);
+        const bool affine = a0 & 0x100;
+        if (!affine && (a0 & 0x200)) continue;
+        const unsigned objmode = (a0 >> 10) & 3;
+        const int shape = (a0 >> 14) & 3;
+        if (shape == 3) continue;
+        const int size = (a1 >> 14) & 3;
+        const uint32_t w = (uint32_t)kSizes[shape][size][0];
+        const uint32_t h = (uint32_t)kSizes[shape][size][1];
+        const bool c256 = a0 & 0x2000;
+        const uint32_t tile = a2 & 0x3FF;
+        uint32_t lo, hi;
+        if (objmode == 3) {
+            if ((dispcnt >> 6) & 1) {
+                const uint32_t bnd = ((dispcnt >> 22) & 1) ? 256u : 128u;
+                lo = tile * bnd;
+                hi = lo + w * h * 2u;
+            } else {
+                const uint32_t wide = ((dispcnt >> 5) & 1) ? 256u : 128u;
+                const uint32_t mask = (wide >> 3) - 1u;
+                lo = (tile & mask) * 0x10u + (tile & ~mask) * 0x80u;
+                hi = lo + ((h - 1u) * wide + w) * 2u;
+            }
+        } else {
+            const uint32_t tw = w / 8u, th = h / 8u;
+            const uint32_t slotmax =
+                map1d ? (c256 ? ((th - 1u) * tw + (tw - 1u)) * 2u
+                              : (th - 1u) * tw + (tw - 1u))
+                      : (th - 1u) * 32u + (c256 ? (tw - 1u) * 2u : (tw - 1u));
+            lo = tile * boundary;
+            hi = lo + slotmax * 32u + (c256 ? 64u : 32u);
+            if (c256) c256_any = true;
+        }
+        n = span_add(v, n, kObjVram + lo, kObjVram + hi);
+    }
+    if (c256_any && ((dispcnt >> 31) & 1))
+        n = span_add(v, n, kObjExtPltt, kObjExtPltt + 0x2000u);
+    return n;
+}
+
+/* The whole input list for one frame, sorted and merged; -1 = did not fit. */
+int scan_spans(uint32_t dispcnt, const uint8_t *skip, Span *v)
+{
+    int n = 0;
+    n = span_add(v, n, kPlttBase, kPlttBase + 0x400u);   /* BG + OBJ palettes */
+    if ((dispcnt >> 12) & 1) {
+        const uint32_t oam_b = g_oam_src_b ? g_oam_src_b : kOamBase;
+        n = span_add(v, n, oam_b, oam_b + 0x400u);
+    }
+    BgLayer bgs[4];
+    for (int i = 0; i < 4; ++i) {
+        read_bg(bgs[i], i, dispcnt);
+        n = bg_spans(bgs[i], v, n);
+    }
+    n = obj_spans(dispcnt, skip, v, n);
+    if (n <= 0) return n;
+    for (int i = 1; i < n; ++i) {
+        const Span t = v[i];
+        int j = i - 1;
+        while (j >= 0 && (v[j].lo > t.lo || (v[j].lo == t.lo && v[j].hi > t.hi))) {
+            v[j + 1] = v[j];
+            --j;
+        }
+        v[j + 1] = t;
+    }
+    int m = 0;
+    for (int i = 0; i < n; ++i) {
+        if (v[i].hi <= v[i].lo) continue;
+        if (m && v[i].lo <= v[m - 1].hi) {
+            if (v[i].hi > v[m - 1].hi) v[m - 1].hi = v[i].hi;
+        } else {
+            v[m++] = v[i];
+        }
+    }
+    return m;
+}
+
+void scan_key(ScanKey &k, uint32_t dispcnt, const uint8_t *skip)
+{
+    std::memset(&k, 0, sizeof k);
+    k.dispcnt = dispcnt;
+    k.oam_src = g_oam_src_b;
+    for (int i = 0; i < 0x70; ++i) k.regs[i] = rd8(kRegBase + i);
+    std::memcpy(k.skip, skip, sizeof k.skip);
+    const uint32_t *rows = nullptr;
+    if (ntr::rt_window_rows(1, &rows)) {
+        k.rows_on = 1;
+        std::memcpy(k.rows, rows, sizeof k.rows);
+    }
+}
+
+int twod_nocache_on()
+{
+    static int v = -1;
+    if (v < 0) {
+        const char *e = std::getenv("SM64DS_TWOD_NOCACHE");
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v;
+}
+
+void scan_cached(SubFramebuffer &fb, uint32_t dispcnt, const uint8_t *skip)
+{
+    ScanSlot *sl = nullptr;
+    for (int i = 0; i < 2; ++i)
+        if (g_scan_slot[i] && g_scan_slot[i]->dst == &fb) sl = g_scan_slot[i];
+    if (!sl) {
+        const unsigned i = g_scan_next++ & 1u;
+        if (!g_scan_slot[i]) {
+            g_scan_slot[i] = static_cast<ScanSlot *>(std::calloc(1, sizeof(ScanSlot)));
+            if (!g_scan_slot[i]) {
+                scan_fast(fb, dispcnt, skip, g_obj, g_objwin);
+                return;
+            }
+        }
+        sl = g_scan_slot[i];
+        sl->dst = &fb;
+        sl->valid = false;
+    }
+    static ScanKey key;
+    static Span span[kMaxSpans];
+    scan_key(key, dispcnt, skip);
+    const int n = scan_spans(dispcnt, skip, span);
+    bool same = sl->valid && n > 0 && n == sl->nspan &&
+                std::memcmp(&key, &sl->key, sizeof key) == 0 &&
+                std::memcmp(span, sl->span, sizeof(Span) * (size_t)n) == 0;
+    if (same) {
+        const uint8_t *saved = sl->bytes;
+        for (int i = 0; i < n && same; ++i) {
+            const size_t len = span[i].hi - span[i].lo;
+            same = std::memcmp(reinterpret_cast<const void *>(span[i].lo), saved, len) == 0;
+            saved += len;
+        }
+    }
+    if (same) {
+        std::memcpy(fb.px, sl->out, sizeof fb.px);
+        ++g_scan_hits;
+        return;
+    }
+    scan_fast(fb, dispcnt, skip, g_obj, g_objwin);
+    ++g_scan_draws;
+    sl->valid = false;
+    if (n <= 0) return;
+    size_t total = 0;
+    for (int i = 0; i < n; ++i) total += span[i].hi - span[i].lo;
+    if (total > sl->cap) {
+        uint8_t *p = static_cast<uint8_t *>(std::realloc(sl->bytes, total));
+        if (!p) return;
+        sl->bytes = p;
+        sl->cap = total;
+    }
+    uint8_t *dst = sl->bytes;
+    for (int i = 0; i < n; ++i) {
+        const size_t len = span[i].hi - span[i].lo;
+        std::memcpy(dst, reinterpret_cast<const void *>(span[i].lo), len);
+        dst += len;
+    }
+    std::memcpy(&sl->key, &key, sizeof key);
+    std::memcpy(sl->span, span, sizeof(Span) * (size_t)n);
+    sl->nspan = n;
+    std::memcpy(sl->out, fb.px, sizeof sl->out);
+    sl->valid = true;
+}
+
 /* ---- SM64DS_TWOD_VERIFY=1: the old scan-out beside the new, every frame -------
  *
  * The reference draws into its own framebuffer and its own OBJ buffers, from the
@@ -1317,7 +1597,9 @@ int twod_verify_on()
 void twod_verify_summary()
 {
     std::fprintf(stderr, "[twod] SUMMARY sub verify: %ld scan-outs compared, "
-                 "%ld differ (%ld px)\n", g_twod_frames, g_twod_bad, g_twod_badpx);
+                 "%ld differ (%ld px); unchanged-frame skip: %ld handed back, "
+                 "%ld drawn\n", g_twod_frames, g_twod_bad, g_twod_badpx,
+                 g_scan_hits, g_scan_draws);
 }
 
 void twod_verify_sub(const SubFramebuffer &fb, uint32_t dispcnt,
@@ -1374,8 +1656,10 @@ void ppu_scanout_sub(SubFramebuffer &fb)
         std::memset(skip, 0, sizeof skip);
     if (twod_old_on())
         scan_ref(fb, dispcnt, skip, g_obj, g_objwin);
-    else
+    else if (!shown || twod_nocache_on())
         scan_fast(fb, dispcnt, skip, g_obj, g_objwin);
+    else
+        scan_cached(fb, dispcnt, skip);
     if (twod_verify_on()) twod_verify_sub(fb, dispcnt, skip);
 }
 
