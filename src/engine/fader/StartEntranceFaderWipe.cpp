@@ -3,7 +3,18 @@
 struct Fader {
     Fix12i currInterp;
     Fix12i speed;
+#ifdef _MSC_VER
+    /* THE DESTRUCTOR TAKES TWO SLOTS, AS IT DOES IN THE ROM TABLE. mwcc gives a
+       virtual destructor two entries (D1, D0), MSVC folds them into one, so
+       every virtual below sat one slot early on the PC: SetToStart reached
+       0x20 (SetToEnd) and SetToEnd reached 0x1c. The wipe objects' tables
+       are ROM-ordered (include/Fader.h: 0x20 SetToEnd, 0x24 SetToStart), so
+       two placeholder slots stand where D1 and D0 stand. */
+    virtual void Destructor1();
+    virtual void Destructor0();
+#else
     virtual ~Fader();
+#endif
     virtual int Advance();
     virtual int SetBackwardTime(unsigned frames);
     virtual int SetForwardTime(unsigned frames);
@@ -19,7 +30,12 @@ struct FaderWipe : Fader {
     u16 color;
     u16 unk0e;
     u32 model[0x50/4];
+#ifdef _MSC_VER
+    virtual void Destructor1();
+    virtual void Destructor0();
+#else
     virtual ~FaderWipe();
+#endif
     virtual int Advance();
     virtual int SetBackwardTime(unsigned frames);
     virtual int SetForwardTime(unsigned frames);
