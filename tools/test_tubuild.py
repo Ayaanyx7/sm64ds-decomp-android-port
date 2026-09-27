@@ -217,7 +217,7 @@ def test_compile_report_matches_the_pilots_object_inventory():
     assert n_text == 8, f"expected 8 .text sections, counted {n_text}"
     assert n_data == 11, f"expected 11 .data sections, counted {n_data}"
     assert (REPO / "build" / "tu" / "ov045-daObjKm2_Ami_Bou_c" / "inventory.txt").is_file()
-    assert (REPO / "build" / "tu" / "ov045-daObjKm2_Ami_Bou_c" / "d_a_obj_km2_ami_bou.o").is_file()
+    assert (REPO / "build" / "tu" / "ov045-daObjKm2_Ami_Bou_c" / "daObjKm2_Ami_Bou_c.o").is_file()
 
 
 # ---------------------------------------------------------------- partial isolation
