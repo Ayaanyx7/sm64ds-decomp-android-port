@@ -1738,12 +1738,39 @@ void hal_render_player_world(void *player)
        either one alone is still not the ROM's statement; written as two
        independent switches, whichever flipped second would silently edit
        what the first one did. */
+    /* THE BALLOON IS THE OTHER ARM OF THE SAME STATEMENT. Player::Render
+       forks the body draw on mIsBalloon (+0x6fd, the live byte, not the +0x6fe
+       latch the head test reads), src/_ZN6Player6RenderEv.cpp:59-99:
+
+           if (mIsBalloon == 0) {
+               ... the body, its texture sequence, the wings ...
+           } else {
+               ModelBase::ApplyOpacity(this + 0xf0, mOpacity, 0);
+               mModelAnim3.m14(&mScaleX);          slot 5, ModelAnim::Render
+           }
+
+       mModelAnim3 is the balloon body func_ov002_020e5948 SetFiles at +0xf0
+       (src/func_ov002_020e5948.c:347), and the behaviour pass seats ITS matrix
+       while the balloon is up, not the body's (src/func_ov002_020e444c.c:52-58
+       writes +0x10c instead). This copy had only the first arm, so a Power
+       Flower left the normal body standing where the balloon started, frozen,
+       with the head skipped (hid 8 is the ROM's own balloon rule): the
+       headless Mario the forum report shows. */
+    const bool balloon = *(const unsigned char *)(c + 0x6fd) != 0;
     std::size_t hsink_t0 = 0;
-    if (hsink_on()) ntr::gx_polygons(hsink_t0);
-    ma->Model::Render((const Vector3 *)(c + 0x80));
-    std::size_t hsink_t1 = hsink_t0;
-    if (hsink_on()) ntr::gx_polygons(hsink_t1);
-    hal_player_texseq_body(c);
+    std::size_t hsink_t1 = 0;
+    if (balloon) {
+        ModelAnim *m3 = (ModelAnim *)(c + 0xf0);    /* mModelAnim3 */
+        _ZN9ModelBase12ApplyOpacityEj(m3, *(const unsigned char *)(c + 0x6f5));
+        if (ghost) ghost_opacity(m3);
+        m3->Render((const Vector3 *)(c + 0x80));    /* virtual, as the ROM's */
+    } else {
+        if (hsink_on()) ntr::gx_polygons(hsink_t0);
+        ma->Model::Render((const Vector3 *)(c + 0x80));
+        hsink_t1 = hsink_t0;
+        if (hsink_on()) ntr::gx_polygons(hsink_t1);
+        hal_player_texseq_body(c);
+    }
 
     unsigned hid = func_ov002_020becf4(c, *(unsigned char *)(c + 0x6db), 1);
     if (hid != 8 && hid != 9) {
@@ -1832,7 +1859,8 @@ void hal_render_player_world(void *player)
                 (void)n0; (void)n1;
             }
         }
-        if (gate != 0) {
+        /* inside the ROM's `mIsBalloon == 0` arm, like the body draw above */
+        if (gate != 0 && !balloon) {
             char *bones = *(char **)((char *)ma + 0x14);
             int composed[12];
             const int *src;
