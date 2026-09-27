@@ -11118,7 +11118,18 @@ extern "C" {
 int Player::St_Swim_Main()
 {
     extern void _ZN6Player11ChangeStateERNS_5StateE(void*, void*);
+#ifdef _MSC_VER
+    /* THE RECEIVER IS PASSED, AS THE ROM PASSES IT. St_Swim_Main reaches
+       GetHealth (0x020bf548) at 0x020cd97c with this still in r0 from the
+       entry, so the call below byte-matches with no argument; the port's
+       face (hal/player_bridges.cpp) reads its receiver off the stack, and
+       with nothing pushed it read the dispatcher's state-function word
+       (0x020cd94c) as the Player. Declared and called with this, the host
+       passes what r0 held. */
+    extern int _ZN6Player9GetHealthEv(void*);
+#else
     extern int _ZN6Player9GetHealthEv(void);
+#endif
     extern void func_ov002_020c5dec(void*, int);
     extern int func_ov002_020cede0(void*);
     extern int func_ov002_020cec2c(void*);
@@ -11182,7 +11193,11 @@ int Player::St_Swim_Main()
         _ZN6Player11ChangeStateERNS_5StateE(this, data_ov002_021106ac);
         return 1;
     }
+#ifdef _MSC_VER
+    if (_ZN6Player9GetHealthEv(this) == 0) {
+#else
     if (_ZN6Player9GetHealthEv() == 0) {
+#endif
         func_ov002_020c5dec(this, 8);
         return 1;
     }
