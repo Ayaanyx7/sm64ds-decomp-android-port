@@ -1611,12 +1611,25 @@ static int port_starsel_painting_on(void)
    data_02092110 still names the level being entered (the latch has not run, so
    the star select's own SublevelToLevel(data_02092110) test reads the right
    level), and data_02092664 holds what Stage::Behavior decided. */
+/* THE ROM'S REQUEST AS IT STOOD WHEN THE APPLY BEGAN. Since the poll waits
+   for the exit fade (port_level_exit_fade_pending), Stage::Behavior has
+   already made its scene decision -- SetSceneToSpawn(4) for a course entered
+   from outside it -- during that fade, and the apply's head release (which
+   has to run before the teardown, see there) consumes it before this
+   interlude can read it. The decision is the ROM's own and nothing after the
+   release is guaranteed to make it again, so the apply records it here and
+   the interlude honours it. */
+static unsigned g_apply_pending_scene = 0x187;
+
 static void port_level_scene_interlude(void)
 {
     if (!port_starsel_painting_on())
         return;
-    if (data_02092664 != 4)
-        return;                     /* the ROM's own scene-3 arm: straight in */
+    if (data_02092664 != 4) {
+        if (g_apply_pending_scene != 4)
+            return;                 /* the ROM's own scene-3 arm: straight in */
+        data_02092664 = 4;          /* Stage::Behavior's own request, restored */
+    }
 
     /* NO GIVE-UP TIMER IN REAL PLAY, and this is the whole of Tango's bug
        report's first half.
@@ -1902,6 +1915,7 @@ extern "C" int port_level_change_apply(void)
        the far side would let this very teardown dispatch the Stage's trapped
        slot 3, which is the abort being fixed. The port is committing to a level
        change here, so any scene it has not spawned by now it never will. */
+    g_apply_pending_scene = data_02092664;
     port_scene_request_release("a level change is being applied");
 
     const double lvlperf_t0 = port_lvlperf_now();
@@ -2074,11 +2088,78 @@ extern "C" int port_level_change_apply(void)
    is how the abort above is reproduced from a fixed binary. */
 static int port_level_scene_crossing(void);
 
+/* ---- THE EXIT FADE RUNS BEFORE THE CHANGE (run hunt1, lane HUNTCOPY) -------
+   On the cartridge a level request is not honoured on the frame it is made.
+   LoadLevel (src/LoadLevel.c) only writes data_02092110; the next
+   Stage::Behavior sees it and asks for the scene
+   (src/_ZN5Stage8BehaviorEv.cpp:190-198, SetSceneToSpawn 3, or 4 for the star
+   select), and from then on dScene_c::BeforeBehavior, _ZTV5Stage slot 7
+   (src/_ZN8dScene_c14BeforeBehaviorEv.cpp), runs the installed fader forward
+   for 0x1e frames when it is at its start and marks the Stage for destruction
+   only once it reads at its end. Scene::SpawnIfNecessary replaces the Stage
+   after that, so the old level fades out under the wipe the exit path chose
+   (KillPlayer, HitDeathPlane and StartExitCharacterWipe all go through
+   StartExitFaderWipe) and only then does the new one boot.
+
+   This poll sits in SpawnIfNecessary's seat but used to answer the request at
+   once, on the frame after LoadLevel, before the Stage's own BeforeBehavior had
+   seen it: the old level stayed at full brightness up to the change and the new
+   one flashed in for a frame before its entrance fade started. So the poll now
+   waits for the same predicate the ROM's BeforeBehavior waits on: the installed
+   fader (data_0209f5bc) at its end. Every fader the Stage installs answers
+   IsAtEnd with FaderBrightness::IsAtEnd, `currInterp == 0x1000`
+   (src/engine/fader/_ZN15FaderBrightness7IsAtEndEv.cpp; hal/fader_wipes.cpp's
+   wipes and data_0208eb2c's slot 0x18 both route there), read here as the
+   word it compares. The fader steps in phase 2 (port_frame_phase2) and this
+   poll is phase 3, so the frame the fader reaches its end is answered here,
+   before BeforeBehavior's mark on that frame; the Stage is never marked, and
+   the port's in-place change runs exactly as it did before, only later.
+
+   NOT WAITED FOR: a level this build does not mount (the apply declines it,
+   and a decline must hand control back at once), a boot with no Stage or no
+   installed fader, and anything past a backstop of twice the ROM's 0x1e frames
+   plus slack, which is a harness rule and says so. */
+extern "C" void *data_0209f5bc;            /* the installed fader */
+
+static int port_level_exit_fade_pending(void)
+{
+    static int waited = 0;
+    static int said = 0;
+    const int want = data_02092110;
+    const void *fader = data_0209f5bc;
+    const int at_end =
+        fader && *(const int *)((const char *)fader + 4) == 0x1000;
+    if (at_end || !fader || !port_stage_object() ||
+        !port_level_is_mounted(want) || waited >= 2 * 0x1e + 8) {
+        if (said)
+            std::fprintf(stderr, "  [lvl] exit fade: level %d answered after %d "
+                         "frame(s) (%s)\n", want, waited,
+                         at_end ? "the installed fader is at its end"
+                         : waited >= 2 * 0x1e + 8 ? "BACKSTOP: the fader never "
+                           "reached its end"
+                         : "nothing to wait for");
+        waited = 0;
+        said = 0;
+        return 0;
+    }
+    if (!said) {
+        said = 1;
+        std::fprintf(stderr, "  [lvl] exit fade: level %d requested; waiting for "
+                     "the installed fader %p (interp %d) to reach its end, as "
+                     "dScene_c::BeforeBehavior does\n", want, fader,
+                     *(const int *)((const char *)fader + 4));
+    }
+    ++waited;
+    return 1;
+}
+
 extern "C" int port_level_change_poll(void)
 {
     if (data_02092110 < 0 && port_scene_crossing_due())
         port_level_scene_crossing();
     if (data_02092110 < 0)
+        return 0;
+    if (port_level_exit_fade_pending())
         return 0;
     const int changed = port_level_change_apply();
     port_scene_request_release("the level change has been serviced (or "
