@@ -1481,16 +1481,21 @@ void inset_map_selftest(int w, int h)
  * Read straight out of src/_ZN5Stage9LC_UpdateEv.cpp. Case 0 calls
  * Stage::UpdateMenuButtons(1) -- the call that recolours BG1's screen entries
  * into the three plates -- and sets data_0209f2d4 = 1 in the same statement
- * block, so the plates are on from the frame that word becomes 1. Every one
+ * block, so the compose is up from the frame that word becomes 1. Every one
  * of the three answer arms in case 3 calls Stage::UpdateMenuButtons(0) and
- * moves the state to 4 or to 6 in the same tick, so the plates are off from
+ * moves the state to 4 or to 6 in the same tick, so the compose is down from
  * the frame the answer is taken. The word is 0 before case 0 runs and is put
  * back to 0 by case 6.
  *
+ * THE PLATES ARE NOT VISIBLE FROM STATE 1, THOUGH: the ROM enables the two
+ * layers they live on only in case 2 (`data_0209d454 |= 3`, state 3), and
+ * states 1 and 2 are the coin count with the level map still on engine B. So
+ * the compose draws engine B's menu layers alone (g_sub_menu, below), which
+ * are empty until case 2 and the buttons from then on.
+ *
  * WHY THE PAIR AND NOT THE STATE ALONE: data_0209f2d4 is only a state word
  * while the level-clear machinery is running at all, and what says it is
- * running is data_0209f20c -- Stage::Behavior's own gate. The pair is true
- * over exactly the frames the plates are on the screen and over no others.
+ * running is data_0209f20c -- Stage::Behavior's own gate.
  *
  * WHERE THE RECTANGLES COME FROM: this one place, once a frame, exactly the
  * way hal_sub_panel_geometry is the one place that decides where the map
@@ -1754,6 +1759,43 @@ void swap_trace(int w, int h, int frame)
    it. Same object, same internal linkage. */
 extern ntr::SubFramebuffer g_sub;
 
+/* ENGINE B'S MENU LAYERS ALONE: the only source the plates are drawn from.
+ *
+ * THE BUTTONS ARE TWO BACKGROUNDS AND THE MAP IS THE REST, and the ROM says
+ * which is which. Stage::LC_Update's case 2 (src/_ZN5Stage9LC_UpdateEv.cpp)
+ * turns the menu on with `data_0209d454 |= 3`: sub BG0 and BG1, the layer
+ * mask this file publishes into DISPCNT_B bits 8..12. Case 0 points sub BG1
+ * at the plates' screen block (0x0400100A, base 0xd) and case 4 at the save
+ * box's (base 0xe). What a course keeps on engine B the rest of the time is
+ * the level map, BG3, and its sprites, OBJ -- the in-course mask is 0x18 --
+ * with BG2 the touch marker (see ppu_sub_set_bg_suppress's banner).
+ *
+ * The finished raster, g_sub, carries all of them, and it is what the plates
+ * used to be copied out of. Two things followed, both measured on the 0.5.0
+ * build (the star row, level 6, SM64DS_SAVE_MENU_ON_TOP=1):
+ *   - the compose is up from state 1 (the coin count, frame 368) but the ROM
+ *     enables the menu layers only in case 2 (state 3, frame 415), so for
+ *     every frame in between the three plate bands on the top screen were the
+ *     course map: three horizontal strips of it across the middle of the
+ *     picture;
+ *   - once the buttons are on, every plate-row pixel the button art leaves
+ *     uncovered is still the map, and the backdrop key below cannot reach it.
+ * So the plates come from a second scan-out of engine B with every layer but
+ * BG0 and BG1 treated as off. The ROM's registers are not written (the
+ * suppression is read-only, see ntr/ppu.h) and the game reads back exactly
+ * what it wrote. Before case 2 that scan-out is empty and no plate is drawn;
+ * after it, it is the buttons and nothing else. */
+const uint32_t kMenuLayerSuppress = (1u << 10) | (1u << 11) | (1u << 12);
+ntr::SubFramebuffer g_sub_menu;
+
+/* The same suppression hal_sub_screen_present installs for the corner-inset
+   layout every frame (the improved map's touch-marker removal), put back
+   after the menu scan-out so nothing later in the frame sees the menu's. */
+uint32_t inset_bg_suppress(void)
+{
+    return improved_map_on() ? (1u << 10) : 0u;
+}
+
 /* One band of the LIFTED LETTERING, moved up or down the picture. Both the
    overlay and the framebuffer are indexed at a stride of SCREEN_W -- the
    overlay is written by hal/message_compositor.cpp's own blit, at the host
@@ -1802,13 +1844,18 @@ void swap_present(unsigned *dst, int w, int h)
        the course map, see the banner over kPlateRows), and a source pixel
        still carrying the backdrop is not drawn either (the eight columns of
        margin either side of every plate, and the rounded corners). What
-       lands on the picture is the plate, its outline and its lettering. */
+       lands on the picture is the plate, its outline and its lettering.
+       THE SOURCE IS THE MENU LAYERS' OWN SCAN-OUT, never g_sub: see the
+       banner over g_sub_menu. */
+    ntr::ppu_sub_set_bg_suppress(kMenuLayerSuppress);
+    ntr::ppu_scanout_sub(g_sub_menu);
+    ntr::ppu_sub_set_bg_suppress(inset_bg_suppress());
     const unsigned key = menu_backdrop_px();
     for (int y = 0; y < g_sw.ph; ++y) {
         int sy = kMenuFirstRow + (int)(((long long)y * g_sw.pden) / g_sw.pnum);
         if (sy >= kMenuLastRow) sy = kMenuLastRow - 1;
         if (!menu_plate_row(sy)) continue;
-        const unsigned *srow = g_sub.px[sy];
+        const unsigned *srow = g_sub_menu.px[sy];
         for (int x = 0; x < g_sw.pw; ++x) {
             int sx = (int)(((long long)x * g_sw.pden) / g_sw.pnum);
             if (sx >= ntr::SUB_W) sx = ntr::SUB_W - 1;
