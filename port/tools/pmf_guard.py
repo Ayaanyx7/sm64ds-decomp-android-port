@@ -116,13 +116,12 @@ LEDGER = [
      "measured it off the TU's own listing and seated __fastcall faces)"),
 
     ("CDECL", r"^\?seats_cdecl@\?1\?\?port_mg_base_writer_seat@@",
-     "dMgState_c: twenty of these are group A, the setter's own table, and "
-     "the only reader of the object's +0x00 field is the host copy "
-     "__ZN10dMgState_c8SetStateEi, whose mgbase_dispatch_seated is a plain "
-     "cdecl call that PUSHES the receiver. The other seven land in the "
-     "020b3278 object, whose two readers are the FLAT C dispatchers "
-     "_func_ov004_020b321c and _func_ov004_020b31b4, f(self) tail jumps that "
-     "leave the caller's own pushed argument at [esp+4]"),
+     "dMgState_c: the seven cells that land in the 020b3278 object, whose "
+     "two readers are the FLAT C dispatchers _func_ov004_020b321c and "
+     "_func_ov004_020b31b4, f(self) tail jumps that leave the caller's own "
+     "pushed argument at [esp+4]. (Group A, the setter's own twenty, left "
+     "this table in run linkfull lane PMFMG1 for seats_ecx_a above: the "
+     "matched setter dispatches them with the receiver in ecx.)"),
     ("CDECL", r"^\?cells_field@\?1\?\?port_mg_framework_tables_seat@@",
      "data_ov004_020bf428 and _020bf4f8: func_ov004_020b3278 copies these "
      "into the 020b3278 object at +0x00 and +0x08, which _func_ov004_020b321c "
@@ -174,19 +173,20 @@ LEDGER = [
      "ecx,eax / pop ebp / jmp`, so [esp+4] really is the receiver there",
      r"^_func_ov077_(?!02126640|0212679c|02126ad0|02126a50|021269a8)"),
     ("ECX", r"^\?g_ov060_states@",
-     "ov060's Bowser pack: the four tables dispatched by __thiscall members "
-     "(?Behavior and ?InitResources of BowserFire, ?Behavior of "
-     "BowserSkyPlatform, and the Bowser tail) already carry the ov60_* "
-     "__fastcall faces and must keep them. The raw matched bodies in this "
-     "table are the adjudicated __cdecl set below: _func_ov060_021128c0 "
-     "(va 00505da0) decodes the record by hand and dispatches it at +0x8f "
-     "`push edx / call eax`, PUSHING the receiver, and HOST COPY 1 "
-     "func_ov060_02112434 in port/unmatched/Ov060_StateDispatch.cpp spells the "
-     "same call as ((void (*)(char *))e->fn)(thiz + (e->adj >> 1))",
+     "ov060's Bowser pack: the five tables dispatched by a matched TU's own "
+     "pointer-to-member call (?Behavior and ?InitResources of BowserFire, "
+     "?Behavior of BowserSkyPlatform, the Bowser tail, and since run linkfull "
+     "lane SEATS3 retired HOST COPY 1, Bowser's 0211aeb4 through the matched "
+     "_func_ov060_02112434, receiver in ecx) carry the ov60_* __fastcall faces "
+     "and must keep them. The raw matched bodies in this table are the "
+     "adjudicated __cdecl set below: _func_ov060_021128c0 decodes 0211aed4's "
+     "record by hand and dispatches it `push edx / call eax`, PUSHING the "
+     "receiver, and ?Behavior@SpikeBomb reads 0211b1d8 as int[] and does the "
+     "same",
      r"^_func_ov060_(?!02115c1c|02115d50|02115d68|021167c8|021167ec|"
      r"021168c4|021169b0|021169f8|02116b18|02116b68|02116c68|02116d78|"
      r"02116f74|02116f90|021171e8|0211722c|0211747c|02117db8|021180e0|"
-     r"021181b4)"),
+     r"021181b4|021128c0|02112724|021125f0)"),
 
     ("ECX", r"^\?g_scuttlebug_sources@@",
      "Scuttlebug: all eighteen cells take their receiver in ecx. The nine MAIN "
@@ -221,6 +221,87 @@ LEDGER = [
      "at the sibling class the same night. Both the flat dispatcher and the "
      "inlined calls set ecx, so the enter half is thunked too and this "
      "table leaves the exception list"),
+
+    # ---- run linkfull lane PMFMG1: the minigame member-pointer rows -------
+    ("ECX", r"^\?seats_ecx_a@\?1\?\?port_mg_base_writer_seat@@",
+     "dMgState_c group A: the twenty pair globals the matched "
+     "?SetState@dMgState_c@@QAEXH@Z builds sEnterTable from; it copies the "
+     "chosen pair into the message object at +0x00 and dispatches it itself "
+     "with `lea ecx,[edi+esi]; call edx`, nothing pushed, and +0x00 has no "
+     "other reader (runs/linkfull/out/PMFMG1/_ZN10dMgState_c8SetStateEi.asm)"),
+    ("ECX", r"^\?rec@\?1\?\?mem2_record_seat@@",
+     "dScMgMemory2_c's record field: the ten ov004 pairs are copied into "
+     "data_ov004_020bfa34[i]+0 and read back by src/func_ov004_020b52fc.cpp, "
+     "`mov ecx,[eax+4]; add ecx,eax; mov eax,[eax]; pop ebp; jmp eax` -- a "
+     "tail jump with the receiver in ecx and nothing pushed"),
+    ("ECX", r"^\?seats@\?1\?\?port_mg_curling_states_seat@@",
+     "dScMgCurling_c: every cell of this installer's table holds a __fastcall "
+     "face. The three tables this lane added (data_ov006_021418f0, _02141930, "
+     "_021418d8) are dispatched only by src/func_ov006_020e1214.cpp and "
+     "src/func_ov006_020e0d84.cpp, `push <index>; mov ecx,tab[eax*8+4]; mov "
+     "eax,tab[eax*8]; add ecx,<this>; call eax`, callee-popped; the three "
+     "PMFB5 tables before them are read with the same shape"),
+    ("ECX", r"^\?seats2@\?1\?\?port_mg_curling2_states_seat@@",
+     "dScMgCurling2_c: data_ov006_02141978 and _021419d8, dispatched only by "
+     "src/func_ov006_020e6354.cpp, `mov ecx,tab[eax*8+4]; mov eax,tab[eax*8]; "
+     "add ecx,edi; call eax` with zero and one callee-popped argument"),
+    ("CDECL", r"^\?seats_cdecl@\?1\?\?port_mg_esp3d_states_seat@@",
+     "dScMg3DEsp_c: data_ov006_02141f8c and _02141f44 are read only by the "
+     "open-coded src/func_ov006_020e8830.c (`push idx; push obj; call eax`, "
+     "caller cleans) and src/func_ov006_020e82fc.cpp (writes the receiver "
+     "over its own argument slot and tail jumps), so [esp+4] is the receiver "
+     "at both and ecx is not"),
+    ("CDECL", r"^\?seats@\?1\?\?port_mg_flower_sub_seat@@",
+     "dScMgFlower_c's object-head field: the five .data pairs (the sentinel "
+     "0213aee0 included) are read by src/func_ov006_020c3d18.cpp, which "
+     "open-codes the decode and calls `push ecx; call eax`, caller-cleaned"),
+    ("CDECL", r"^\?g_trmpln_seats@@",
+     "the trampoline Mario element field (+0x70 in dScMgTrmpln2Mario_c, +0x64 "
+     "in dMgTrmpln3DMario_c): the thirty-eight .data pairs are read by the "
+     "open-coded src/func_ov006_020c8f20.cpp and src/func_ov006_020cb030.cpp, "
+     "both `push ecx; call edx; add esp,4`"),
+
+    # ---- run linkfull lane PMF2: the member-pointer rows, second wave ------
+    ("ECX", r"^\?g_tti_seats@@",
+     "dScMgTrampoline_c (Trampoline Time): the five .data pairs "
+     "src/minigames/d_s_mg_trampoline.cpp defines are copied into the field "
+     "at +0x5004 by the five installers and read by one dispatcher, the TU's "
+     "?Behavior@dScMgTrampoline_c@@UAEHXZ, `mov ecx,[ebx+5008h]; mov eax,"
+     "[ebx+5004h]; add ecx,ebx; call eax`, nothing pushed"),
+    ("ECX", r"^\?g_objcmd_seats@@",
+     "the Kuppa script's second dispatcher: the twenty-four ov002 records are "
+     "read only by src/func_ov002_020f7d74.cpp, which copies them into its "
+     "function-local table on the first call and dispatches `push a3; push "
+     "a2; push p+7; mov ecx,[tab+i*8+4]; add ecx,self; call [tab+i*8]`, "
+     "callee-cleaned -- the first dispatcher's shape (port_kuppa_cmd_seat)"),
+    ("ECX", r"^\?g_mb_cells@@",
+     "MrBlizzard: the ten cells at data_ov081_02128e14, pointed to from "
+     "[self+0x3f8]. ?Behavior@MrBlizzard@@UAEHXZ (src/_ZN10MrBlizzard8Behavior"
+     "Ev.cpp) calls the tick half at +8 with ecx = this + delta and nothing "
+     "pushed; _func_ov081_02125488 tail jumps into the enter half with `mov "
+     "ecx,[ecx+4]; add ecx,eax; pop ebp; jmp edx`. Every other reader "
+     "compares the cell pointer by address"),
+
+    # ---- run linkfull lane PMF3: the last member-pointer rows --------------
+    ("ECX", r"^_g_pmf3_list_cells$",
+     "the five actor list heads (data_020a4b6c/78/88/98/a8): port_actor_lists_"
+     "seat writes these words into the callback pairs, and their only readers "
+     "are the matched walks src/func_02043fdc.cpp and src/func_020441cc.cpp, "
+     "which call `(node->obj->*thiz->callback)()` with ecx = obj + delta and "
+     "nothing pushed"),
+    ("ECX", r"^_data_02099e(74|7c|84|8c|94|9c|a4|ac|b4|bc|c4|cc)$",
+     "the twelve virtual member-pointer records the four ActorBase::Process "
+     "wrappers pass by value into src/_ZN7fBase_c7ProcessEMS_FivEMS_FbvEMS_"
+     "FvjE.cpp, which calls each `(self->*pmf)()` / `(self->*pmf)(code)` with "
+     "ecx = self + delta, the code pushed and callee-popped; hal/pmf3_cells.cpp"
+     " hosts each as {face, 0}"),
+    ("ECX", r"^_g_pmf3_player_state_faces$",
+     "the 78 Player::State objects (ov002 0x0210ffec..0x02110724): "
+     "port_player_states_seat writes these faces into their 185 cells, and "
+     "the readers are src/_ZN6Player8BehaviorEv.cpp (`(this->*(st->mMain))()`)"
+     " and src/_ZN6Player11ChangeStateERNS_5StateE.cpp (Cleanup and Init), "
+     "both ecx = this + delta with nothing pushed; every other reader compares "
+     "the State pointer by address"),
 ]
 
 

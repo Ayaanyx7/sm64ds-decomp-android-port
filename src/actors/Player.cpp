@@ -233,14 +233,36 @@ int func_ov002_020bd8ac(unsigned char *p)
 // @symbol func_ov002_020bd8c0
 extern "C" {
 void func_ov002_020bd8c0(char* c, unsigned int r1){
+#ifdef _MSC_VER
+    /* SOUND::ENDMUSIC TAKES TWO ARGUMENTS, and on the cartridge the second one
+       rides in r1. src/_ZN5Sound8EndMusicEjj.cpp defines EndMusic(unsigned,
+       unsigned), and none of these four music-layer bodies writes r1 before
+       it calls EndMusic (0x020bd8d8 and 0x020bd900 here, 0x020bd960,
+       0x020bd99c and 0x020bd9c4, 0x020bda24 below), so each passes its own
+       second argument. The one-argument spelling in the #else arms is what
+       mwccarm compiles to those bytes. Under MSVC's cdecl it pushes one word,
+       and EndMusic spills into its second-argument slot, which is then the
+       caller's saved esi: the caller comes back with esi clobbered. These
+       arms pass what the cartridge passes. */
+    extern void _ZN5Sound8EndMusicEjj(unsigned int, unsigned int);
+#else
     extern int _ZN5Sound8EndMusicEjj(unsigned char);
+#endif
     extern int _ZN5Sound8SetMusicEjj(unsigned char, unsigned int);
   unsigned int r2=*(unsigned int*)(c+0x678);
   if(r2==0){
+#ifdef _MSC_VER
+    _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8), r1);
+#else
     _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8));
+#endif
     *(unsigned int*)(c+0x680)=0;
   } else if(*(unsigned int*)(c+0x680)==r1 && r2!=r1){
+#ifdef _MSC_VER
+    _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8), r1);
+#else
     _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8));
+#endif
     _ZN5Sound8SetMusicEjj(*(unsigned char*)(c+0x6d8), *(unsigned int*)(c+0x678));
     *(unsigned int*)(c+0x680)=*(unsigned int*)(c+0x678);
   }
@@ -254,12 +276,20 @@ void func_ov002_020bd8c0(char* c, unsigned int r1){
 // @symbol func_ov002_020bd928
 extern "C" {
 void func_ov002_020bd928(char* c, unsigned int r4){
+#ifdef _MSC_VER
+    extern void _ZN5Sound8EndMusicEjj(unsigned int, unsigned int);
+#else
     extern int _ZN5Sound8EndMusicEjj(unsigned char);
+#endif
     extern int _ZN5Sound8SetMusicEjj(unsigned char, unsigned int);
   unsigned int r2=*(unsigned int*)(c+0x678);
   if(r2==r4){ *(unsigned int*)(c+0x67c)=r4; return; }
   if((r2|*(unsigned int*)(c+0x67c))!=0){
+#ifdef _MSC_VER
+    _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8), r4);
+#else
     _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8));
+#endif
   }
   *(unsigned int*)(c+0x67c)=r4;
   *(unsigned int*)(c+0x680)=r4;
@@ -273,14 +303,26 @@ void func_ov002_020bd928(char* c, unsigned int r4){
 // @symbol func_ov002_020bd984
 extern "C" {
 void func_ov002_020bd984(char* c, unsigned int r1){
+#ifdef _MSC_VER
+    extern void _ZN5Sound8EndMusicEjj(unsigned int, unsigned int);
+#else
     extern int _ZN5Sound8EndMusicEjj(unsigned char);
+#endif
     extern int _ZN5Sound8SetMusicEjj(unsigned char, unsigned int);
   unsigned int r2=*(unsigned int*)(c+0x67c);
   if(r2==0){
+#ifdef _MSC_VER
+    _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8), r1);
+#else
     _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8));
+#endif
     *(unsigned int*)(c+0x680)=0;
   } else if(*(unsigned int*)(c+0x680)==r1 && r2!=r1){
+#ifdef _MSC_VER
+    _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8), r1);
+#else
     _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8));
+#endif
     _ZN5Sound8SetMusicEjj(*(unsigned char*)(c+0x6d8), *(unsigned int*)(c+0x67c));
     *(unsigned int*)(c+0x680)=*(unsigned int*)(c+0x67c);
   }
@@ -294,12 +336,20 @@ void func_ov002_020bd984(char* c, unsigned int r1){
 // @symbol func_ov002_020bd9ec
 extern "C" {
 void func_ov002_020bd9ec(char* c, unsigned int r4){
+#ifdef _MSC_VER
+    extern void _ZN5Sound8EndMusicEjj(unsigned int, unsigned int);
+#else
     extern int _ZN5Sound8EndMusicEjj(unsigned char);
+#endif
     extern int _ZN5Sound8SetMusicEjj(unsigned char, unsigned int);
   unsigned int r2=*(unsigned int*)(c+0x67c);
   if(r2==r4){ *(unsigned int*)(c+0x678)=r4; return; }
   if((*(unsigned int*)(c+0x678)|r2)!=0){
+#ifdef _MSC_VER
+    _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8), r4);
+#else
     _ZN5Sound8EndMusicEjj(*(unsigned char*)(c+0x6d8));
+#endif
   }
   *(unsigned int*)(c+0x678)=r4;
   *(unsigned int*)(c+0x680)=r4;
@@ -373,6 +423,32 @@ void func_ov002_020bdb50(char* c, int arg) {
     extern void func_ov002_020d71a0(void*);
     extern void func_ov002_020d5cec(void);
     extern void func_ov002_020bdb50(void*, int);
+#ifdef _MSC_VER
+    /* THE HELD OBJECT'S SLOTS 18 AND 19 ARE VIRTUAL CALLS: Actor::OnYoshiTryEat()
+       and Actor::OnTurnIntoEgg(Player &), the same two slots St_Swallow_Main
+       spells as virtuals (src/_ZN6Player15St_Swallow_MainEv.cpp). On ARM the
+       #else spelling below, a raw function-pointer call through the vtable, is
+       the same instructions as a virtual call (r0 = the held object, r1 = this
+       Player), and it is what mwccarm compiles to the ROM's bytes. Under MSVC it
+       is not: a raw function-pointer call is cdecl (every argument pushed, the
+       caller cleans), while every seated slot-18/19 face is the thiscall-shaped
+       __fastcall (the receiver in ecx, the argument pushed, the callee pops it).
+       At slot 19 the face read the held object as its Player argument and popped
+       four bytes the caller popped again, so this function returned through its
+       own stacked Player pointer. These arms make the calls the cartridge makes.
+       Pure virtuals: MSVC refuses an undefined virtual in a local class (C3640);
+       the call shape is the same. */
+    struct HeldActor {
+        virtual int v00() = 0; virtual int v01() = 0; virtual int v02() = 0;
+        virtual int v03() = 0; virtual int v04() = 0; virtual int v05() = 0;
+        virtual int v06() = 0; virtual int v07() = 0; virtual int v08() = 0;
+        virtual int v09() = 0; virtual int v10() = 0; virtual int v11() = 0;
+        virtual int v12() = 0; virtual int v13() = 0; virtual int v14() = 0;
+        virtual int v15() = 0; virtual int v16() = 0; virtual int v17() = 0;
+        virtual int OnYoshiTryEat() = 0;               /* slot 18, +0x48 */
+        virtual void OnTurnIntoEgg(char* player) = 0;  /* slot 19, +0x4c */
+    };
+#endif
     func_ov002_020bdc18(c);
     Player_ReleaseHeldActor(c);
     if (arg != 0) return;
@@ -380,8 +456,12 @@ void func_ov002_020bdb50(char* c, int arg) {
     func_ov002_020d71a0(c);
     {
         char* obj = *(char**)(c+0x360);
+#ifdef _MSC_VER
+        int r = ((HeldActor*)obj)->OnYoshiTryEat();
+#else
         char* vt = *(char**)obj;
         int r = (*(int(**)(char*))(vt+0x48))(obj);
+#endif
         if (r == 0) return;
     }
     {
@@ -391,8 +471,12 @@ void func_ov002_020bdb50(char* c, int arg) {
             func_ov002_020d5cec();
             (*(unsigned short *)(((int)c + 0x6ce))) &= ~2;
         } else {
+#ifdef _MSC_VER
+            ((HeldActor*)obj)->OnTurnIntoEgg(c);
+#else
             char* vt = *(char**)obj;
             (*(void(**)(char*, char*))(vt+0x4c))(obj, c);
+#endif
         }
     }
     *(int*)(c+0x360) = 0;

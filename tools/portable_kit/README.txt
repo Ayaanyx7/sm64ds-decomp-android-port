@@ -77,6 +77,7 @@ Xbox controller:
     A                   jump
     X                   run
     B                   punch
+    Y                   first-person look (press again to go back)
     Right trigger       crouch
     Right stick         swing the camera around
     Bumpers             zoom the camera in and out
@@ -89,6 +90,7 @@ Keyboard and mouse:
     Shift               run
     Ctrl                crouch
     X                   punch
+    Z                   first-person look (press again to go back)
     Q and E             swing the camera around
     R and F             tilt the camera
     C                   put the camera back behind Mario

@@ -470,7 +470,9 @@ static unsigned short g_pad_mirror_prev;
    src/func_0203df40.c publishes it and src/_ZN5Stage10CheckInputEv.cpp reads
    it back through the mode-0 remap map at data_02075650 (ROM bytes: A->1,
    B->2, R->0x400, Y->0x800, L->0x4000, X->0x8000). So the translation below
-   is that map's exact inverse, row by row, and nothing else crosses:
+   is that map's exact inverse, row by row, and nothing else crosses (X's row
+   is the look binding, settings.json KeyLook / PadLook, the first person
+   the cartridge enters on DS X):
    the Ctrl-only camera-rotate bits 0x100/0x200 have NO raw source in mode 0
    (on the DS they are the touch screen's arrows, Stage::CheckCameraInput),
    and passing them through as raw bits would land on R and L -- a phantom
@@ -486,6 +488,7 @@ static unsigned short host_btn_to_raw_keys(unsigned short btn)
     if (btn & 0x0400) raw |= 0x0100;   /* crouch: Ctrl 0x0400 <- raw R */
     if (btn & 0x0800) raw |= 0x0800;   /* run   : Ctrl 0x0800 <- raw Y */
     if (btn & 0x4000) raw |= 0x0200;   /* snap  : Ctrl 0x4000 <- raw L */
+    if (btn & 0x8000) raw |= 0x0400;   /* look  : Ctrl 0x8000 <- raw X */
     return raw;
 }
 
@@ -577,6 +580,7 @@ extern unsigned short data_020a4b54;
 extern void **data_020a4bb8;
 extern void *data_020a0eac_c;
 extern void *data_020a0ea0;
+extern void *data_020a0e9c;   /* Heap::rootHeap, read for the [heap] root lines only */
 void hal_fill_model_vtable(void);
 void hal_fill_shadow_vtable(void);
 void hal_fill_mmc_vtable(void);
@@ -814,6 +818,32 @@ void func_0203e0ac(void);
    port/slice_mp3.txt. It owns the switch that used to be hosted at the call
    site below, and the only call site of the seam's close() face. */
 void func_0203df40(void);
+/* run linkfull lane B5INPUT: the game loop's own pad read, phase 0x15
+   (src/func_0201ffcc.c, which calls func_0203df40 above), called from the
+   level loop's input phase point (see THE GAME LOOP'S OWN INPUT STEPS there).
+   The phase id is hal/rom_frame.cpp's. */
+extern "C" void func_0201ffcc(void);
+extern "C" int data_0209d50c;
+/* and phase 0x17: func_0203bc7c turns the four records into PadData (the
+   symbol is hal/comms_fanout_wide.cpp's, which runs the ROM's own body first;
+   func_0203bb60 beside it is phase 0x16, TouchInfo), and the ring words
+   hal/b5input_globals.cpp hosts. */
+extern "C" void func_0203bb60(void);
+extern "C" void func_0203bc7c(void);
+extern "C" unsigned char data_0209d4e8[];
+extern "C" int data_0209d51c;
+extern "C" unsigned short data_0209d534[];
+extern "C" unsigned char data_0209e64c;    /* hal/boot_arms.cpp: the gate */
+extern "C" int data_0209d574[];            /* hal/actor_vtables.cpp: the
+                                              watchdog alarm, ROM span 68 */
+/* run linkfull lane LOOPIN2: phase 0x17's last call, the ROM's soft-reset
+   latch (src/func_02023498.c), the latch byte it raises (hal/auto_bss.cpp), and
+   the lane's census of phases 0x17 and 7 (hal/b5input_globals.cpp). */
+extern "C" void func_02023498(void);
+extern "C" unsigned char data_0209f1e0[];
+extern "C" void port_loopin2_p17(int frame, int latch_before,
+                                 unsigned held_before, unsigned held_after);
+extern "C" void port_loopin2_p7(void);
 /* the ROM's own camera math, which the freecam rig builds its view with:
    the same eye construction func_02009e70 uses and the same two G3i entry
    points plus CopyToViewMat that Camera::Render ends in */
@@ -1430,10 +1460,11 @@ int  port_rom_frame(void);
 int  port_rom_frame_checked(int host, const char *reader);
 void port_rom_frame_rewind(int to);
 void port_rom_frame_report(void);
-/* func_020197b8 PHASE 2's head (hal/scene_boot.cpp): the current scene's
-   graphics block, word 0, which is scene slot 23's only dispatch site in the
-   whole ROM. Answers 1 for a block this port has not seated. */
-int port_graph_block_word0(void);
+/* func_020197b8 PHASE 2 (hal/fader_wipes.cpp): the ROM's own func_02019390 --
+   the graphics block's word 0, OAM::Reset, the GX reset and the three fader
+   steps -- inside the fader stepping bracket, then the port's one kept host
+   step, the settle-clear of data_0209d4b0. Called at the ROM's point below. */
+void port_frame_phase2(void);
 /* gate 31: the level handoff (hal/level_change.cpp). port_level_change_poll
    sits where Scene::SpawnIfNecessary sits in func_020197b8 -- after input,
    before the actor phases -- and returns 1 on the frame a new level came up,
@@ -1453,11 +1484,10 @@ void ExitLevel(void);
 void LoadLevelNoReturn(int level, unsigned entrance, unsigned star,
                        unsigned reason);
 extern signed char data_0209f2f8;    /* the level currently up */
-/* gate 31 faders (hal/fader_wipes.cpp): port_fader_advance steps whatever fade
-   is in motion one frame and writes the 2D master-blend register the ROM's own
-   FaderColor::AdvanceFade writes; port_fader_blend_state reads it back so the
-   compositor can fade the framebuffer. */
-void port_fader_advance(void);
+/* gate 31 faders (hal/fader_wipes.cpp): phase 2 (port_frame_phase2 above) steps
+   whatever fade is in motion one frame through the ROM's own AdvanceFade, which
+   writes the 2D master-blend register; port_fader_blend_state reads it back so
+   the compositor can fade the framebuffer. */
 int port_fader_blend_state(int *evy, int *toWhite);
 void port_fader_start_color(int frames, int toEnd, unsigned short color);
 /* dialogue pipeline (hal/message_pump.cpp, hal/message_compositor.cpp,
@@ -1527,12 +1557,27 @@ void port_actor_render(void);        /* phase 5: the render bucket */
    the actor bucket, the submission after the level pass.
    port_particle_frame is Stage::Render's SysTracker::Update statement, so the
    slot-9 seat retires it: the ROM's own body makes that call now, and this one
-   survives under SM64DS_STAGE_SLOT9_HOST=1 only. port_particle_render is
-   GraphCallback1's, which no seated slot runs, so it stays unconditional. */
+   survives under SM64DS_STAGE_SLOT9_HOST=1 only. GraphCallback1's call is
+   the ROM's too now: phase 5 (port_frame_phase5, hal/rom_frame.cpp, run
+   linkfull lane K2RENDER) runs func_02019404, which dispatches the Stage
+   block's word 1; the two particle_bridges brackets around it keep the
+   SM64DS_NO_FX_RENDER A/B and SM64DS_FX_TRACE=3's triangle dump. */
 void port_particle_frame(void);      /* Stage::Render: SysTracker::Update */
-void port_particle_render(void);     /* GraphCallback1: Particle::RenderAll */
+void port_frame_phase5(void);        /* phase 5: func_02019404 (hal/rom_frame.cpp) */
+int port_particle_phase5_begin(void);
+void port_particle_phase5_end(void);
 void port_particle_counts(int *systems, int *particles);
 void port_actor_scene_pass(void);    /* phase 1: scene-tree housekeeping */
+/* THE ROM'S WHOLE ACTOR FRAME (run linkfull, lane K1LOOP; hal/actor_registry):
+   func_02044120 at phase 4, and the per-frame account that says each list was
+   walked once. The three split calls above are what a frame that is not the
+   ROM's still makes. */
+void port_actor_frame(int level_camera);
+void port_actor_frame_begin(void);
+void port_actor_frame_end(int frame, const char *loop);
+int port_actor_frame_split_forced(void);
+/* the host rig's seat on Camera::Render's face (hal/camera_bridges.cpp) */
+extern void (*port_level_camera_render_hook)(void *cam);
 void port_actor_census(void);
 void port_actor_lists_probe(void);
 /* the [lvl-perf] level-entry spans (hal/level_boot.cpp). The harness owns the
@@ -1733,6 +1778,11 @@ extern "C" void _ZN4CP1516WaitForInterruptEv(void);
    circuit itself proven rather than the whole thing merely suspect. */
 extern "C" void OS_SleepThread(unsigned short *q);
 extern "C" unsigned char data_0209d500[4];
+/* AND THE ROM'S OWN TU FOR IT (run linkfull, lane LOOPIN2): src/func_0201a4bc.c
+   is that one statement, OS_SleepThread(data_0209d500), so phase 7 below calls
+   it by name where it used to carry the statement inlined. Same sleep, same
+   wait, same host pacing inside it: the body is identical. */
+extern "C" void func_0201a4bc(void);
 /* hal/boot2_thread.cpp. Raised around the sleep below while a frame is being
    re-simulated, so the halt inside it takes no radio turn: run link100, lane
    DET, and the whole reason is at the call site. */
@@ -3723,6 +3773,38 @@ static void fc_push_view(void *cam, const int *eye, const int *at)
         *(int *)((char *)cam + 0x100), data_0209ee90[0x44 / 4], 1, 0);
     _ZN3G3i7LookAt_EPK7Vector3S2_S2_bP9Matrix4x3(e, data_02086efc, a, 1, mat);
     _Z13CopyToViewMatPK9Matrix4x3(mat);
+}
+
+/* THE RIG'S SEAT ON THE ROM'S CAMERA::RENDER (run linkfull, lane K1LOOP). On a
+   frame the level loop hands to the ROM's func_02044120, Camera::Render runs
+   at the head of the render walk (render priority 0) through the Camera's
+   slot-9 face, and this runs straight after it (hal/camera_bridges.cpp
+   port_level_camera_render_hook) -- the three host statements that followed
+   the by-hand hal_camera_render, in the same order, still ahead of every
+   other Render: the analog pivot's step (it only has to follow the Player's
+   Behavior, which the behaviour walk has run), the rig's view re-push in the
+   analog and free modes (stood down during a cutscene, the fc48 gate), and
+   the widescreen widen of the Clipper Camera::Render has just seeded. Frames
+   the ROM does not walk make the old hand calls instead and never reach it. */
+static char *g_k1_player;       /* the level loop's player, set per ROM frame */
+static void k1_level_camera_render_hook(void *cam)
+{
+    static int no_cutscene_cam = -1;
+    if (no_cutscene_cam < 0)
+        no_cutscene_cam = getenv("SM64DS_NO_CUTSCENE_CAM") ? 1 : 0;
+    const int cutscene_cam = !no_cutscene_cam && data_0209fc48 != 0;
+    if (cam_mode == CAM_ANALOG && !rb_replaying() && g_k1_player)
+        an_step_pivot(g_k1_player);
+    if (cam_mode != CAM_DS && !cutscene_cam) {
+        int fceye[3];
+        const int *pivot = cam_mode == CAM_ANALOG
+                               ? an_pivot
+                               : (const int *)((char *)cam + 0x80);
+        fc_eye(pivot, fceye);
+        fc_push_view(cam, fceye, pivot);
+    }
+    if (ntr::widescreen)
+        hal_camera_widen_frustum();
 }
 
 /* ---- THE DEBUG MENU (port mod) ----------------------------------------
@@ -6692,7 +6774,8 @@ static void click_test_finish(void)
 /* ---- THE DS KEYPAD BITS BOTH PATHS AGREE ON (port mod, run link60 SW1) ----
    Buttons -> the Ctrl held/pressed fields directly (CheckInput's remap tables
    are ROM pointers with no host image). DS bits: 1 = A (punch), 2 = B (jump),
-   0x400 = X (crouch), 0x800 = Y (the dash button the walk core reads).
+   0x400 = crouch (DS R), 0x800 = Y (the dash button the walk core reads),
+   0x8000 = X (look: the close-up camera, then first person).
 
    Xbox layout per Tango: A jump, X run, B punch, bumpers rotate the camera. RT
    is meant to be crouch, but the old "crouch = 0x100" binding was a GUESS and
@@ -6720,6 +6803,8 @@ static unsigned short host_ds_buttons(int pad_live, const XPad *pad)
     if (g_run_key && key_live(g_run_key)) btn |= 0x800;
     if (key_act(HOST_KEY_CROUCH)) btn |= 0x400;
     if (key_act(HOST_KEY_ATTACK)) btn |= 1;
+    /* DS X, settings.json KeyLook: Z by default, beside the attack key */
+    if (key_act(HOST_KEY_LOOK)) btn |= 0x8000;
     if (pad_live) {
         if (pad_act(pad, HOST_PAD_JUMP)) btn |= 2;       /* A by default  */
         /* X by default; the rebind row moves it (0 = unbound) */
@@ -6731,6 +6816,9 @@ static unsigned short host_ds_buttons(int pad_live, const XPad *pad)
            trigger too, so nobody's crouch vanishes on update. */
         if (pad_act(pad, HOST_PAD_CROUCH)) btn |= 0x400;
         if (!host_setting_pad(HOST_PAD_CROUCH) && pad->rt > 100) btn |= 0x400;
+        /* DS X, PadLook: Y by default, the top face button, where X sits on
+           the DS (the face buttons map by position: A is DS B, B is DS A) */
+        if (pad_act(pad, HOST_PAD_LOOK)) btn |= 0x8000;
         /* the bumpers are camera-rotate and go in with the rest of the rotate
            input at the level loop's own call site, where the freecam gate is */
     }
@@ -8894,7 +8982,7 @@ static int scene_host_input_frame(HWND hwnd, int frame, XPad *pad,
            uses -- so the title's key word comes from the keyboard and the
            pad, never from a record something else may be filling. This
            word is MIXED convention by construction: host_ds_buttons'
-           four bits are Ctrl-convention and go through the translator;
+           five bits are Ctrl-convention and go through the translator;
            the d-pad, Start and Select added above are already raw DS bits
            (0xf0, 0x08, 0x04) and pass straight through. Named (run
            link100, lane INPUTRAW) because the pad-mirror store below
@@ -10190,6 +10278,19 @@ int main(void)
             data_020a0eac_c, 0x3b000u,
             _ZN22ExpandingHeapAllocator10MemoryLeftEv(
                 *(void **)((char *)data_020a0eac_c + 0x14)));
+    /* AND THE ROOT HEAP, the parent the game heap was just carved out of and
+       the heap everything else lands in: Memory::defaultHeapPtr is the root,
+       so every level file, model, particle work area and _Znwj object the
+       game news goes here (run linkfull, lane ROOTLEAK1). No gate read it and
+       a level change leaked 35840 bytes of it every time for waves; the
+       per-change reading is the [lvl] root line in hal/level_change.cpp and
+       the closing one is beside the end-of-run [heap] line. Heap+0x14 is the
+       ExpandingHeap's allocator, the same word the game-heap line reads. */
+    if (data_020a0e9c)
+        fprintf(stderr, "[heap] root heap %p, %u free after boot\n",
+                data_020a0e9c,
+                _ZN22ExpandingHeapAllocator10MemoryLeftEv(
+                    *(void **)((char *)data_020a0e9c + 0x14)));
 
     /* and the tail of func_0201a054, after its own InitializeGameHeap line:
        the fade word pair and the fatal-vector pair that ends the function. */
@@ -10974,7 +11075,7 @@ int main(void)
     {
         char b[HOST_KEY_COUNT][20];
         fprintf(stderr, "[keys] walk %s %s %s %s (alt %s %s %s %s) jump %s attack %s "
-                        "crouch %s start %s select %s\n",
+                        "crouch %s start %s select %s look %s\n",
                 run_key_name(g_key[HOST_KEY_UP], b[0], sizeof b[0]),
                 run_key_name(g_key[HOST_KEY_LEFT], b[1], sizeof b[0]),
                 run_key_name(g_key[HOST_KEY_DOWN], b[2], sizeof b[0]),
@@ -10987,15 +11088,17 @@ int main(void)
                 run_key_name(g_key[HOST_KEY_ATTACK], b[9], sizeof b[0]),
                 run_key_name(g_key[HOST_KEY_CROUCH], b[10], sizeof b[0]),
                 run_key_name(g_key[HOST_KEY_START], b[11], sizeof b[0]),
-                run_key_name(g_key[HOST_KEY_SELECT], b[12], sizeof b[0]));
+                run_key_name(g_key[HOST_KEY_SELECT], b[12], sizeof b[0]),
+                run_key_name(g_key[HOST_KEY_LOOK], b[13], sizeof b[0]));
         char pb[HOST_PAD_COUNT][20];
         fprintf(stderr, "[keys] pad jump %s attack %s crouch %s (and the right "
-                        "trigger) start %s select %s\n",
+                        "trigger) start %s select %s look %s\n",
                 run_pad_name(g_pad[HOST_PAD_JUMP], pb[0], sizeof pb[0]),
                 run_pad_name(g_pad[HOST_PAD_ATTACK], pb[1], sizeof pb[0]),
                 run_pad_name(g_pad[HOST_PAD_CROUCH], pb[2], sizeof pb[0]),
                 run_pad_name(g_pad[HOST_PAD_START], pb[3], sizeof pb[0]),
-                run_pad_name(g_pad[HOST_PAD_SELECT], pb[4], sizeof pb[0]));
+                run_pad_name(g_pad[HOST_PAD_SELECT], pb[4], sizeof pb[0]),
+                run_pad_name(g_pad[HOST_PAD_LOOK], pb[5], sizeof pb[0]));
     }
     /* SM64DS_DECEL_PROBE=1 (under a selftest): hold the stick and the dash
        button until DECEL_RELEASE, then let go of both and log the horizontal
@@ -11223,6 +11326,10 @@ int main(void)
         }
         double t_frame, t_phase;
         int game_ticked = 1;   /* cleared when a tick is skipped */
+        /* 1 = this frame's actor work is the ROM's func_02044120 at phase 4
+           (lane K1LOOP): decided at the phase-4 point below, read by the
+           camera block, the render block and the scene-tree point. */
+        int k1_rom = 0;
         while (W.PeekMessageA_(&msg, 0, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) return 0;
             W.TranslateMessage_(&msg);
@@ -12042,9 +12149,17 @@ int main(void)
                Under the real camera this is NOT written by hand: the
                camera publishes its own heading through func_0203dafc ->
                data_020a1040 -> func_0203e0ac -> data_020a1154, and
-               GetAngleToCamera reads the far end of that chain. */
+               GetAngleToCamera reads the far end of that chain.
+
+               The old dev rig (SM64DS_OLD_CAMERA) writes the LOCAL record's
+               heading, the head of that chain, since run linkfull lane
+               B5INPUT: the ROM's own pad read (phase 0x15, a little further
+               down this frame) now runs on every frame, and its echo copies
+               the local record's heading into all four per-player records, so
+               a store straight into record 0 would be overwritten before the
+               tick read it. */
             if (!real_camera)
-                *(short *)((char *)data_020a1164 + 0) =
+                *(short *)data_020a1050 =
                     (short)((int)(cam_yaw * (32768.0f / 3.14159265f)) + 0x8000);
             /* TEMPORARY headless input: OR any SM64DS_PROBE_INPUT press for this
                frame into the raw pad mirror BEFORE CheckInput, so the remap and
@@ -12089,10 +12204,10 @@ int main(void)
         }
 
         /* Buttons -> the Ctrl held/pressed fields directly (CheckInput's
-           remap tables are ROM pointers with no host image). The four bits
+           remap tables are ROM pointers with no host image). The five bits
            this path and the windowed scene path must not disagree about are
-           host_ds_buttons' (jump, punch, crouch and the run button the player
-           bound, off the keyboard and off the pad); everything below is this
+           host_ds_buttons' (jump, punch, crouch, look and the bound run
+           button, off the keyboard and off the pad); everything below is this
            path's own tail -- the camera-rotate bits behind func_02009e70's own
            reader, run-mode AUTO, and the selftest probes -- and it is
            deliberately not shared, because every level selftest frame in the
@@ -12408,7 +12523,143 @@ int main(void)
                still reaches raw_all this frame. */
             const unsigned short raw_all =
                 (unsigned short)(port_raw_dir_bits() | port_raw_bt_bits_for_mirror);
-            if (!(port::comms_transport() && comms_fanout_on())) {
+            /* ---- THE GAME LOOP'S OWN INPUT STEPS (run linkfull, lane
+               B5INPUT) ------------------------------------------------------
+               src/func_020197b8.c reads the pad at phase 0x15, after phase 7's
+               wait, and the next frame consumes it at phases 0x16 / 0x17,
+               before phase 3 spawns and phase 4 ticks:
+
+                   data_0209d50c = 7;    func_0201a4bc();   the VBlank sleep
+                   data_0209d50c = 0x15; func_0201ffcc();   the pad read
+                   ... phase 9, then the next frame's 0xb and 2 ...
+                   data_0209d50c = 0x16; func_0203bb60();   TouchInfo
+                   data_0209d50c = 0x17; func_0203bc7c();   PadData
+
+               The host's between-frame duties -- the message pump and the
+               live keypad poll above, which is what the DS's KEYINPUT simply
+               IS at the instant the ROM reads it -- belong to phase 7's halt,
+               so THIS is the ROM's point on this loop: the frame's key word is
+               final and nothing of phase 3 or 4 has run. Phases 9, 0xb and 2
+               read no input word, so the order the ROM gives every word the
+               read touches is kept. (At the loop's foot instead, the read
+               would hand the tick the PREVIOUS frame's poll: a frame of input
+               lag the cartridge does not have.)
+
+               func_0201ffcc is the ROM's own wrapper round func_0203df40: it
+               holds the data_0209d574 watchdog alarm off across the read,
+               stamps its tick and republishes func_0203daac's count into
+               data_0208f274. It returns at once unless data_0209e64c is up,
+               and src/func_0201fec8.c:44 raises that on every boot (the a054
+               seam's R2b arm runs it).
+
+               IT RETIRES the camera block's direct func_0203df40() call further
+               down this frame (run mg16 lane MP3): a second call would read the
+               pad twice. The KEYINPUT publish moves up with it, because it
+               must land before the read (hal/comms_conductor.cpp, THE STUCK
+               CONTROLLER); the value is the word that block published, the
+               direction stash OR the button stash, which is raw_all. The one
+               thing the move shifts is WHERE the local record's heading
+               (Camera::Behavior's, or the rig's in analog mode) is echoed into
+               the four per-player records: here, at the top of the next frame,
+               rather than straight after the camera. Its first reader is still
+               the next frame's tick (GetAngleToCamera), so Mario steers by the
+               same heading on the same frame. */
+            port::comms_publish_pad(port_raw_pad_bits() | port_raw_btn_bits());
+            {
+                /* One line, once: the two words that decide what the ROM's
+                   wrapper does -- data_0209e64c (0 = it returns at once and
+                   the records go stale) and the watchdog's armed flag at
+                   data_0209d574+0x40 (1 = the wrapper's set/restore pair is a
+                   no-op and no alarm is ever armed). */
+                static int b5in_said;
+                if (!b5in_said) {
+                    b5in_said = 1;
+                    fprintf(stderr, "[b5input] phase 0x15 func_0201ffcc: "
+                            "data_0209e64c=%u watchdog+0x40=%u key=%04x\n",
+                            (unsigned)data_0209e64c,
+                            (unsigned)((const unsigned char *)data_0209d574)[0x40],
+                            (unsigned)(port_raw_pad_bits() | port_raw_btn_bits()));
+                }
+                const double t_rb = rb_replaying() ? ovl_now_ms() : 0;
+                data_0209d50c = 0x15;
+                func_0201ffcc();
+                if (rb_replaying()) rb_replay_phase(6, ovl_now_ms() - t_rb);
+            }
+            /* ---- PHASE 2, THE FRAME'S RESET (run linkfull, lane RESET2) -----
+               func_020197b8.c:38 is `data_0209d50c = 2; func_02019390();`,
+               after the lid machine (0xb, DS-only, not run here) and before the
+               input steps below, so it follows phase 0x15 above in the ROM's own
+               cycle (7, 0x15, 9, then the next frame's 0xb, 2, 0x16, 0x17, 3,
+               4): the graphics block's word 0, OAM::Reset, the GX reset
+               (func_0200f4b4), and the three fader steps, all before phase 3
+               spawns and phase 4 ticks. hal/fader_wipes.cpp's
+               port_frame_phase2 is the ROM body inside the fader stepping
+               bracket plus the port's one kept host step (read its banner).
+
+               EVERY FRAME, as the fade step it replaces always ran here: with
+               the debug menu holding the world still the frame's reset and a
+               fade on screen keep going (the DS has no pause). On a level the
+               graphics block is null, so word 0 is never dispatched and the
+               full arm runs, as the cartridge's Stage block answers 1.
+
+               IT RETIRES three host pieces of the same phase: the fade step and
+               word-0 beat that used to sit AFTER the actor tick further down
+               this frame (port_fader_advance, port_graph_block_word0), and the
+               OAM::Reset in hal_sub_screen_frame_begin at the top of this
+               frame. ntr::gx_reset in the render block below is NOT one of
+               them: it is the host rasteriser's frame opener (the hardware's
+               swap), which the ROM never calls. */
+            data_0209d50c = 2;
+            port_frame_phase2();
+            /* PHASES 0x16 AND 0x17, the second half of the same block: the
+               ROM's own PadData builder, then func_020197b8.c:43-46 -- the
+               input ring -- in the ROM's order, right after the read that
+               filled the four records.
+
+               SINGLE PLAYER (no transport): func_0203bc7c turns the four
+               records into PadData[4] -- held, the press edge against its own
+               previous-keys array (data_020a0e50), the release edge, the
+               opposing-direction mask, and data_020a0e44 when the word is
+               L+R+START+SELECT (0x30c; its one reader, func_02023498, is not
+               called yet: see the ring below) -- which RETIRES the host's direct
+               PadData store: the key word reaches Stage::CheckInput through
+               KEYINPUT, func_0203df40's record and func_0203bc7c, the way the
+               cartridge carries it. Phase 0x16 (func_0203bb60, TouchInfo) is
+               NOT run here, on purpose: hal/sub_screen.cpp's poll_touch writes
+               TouchInfo straight from the stylus, and the only other source is
+               func_0203b9bc's three-of-four debounce over hal/tsc_arm7.cpp's
+               ring, which that file feeds ONE sample a frame where the ROM asks
+               the ARM7 for four (src/func_0203bbc0.c:21, func_0205eeac(0, 4,
+               &data_020a0df8, 9)), so it would lag every tap by two frames.
+
+               THE SPLIT SYMBOL: data_020a0e5a IS PadData[i].pressed on the DS
+               and separate storage here (hal/auto_bss.cpp), so the four pressed
+               halfwords the ROM just wrote are copied into it at the same
+               instant -- the aliasing, restored after the ROM's writer, exactly
+               as the direct store below restored it for its one slot.
+
+               A SESSION WITH THE FAN-OUT ON: both of the ROM's steps, moved here
+               from the camera block further down this frame (run mg15 lane
+               MP1), because they must follow the read that filled the records
+               and the read runs here now. ADVENTURE (a transport up with the
+               fan-out off, hal/comms_conductor.cpp) keeps the direct store
+               below, into its own slot, unchanged. */
+            const int b5_transport = port::comms_transport() != 0;
+            const int b5_fan = comms_fanout_on() ? 1 : 0;
+            if (b5_fan) {
+                data_0209d50c = 0x16;
+                func_0203bb60();
+                data_0209d50c = 0x17;
+                func_0203bc7c();
+            } else if (!b5_transport) {
+                data_0209d50c = 0x17;
+                func_0203bc7c();
+            }
+            if (!b5_transport)
+                for (int b5_i = 0; b5_i < 4; ++b5_i)
+                    *(unsigned short *)((char *)data_020a0e5a + b5_i * 4) =
+                        *(unsigned short *)((char *)data_020a0e58 + b5_i * 4 + 2);
+            if (b5_transport && !b5_fan) {
                 /* THE LOCAL SLOT, not always slot 0. PadData strides 4 bytes per
                    player ({u16 held, u16 pressed}); on the child data_0209f250 is
                    1, so the local pad must land in PadData[1] or it drives the
@@ -12453,6 +12704,87 @@ int main(void)
                    hal/message_pump.cpp's own publish is unchanged and still
                    runs later in the frame. */
                 *(unsigned short *)((char *)data_020a0e5a + lo) = edge;
+            }
+            /* func_020197b8.c:43-46: the local player's held word into the
+               32-deep ring. The ring has no reader in src/ but the loop itself;
+               these are the cartridge's own words, hosted in
+               hal/b5input_globals.cpp.
+
+               func_020197b8.c:47, func_02023498(): THE SOFT-RESET LATCH, called
+               here after the ring as the ROM orders it (run linkfull, lane
+               LOOPIN2). func_0203bc7c above raises data_020a0e44 when a key
+               word is exactly L+R+START+SELECT (0x30c); func_02023498 turns
+               that into data_0209f1e0 plus data_0209f1dc ("still held", so a
+               held combo cannot re-arm it), unless data_0209f1d8 says the
+               minigame menu is holding the reset off; and on every later frame
+               the latch is up it zeroes PadData (func_0203bc50), TouchInfo
+               (func_0203bb14) and the Ctrl records (ResetInput) before phase 3
+               spawns or phase 4 ticks. Every one of those is the ROM's body.
+
+               WHERE THE CARTRIDGE GOES NEXT AND THIS PORT CANNOT. Its
+               dScene_c::BeforeBehavior (the Stage's slot 7, dispatched every
+               frame) starts a 16-frame fade to black on the brightness fader
+               data_0209f5d0, parks it in data_0209f1e4, and at the fade's end
+               asks for scene 1 (the title) and marks the Stage for destruction.
+               Here that fade is stepped by phase 2's func_0202345c through
+               data_0208eacc slot 2, FaderBrightness::AdvanceFade, which
+               hal/scene_boot.cpp still traps (lane FADERTRAP: seating it is a
+               MASTER_BRIGHT rendering change for a screen, not a headless
+               proof). So the fade would never end, the latch would never come
+               down, and every button would stay zeroed: the softlock lane
+               B5INPUT measured on this call. And past a fade the Stage's
+               teardown is hal/stage_bridges.cpp's named abort.
+
+               SO THE LATCH IS ANSWERED HERE, ON THE FIRST FRAME THE ROM'S
+               CLEARS HAVE RUN -- the frame after the rise, the cartridge's first
+               reset frame -- and it is answered the way port_front_end_quit_poll
+               answers every other ROM request to go back to the front end on a
+               level: start the game again at its front door (the title) and
+               post WM_QUIT; the pump at the top of the next frame ends the run
+               before any trapped fade step or Stage teardown can matter. What
+               a player sees is the title coming up, as on the cartridge; what
+               is missing is the fade to black in between, which waits on that
+               trapped slot. Under a selftest there is no successor, the same
+               as the front-end row: it says what it would have done and quits.
+               A re-simulated rollback frame never answers it (the frame it
+               replays already did). */
+            {
+                data_0209d50c = 0x17;
+                const unsigned short b5_v = *(unsigned short *)(
+                    (char *)data_020a0e58 + ((unsigned)data_020a0e40[0] << 2));
+                data_0209d534[data_0209d4e8[0]] = b5_v;
+                data_0209d51c = b5_v;
+                data_0209d4e8[0] = (unsigned char)((data_0209d4e8[0] + 1) & 0x1f);
+                const int srst_up = data_0209f1e0[0] != 0;
+                func_02023498();
+                port_loopin2_p17(frame, srst_up, b5_v,
+                                 *(unsigned short *)((char *)data_020a0e58 +
+                                     ((unsigned)data_020a0e40[0] << 2)));
+                static int srst_answered;
+                if (srst_up && data_0209f1e0[0] && !srst_answered &&
+                    !rb_replaying()) {
+                    srst_answered = 1;
+                    fprintf(stderr, "[loopin2] f%d soft reset: the ROM's latch "
+                            "is up and its clears ran this frame; its fade "
+                            "cannot step on this port (data_0208eacc slot 2 is "
+                            "trapped), so the level loop answers it as a return "
+                            "to the front door\n", frame);
+                    if (g_selftest_frames) {
+                        fprintf(stderr, "[loopin2] soft reset: no successor: "
+                                "this run is a %d-frame selftest, which has no "
+                                "window to hand over\n", g_selftest_frames);
+                    } else if (port_menu_relaunch(-1, -1)) {
+                        fprintf(stderr, "[loopin2] soft reset: started the "
+                                "game again at its front door (the title), "
+                                "this process is quitting\n");
+                    } else {
+                        fprintf(stderr, "[loopin2] soft reset: could not start "
+                                "the front door (win32 %lu): quitting anyway, "
+                                "which lands the player back in the launcher\n",
+                                (unsigned long)GetLastError());
+                    }
+                    W.PostQuitMessage_(0);
+                }
             }
             g_pad_mirror_prev = raw_all;
             /* ---- THE THIRD BUTTON WRITER, AND THE ONE HIS HANDS FOUND ------
@@ -13680,6 +14012,23 @@ int main(void)
                     fprintf(stderr, "[lvl] the new level spawned no player\n");
                     return 3;
                 }
+                /* THE STAGE CAN BE NEW (run linkfull, lane GAMEOVER1). A level
+                   reached through the level-to-scene crossing (the Game Over
+                   screen, hal/level_change.cpp) boots into a Stage built after
+                   the ROM's own teardown destroyed the last one, so the three
+                   pointers main() holds into the Stage are re-read here, with
+                   the expressions the first boot used. On every other change
+                   the Stage is the same object and nothing below moves. */
+                if (real_boot) {
+                    char *ns = (char *)port_stage_object();
+                    if (ns && ns != stage) {
+                        printf("[lvl] the Stage is new: %p -> %p\n",
+                               (void *)stage, (void *)ns);
+                        stage = ns;
+                        level_model = stage + 0x86c;
+                        g_mc = stage + 0x91c;
+                    }
+                }
                 c = (char *)player;
                 /* the character state was read off the boot's Player; across
                    a warp the entrance spawned a fresh one (ExitLevel wipes
@@ -14202,6 +14551,25 @@ int main(void)
            NOTHING BELOW MOVES IN THIS RUNG. The line under this comment is the
            host loop's, unchanged, and it stays the host loop's behaviour on
            both sides of rung D5's knob. */
+        /* PHASE 4 IS THE ROM'S func_02044120 (run linkfull, lane K1LOOP), on
+           every frame that can be: a real boot's spawned actors, the game's own
+           Camera, no F5 freeze (the menu keeps its host frame: the D4 ruling
+           above is about SM64DS_ROM_LOOP's flip and this keeps today's redraw),
+           no rollback replay (parked), no SM64DS_NO_ACTORS A/B, and not a
+           selftest's frame 0, whose geometry probe below resets the buffer on
+           both sides of its own draws. Every other frame walks the host split
+           exactly as before. port_actor_frame_begin sets the frame's account
+           apart from the teardown convergence that may already have walked the
+           dying level's lists at phase 3 (hal/level_change.cpp). */
+        port_actor_frame_begin();
+        {
+            static int k1_no_actors = -1;
+            if (k1_no_actors < 0)
+                k1_no_actors = getenv("SM64DS_NO_ACTORS") ? 1 : 0;
+            k1_rom = boot_spawns && !menu_on && real_camera && !k1_no_actors &&
+                     !rb_skip_actor_render() && !(selftest && frame == 0) &&
+                     !port_actor_frame_split_forced();
+        }
         if (menu_on) {
             game_ticked = 0;
         } else if (boot_spawns) {
@@ -14275,7 +14643,26 @@ int main(void)
             port_vs_match_end_hold();
             {
                 const double rb_t = rb_probe_mode() ? rb_now_ms() : 0.0;
-                port_actor_tick();
+                if (k1_rom) {
+                    /* src/func_020197b8.c phase 4: `func_02044120();`, all five
+                       walks. Its render walk (list 5) submits this frame's
+                       geometry now, as on the DS, so the host geometry frame
+                       opens HERE rather than in the render block below: the
+                       buffer reset (the DS's is empty after the previous swap),
+                       the light, and the slot-9 mark stage9_rendered() reads.
+                       The Camera renders first in that walk (render priority 0)
+                       and the rig rides its face (k1_level_camera_render_hook);
+                       the rasteriser below consumes what the walk submitted. */
+                    stage9_mark();
+                    ntr::gx_reset();
+                    ntr::gx_set_light(0, -0.4f, -0.6f, -0.7f, 0x7FFF);
+                    ntr::gx_enable_lights(0x1);
+                    g_k1_player = c;
+                    port_level_camera_render_hook = k1_level_camera_render_hook;
+                    port_actor_frame(1);
+                } else {
+                    port_actor_tick();
+                }
                 if (rb_probe_mode()) rb_note(RB_ACTOR_TICK, rb_now_ms() - rb_t);
             }
             port_vs_stars_probe(frame);        /* TEMPORARY: SM64DS_VS_STARS */
@@ -14361,9 +14748,10 @@ int main(void)
         /* THE FRAME CLOCK, func_020197b8 phase 6 (hal/fader_wipes.cpp): after
            the actor phases the branch above ran, before the render below. ONE
            PHASE EARLY against the ROM, which steps it at phase 6 -- after phase
-           5, and so after its phase 2 fade advance -- where this sits before
-           port_fader_advance. Nothing between the two reads the word, so no
-           linked reader can tell; the banner carries the argument. Gated on
+           5 -- where this sits after the actor tick and before the render.
+           Phase 2 runs before the tick (the input block above), as the ROM
+           orders it. No linked reader can tell; the banner carries the
+           argument. Gated on
            game_ticked -- the ROM has no pause, so a frozen frame holding its
            blinks still is this port's decision and the same one port_actor_tick
            makes. hal/scene_boot.cpp's port_scene_tick calls it at the matching
@@ -14371,33 +14759,17 @@ int main(void)
            every blink in the game hangs off this one counter. */
         if (game_ticked)
             port_frame_clock_tick();
-        /* PHASE 2's HEAD, the graphics block's word 0 (hal/scene_boot.cpp).
-           The ROM's func_02019390 dispatches it before the fade advances below,
-           and slot 23 -- the stylus stroke test -- has no other dispatch site in
-           the game. GATED ON THE TICK, unlike the fade under it: a fade must
-           keep moving while the debug menu holds the world still, and a stylus
-           stroke must not be accepted by a paused game.
-
-           IT CANNOT REACH ANYTHING ON THIS PATH TODAY and it is here anyway.
-           The seated blocks are the minigame block and the title block, both
-           installed on the scene path, so on a level the registry check misses
-           and this returns 1 without dispatching. Leaving the level loop
-           without the beat is the same half-wiring that cost 384 its stylus. */
-        if (game_ticked)
-            port_graph_block_word0();
-        /* THE FADE STEPS HERE, and it steps every frame -- even with the menu
-           open and the game tick skipped -- because a fade transition must not
-           freeze while it is on screen. This is func_02018ec0's job in the
-           ROM's own frame (phase 2, func_02019390): advance the fader currently
-           in motion (data_0209d4b0) by one frame, which writes the 2D blend
-           register the compositor below reads. */
-        port_fader_advance();
+        /* PHASE 2 (the graphics block's word 0 and the fade steps) used to be
+           called here, after the actor tick. It is the ROM's func_02019390 now,
+           at the ROM's point before the tick: see PHASE 2, THE FRAME'S RESET,
+           in the input block above. */
         /* THE DISPLAY SCAN-OUT, and with it IRQ 2. The DS raises the HBlank
            edge once per scanline while the picture is drawn; the ROM's
            dWipe_c motion path is built on it and nothing on the host used to
-           raise it. Here, beside the fade step, because both are the ROM's
-           own frame phase 2 and because everything below this point is the
-           host rasteriser rather than game code. Costs nothing on a frame
+           raise it. Here, where the fade step also sat until phase 2 moved to
+           the ROM's point before the tick (run linkfull lane RESET2), because
+           everything below this point is the host rasteriser rather than game
+           code. Costs nothing on a frame
            with no mask-2 handler registered: the gate is five loads.
            SM64DS_IRQ2_OFF=1 puts the old behaviour back on this same binary.
            See port/irq2_map.txt. */
@@ -14685,10 +15057,15 @@ int main(void)
             no_cutscene_cam = getenv("SM64DS_NO_CUTSCENE_CAM") ? 1 : 0;
         const int cutscene_cam = !no_cutscene_cam && data_0209fc48 != 0;
         /* the analog rig's pivot is stepped here, after the tick moved Mario
-           and before anything reads it */
-        if (cam_mode == CAM_ANALOG && !rb_replaying()) an_step_pivot(c);
+           and before anything reads it. On a ROM actor frame (k1_rom) the
+           behaviour walk has run Camera::Behavior at its own priority and
+           the pivot was stepped on Camera::Render's face, so neither hand
+           call is made: the heading override and the echo below still are,
+           after the Camera's Behavior as before. */
+        if (cam_mode == CAM_ANALOG && !rb_replaying() && !k1_rom) an_step_pivot(c);
         if (real_camera) {
-            hal_camera_behavior(cam);
+            if (!k1_rom)
+                hal_camera_behavior(cam);
             /* THE ONE THING THE RIG OVERRIDES BESIDES THE VIEW: the heading
                the walk steers by. Camera::Behavior has just put its own into
                the local comms record; in analog and in freecam the rig's
@@ -14728,11 +15105,14 @@ int main(void)
                BOTH HALVES of the host pad go in: the d-pad stash and the
                button stash (run mg16 lane MPBTN). Publishing only the first
                is what made every session's key word a d-pad nibble and every
-               button dead once the direct Ctrl stores were gated. */
-            port::comms_publish_pad(port_raw_pad_bits() | port_raw_btn_bits());
-            { const double t_rb = rb_replaying() ? ovl_now_ms() : 0;
-            func_0203df40();
-            if (rb_replaying()) rb_replay_phase(6, ovl_now_ms() - t_rb); }
+               button dead once the direct Ctrl stores were gated.
+
+               MOVED (run linkfull, lane B5INPUT): the publish and the read now
+               run at the ROM's own phase 0x15 point, THE GAME LOOP'S OWN INPUT
+               STEPS above the tick, through the ROM's wrapper func_0201ffcc.
+               Everything this paragraph says still holds there, in the same
+               order; the heading written just above reaches the four records
+               at that point, before the next frame's tick reads it. */
             /* run mg16 lane MP4: one frame of the state-sync layer, AFTER the
                conductor. Call position is the contract's ordering rule made
                structural: func_0203df40 above has already put this frame's
@@ -14784,8 +15164,11 @@ int main(void)
                actually call the body for it to count as linked. */
             {
                 const int fan_now = comms_fanout_on();
-                if (fan_now)
-                    port::comms_fanout();
+                /* MOVED (run linkfull, lane B5INPUT): port::comms_fanout()'s
+                   two steps now run at THE GAME LOOP'S OWN INPUT STEPS above
+                   the tick, straight after the read that fills the records,
+                   which is where they have to follow it. fan_now stays for the
+                   report below. */
                 /* THE REPORT IS NOT INSIDE THE FAN-OUT GATE, deliberately. It
                    used to be, which meant the one configuration where the
                    input exchange is broken -- fanout forced off with a
@@ -15185,16 +15568,22 @@ int main(void)
             }
         }
 
-        /* render: camera behind and above Mario, looking at him */
+        /* render: camera behind and above Mario, looking at him. On a ROM
+           actor frame (k1_rom) the geometry frame was opened at phase 4 and
+           the render walk has already submitted into it (the Camera's Render
+           and the rig first, then the Stage and every actor): nothing here
+           may reset it. */
         ph_begin(&t_phase);
-        ntr::gx_reset();
-        /* the real Camera writes CLEAR_COLOR itself, out of its own
-           0x10c..0x10f bytes -- which hold exactly this value */
-        if (!real_camera)
-            NTR_MMIO(uint32_t, 0x04000580) =
-                0u | (0u << 8) | (255u << 16) | (191u << 24);
-        ntr::gx_set_light(0, -0.4f, -0.6f, -0.7f, 0x7FFF);
-        ntr::gx_enable_lights(0x1);
+        if (!k1_rom) {
+            ntr::gx_reset();
+            /* the real Camera writes CLEAR_COLOR itself, out of its own
+               0x10c..0x10f bytes -- which hold exactly this value */
+            if (!real_camera)
+                NTR_MMIO(uint32_t, 0x04000580) =
+                    0u | (0u << 8) | (255u << 16) | (191u << 24);
+            ntr::gx_set_light(0, -0.4f, -0.6f, -0.7f, 0x7FFF);
+            ntr::gx_enable_lights(0x1);
+        }
         float px = *(int *)(c + 0x5c) / 4096.0f;
         float py = *(int *)(c + 0x60) / 4096.0f;
         float pz = *(int *)(c + 0x64) / 4096.0f;
@@ -15344,46 +15733,53 @@ int main(void)
            stage9_rendered() would read TRUE from some earlier frame's dispatch,
            and the level would not be drawn at all. One line above both arms is
            the whole fix. */
-        stage9_mark();
+        if (!k1_rom)            /* a ROM actor frame marked at phase 4 */
+            stage9_mark();
         if (real_camera) {
-            /* THE CAMERA'S OWN FRAME. Render builds the projection from
-               the mode preset (PerspectiveW_ -> MTX_LOAD_4x4) and the view
-               matrix through LookAt_, then View::Render -> CopyToViewMat
-               parks it in data_0209b3ec and its inverse in data_0209b41c.
-               Model::Render composes every model matrix with data_0209b3ec
-               in software, so THAT is where the camera reaches the raster,
-               not the GX position stack. */
-            hal_camera_render(cam);
-            /* the rig's view goes on top of the camera's own, not instead of
-               it: Render still seeds the Clipper, writes CLEAR_COLOR and
-               keeps the actor's own state moving, and then the rig reloads
-               the projection and the view matrix from its own eye. Nothing
-               downstream can tell the difference -- it is the same three ROM
-               calls, with different numbers.
-               ANALOG orbits Mario (the eased pivot); FREECAM orbits the Camera
-               actor's own look-at, which is what made it free of him.
-               During a cutscene (cutscene_cam) the rig does NOT reload the
-               view: hal_camera_render has just parked the script-driven view in
-               data_0209b3ec, and leaving it there is what makes the star-get
-               fly-around visible instead of overwritten. */
-            if (cam_mode != CAM_DS && !cutscene_cam) {
-                int fceye[3];
-                const int *pivot = cam_mode == CAM_ANALOG
-                                       ? an_pivot
-                                       : (const int *)((char *)cam + 0x80);
-                fc_eye(pivot, fceye);
-                fc_push_view(cam, fceye, pivot);
+            if (!k1_rom) {
+                /* THE CAMERA'S OWN FRAME. Render builds the projection from
+                   the mode preset (PerspectiveW_ -> MTX_LOAD_4x4) and the view
+                   matrix through LookAt_, then View::Render -> CopyToViewMat
+                   parks it in data_0209b3ec and its inverse in data_0209b41c.
+                   Model::Render composes every model matrix with data_0209b3ec
+                   in software, so THAT is where the camera reaches the raster,
+                   not the GX position stack.
+                   ON A ROM ACTOR FRAME (k1_rom) none of this block runs: the
+                   render walk at phase 4 dispatched Camera::Render at the head of
+                   list 5 and the three host statements below rode its face
+                   (k1_level_camera_render_hook, the same statements). */
+                hal_camera_render(cam);
+                /* the rig's view goes on top of the camera's own, not instead of
+                   it: Render still seeds the Clipper, writes CLEAR_COLOR and
+                   keeps the actor's own state moving, and then the rig reloads
+                   the projection and the view matrix from its own eye. Nothing
+                   downstream can tell the difference -- it is the same three ROM
+                   calls, with different numbers.
+                   ANALOG orbits Mario (the eased pivot); FREECAM orbits the Camera
+                   actor's own look-at, which is what made it free of him.
+                   During a cutscene (cutscene_cam) the rig does NOT reload the
+                   view: hal_camera_render has just parked the script-driven view in
+                   data_0209b3ec, and leaving it there is what makes the star-get
+                   fly-around visible instead of overwritten. */
+                if (cam_mode != CAM_DS && !cutscene_cam) {
+                    int fceye[3];
+                    const int *pivot = cam_mode == CAM_ANALOG
+                                           ? an_pivot
+                                           : (const int *)((char *)cam + 0x80);
+                    fc_eye(pivot, fceye);
+                    fc_push_view(cam, fceye, pivot);
+                }
+                /* WIDESCREEN: widen the object-cull frustum to match the Hor+ 3D
+                   field, AFTER the camera Render just seeded the global Clipper
+                   (func_0200d954 -> Func_020156DC) and BEFORE the actor buckets test
+                   it, so ambient actors at the new side margins are no longer culled
+                   as off-screen. Host-side, gated on the RUNTIME toggle now (not the
+                   compile tier): with widescreen off the clipper is left exactly as
+                   the ROM seeded it. See hal_camera_widen_frustum in
+                   hal/camera_bridges.cpp. */
+                if (ntr::widescreen)
+                    hal_camera_widen_frustum();
             }
-            /* WIDESCREEN: widen the object-cull frustum to match the Hor+ 3D
-               field, AFTER the camera Render just seeded the global Clipper
-               (func_0200d954 -> Func_020156DC) and BEFORE the actor buckets test
-               it, so ambient actors at the new side margins are no longer culled
-               as off-screen. Host-side, gated on the RUNTIME toggle now (not the
-               compile tier): with widescreen off the clipper is left exactly as
-               the ROM seeded it. See hal_camera_widen_frustum in
-               hal/camera_bridges.cpp. */
-            if (ntr::widescreen)
-                hal_camera_widen_frustum();
             /* THE ACTOR RENDER BUCKET GOES HERE. Processing list 5 is the
                game's own render pass -- func_0204322c over slots 9/10/11, in
                render-priority order -- and everything on it is ROM code working
@@ -15425,17 +15821,22 @@ int main(void)
                camera arms -- see stage9_mark's own call site. */
             if (boot_spawns && !no_actors) {
                 size_t before = 0, after = 0;
-                if (selftest) ntr::gx_polygons(before);
+                /* a ROM actor frame's buffer opened empty at phase 4 and holds
+                   exactly what its render walk submitted, so `before` is 0 */
+                if (selftest && !k1_rom) ntr::gx_polygons(before);
                 /* the tick-only re-sim (hal/rollback.cpp): a replayed frame
                    skips the actors' Render bodies; status/ROLLBACK_SHIP.md
-                   has the audit that says they write nothing a tick reads */
-                if (rb_skip_actor_render()) port_actor_render_replay();
+                   has the audit that says they write nothing a tick reads.
+                   A ROM actor frame (k1_rom) walked list 5 inside
+                   func_02044120 at phase 4: nothing to walk here. */
+                if (k1_rom) {
+                } else if (rb_skip_actor_render()) port_actor_render_replay();
                 else
                 port_actor_render();
                 /* THE PARTICLE SIMULATION GOES HERE, which is where
                    Stage::Render drives it. The SUBMISSION does not: it belongs
                    after the level, where Stage::GraphCallback1 runs it, and it
-                   is called from there (port_particle_render, below the level
+                   is made there (phase 5, func_02019404, below the level
                    pass). Drawing translucent particles ahead of the opaque
                    level loses them all to the ground drawn over them. */
                 /* SM64DS_SWITCH=<0..3> drives the cap-block character change
@@ -15817,12 +16218,15 @@ int main(void)
             func_ov001_020aaf40();
         /* phase 1, which is where func_02044120 ends: the scene tree's own
            housekeeping -- priority re-sorts, parent flag propagation, and the
-           deferred list insertions for anything that spawned mid-phase. */
-        if (boot_spawns) {
+           deferred list insertions for anything that spawned mid-phase. A ROM
+           actor frame (k1_rom) ran it as func_02044120's last walk. */
+        if (boot_spawns && !k1_rom) {
             const double rb_t = rb_probe_mode() ? rb_now_ms() : 0.0;
             port_actor_scene_pass();
             if (rb_probe_mode()) rb_note(RB_SCENEPASS, rb_now_ms() - rb_t);
         }
+        /* the frame's account: one shape, each list once (lane K1LOOP) */
+        port_actor_frame_end(frame, "level");
         size_t tris_before = 0;
         if (selftest) ntr::gx_polygons(tris_before);
         /* run mg16 lane MP3: DRAW EVERY PLAYER, not just the local one.
@@ -15869,10 +16273,17 @@ int main(void)
             hal_render_player_world(player);
         else
             hal_player_texseq_tick(player);
-        /* Stage::GraphCallback1: the particle submission, last, after every
-           opaque draw in the frame. The billboards carry their own absolute
-           position matrix so nothing above this line has to be preserved for
-           them; what they need is to be the last thing the raster sees. */
+        /* PHASE 5, THE ROM'S func_02019404 (run linkfull, lane K2RENDER):
+           src/func_020197b8.c:48, the graphics block's word 1, after the
+           frame's render walk and before phase 6. On a level the block is the
+           Stage's and word 1 is Stage::GraphCallback1: the particle
+           submission, last, after every opaque draw in the frame (the ROM's
+           render walk includes the player, which this loop draws just above).
+           The billboards carry their own absolute position matrix so nothing
+           above this line has to be preserved for them; what they need is to
+           be the last thing the raster sees. This point used to call
+           Particle::RenderAll by hand (port_particle_render); the ROM's
+           dispatch makes the call now, under the same gates. */
         static int fx_no_actors = -1;
         if (fx_no_actors < 0)
             fx_no_actors = getenv("SM64DS_NO_ACTORS") ? 1 : 0;
@@ -15888,8 +16299,15 @@ int main(void)
                    showed a 16-bit countdown per 0x78-byte particle entry
                    advanced here (8 skipped renders, 8 steps short), so it
                    belongs with the Stage::Render spans the tick-only re-sim
-                   keeps, not with the pixel work it drops. */
-                port_particle_render();
+                   keeps, not with the pixel work it drops.
+                   port_particle_phase5_begin answers 0 only for the
+                   SM64DS_NO_FX_RENDER A/B (on a level, word 1's only work is
+                   the particle submission) and takes SM64DS_FX_TRACE=3's
+                   before-count; _end prints what the submission added. */
+                if (port_particle_phase5_begin()) {
+                    port_frame_phase5();
+                    port_particle_phase5_end();
+                }
                 if (rb_probe_mode()) rb_note(RB_PARTICLE, rb_now_ms() - rb_t);
             }
             if (fx_tr) {
@@ -15983,8 +16401,8 @@ int main(void)
            opening writes them differently and that is where it showed.
            Composited after the sub-screen present but before the host debug
            overlay, because the overlay is not game content and must stay
-           readable through a fade. port_fader_advance wrote those registers
-           this frame; read them back and do the same fade over the finished
+           readable through a fade. Phase 2 (port_frame_phase2) wrote those
+           registers this frame; read them back and do the same fade over the finished
            framebuffer. EVY is the 0..16 coefficient: fade-to-black is
            rgb*(1 - evy/16), fade-to-white is rgb + (255-rgb)*evy/16, both per
            channel, which is exactly the DS blend math (16/16 = full).
@@ -16706,6 +17124,16 @@ int main(void)
                         _ZN22ExpandingHeapAllocator10MemoryLeftEv(
                             *(void **)((char *)data_020a0eac_c + 0x14)),
                         port_rom_frame_checked(frame, "heap-line"));
+            /* the root heap's closing number, beside the boot's (run
+               linkfull, lane ROOTLEAK1). The paragraph above holds for it
+               too: a free-list sum, so falling across a run with level
+               changes is the leak to look for. No frame read here, so the
+               cross-check's reader count is the same as before. */
+            if (data_020a0e9c)
+                fprintf(stderr, "[heap] root heap %u free at the end of the "
+                        "run\n",
+                        _ZN22ExpandingHeapAllocator10MemoryLeftEv(
+                            *(void **)((char *)data_020a0e9c + 0x14)));
             printf("selftest: %d frames, pos=(%d, %d, %d)\n",
                    port_rom_frame_checked(frame, "selftest-summary"),
                    *(int *)(c + 0x5c), *(int *)(c + 0x60), *(int *)(c + 0x64));
@@ -16884,22 +17312,31 @@ int main(void)
             r3e_census("the first probed or ROM-loop frame foot");
         r3e_heap_watch("the frame foot");
         if (r3d_sleep_probe_left > 0) {
-            /* func_0201a4bc's whole body, at func_020197b8's phase-7 point.
+            /* func_0201a4bc, at func_020197b8's phase-7 point (its one
+               statement used to be inlined here; lane LOOPIN2 calls the TU).
                The flag data_0209d4f0 is already up (it was raised at the frame
                foot above, rung R3b step B1), which is the gate the handler's
                wake tests, so this is the ROM's own condition and not a fixture. */
             --r3d_sleep_probe_left;
             ++r3d_sleep_probe_taken;
-            OS_SleepThread((unsigned short *)data_0209d500);
+            data_0209d50c = 7;
+            port_loopin2_p7();
+            func_0201a4bc();
         } else if (r3d_wait_probe_left > 0) {
             --r3d_wait_probe_left;
             ++r3d_wait_probe_taken;
             _ZN4CP1516WaitForInterruptEv();
         } else if (port_rom_loop_enabled()) {
-            /* RUNG E1. func_0201a4bc's whole body at func_020197b8's phase-7
-               point, on every frame. The flag data_0209d4f0 the handler's wake
-               tests is already up -- raised at the frame foot above, rung R3b
-               step B1 -- so this is the ROM's own condition and not a fixture. */
+            /* RUNG E1. func_0201a4bc at func_020197b8.c:57's phase-7 point,
+               `data_0209d50c = 7; func_0201a4bc();`, on every frame. Its one
+               statement, OS_SleepThread(data_0209d500), was inlined here until
+               run linkfull lane LOOPIN2 called the ROM's own TU: the same
+               sleep onto the idle thread, whose CP15::WaitForInterrupt runs the
+               host frame pump (the pacer) and the VBlank edge, so the frame's
+               wait and its pacing are exactly what they were. The flag
+               data_0209d4f0 the handler's wake tests is already up -- raised
+               at the frame foot above, rung R3b step B1 -- so this is the
+               ROM's own condition and not a fixture. */
             ++r3e_rom_loop_sleeps;
             r3e_heap_watch("the frame foot, before the ROM's sleep");
             /* AND THE RADIO STANDS DOWN FOR A RE-SIMULATED FRAME (run link100,
@@ -16920,7 +17357,9 @@ int main(void)
             const int det_resim = rb_replaying();
             if (det_resim) port_thread_pump_suspend(1);
             port_thread_frame_wait_begin();
-            OS_SleepThread((unsigned short *)data_0209d500);
+            data_0209d50c = 7;
+            port_loopin2_p7();
+            func_0201a4bc();
             if (det_resim) port_thread_pump_suspend(0);
             r3e_heap_watch("the frame foot, after the ROM's sleep");
         } else {

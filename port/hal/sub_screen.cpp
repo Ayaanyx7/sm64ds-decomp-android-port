@@ -155,10 +155,6 @@ int port_gxbank_layout_check(void);
    the Minimap hand OAM::Render, checked for a missed pointer rebase */
 int hal_oam_templates_check(void);
 int hal_oam_walk_probe(void);
-/* the minimap's per-frame affine callback (port/unmatched/Minimap_Affine.cpp),
-   the STAGE's own func_02019144 first beat, which the port cannot dispatch
-   through the block because the Stage's table is hosted by nobody */
-void port_minimap_affine_update(void);
 /* what hal/scene_boot.cpp's beat answered this frame: 1 = run func_02019144's
    tail, 0 = the current graphics block already did the display sync itself */
 int port_graph_block_verdict(void);
@@ -3514,13 +3510,24 @@ extern "C" void hal_sub_screen_level_init(void)
        loads its three BGs at priority 0 and every cloud pixel is opaque, so the
        whole HUD lost the priority compare against a backdrop that should not
        have been on screen at all. SM64DS_GFX2D_PREINTRO=1 puts the clouds
-       back. */
+       back.
+
+       AND THE BIT IS THE SAVE BLOCK'S NOW, NOT THIS FUNCTION'S (run linkfull,
+       lane CLOUDOAM1). This call used to force bit 0x80 SET around the load,
+       because the boot decided the bit only after this function ran. That
+       forcing was right for every level walked in and wrong for exactly the one
+       screen the cloud set exists for: THE OPENING, where the bit really is
+       clear. The port took the in-game branch there too, 0x23d never reached
+       0x06600000, and the opening's three drifting clouds (func_ov002_020f20f4,
+       OamAttrs data_ov002_0210be1c) drew with the file select's leftover
+       letters. hal/level_boot.cpp's port_stage_boot_body now settles the bit
+       (set for every entry but the opening and its continuation) BEFORE it
+       calls this, so the ROM's own test picks the set, as on the DS: the
+       in-game set for a level being played, the clouds for the opening. */
     if (!std::getenv("SM64DS_NO_GFX2D")) {
         const unsigned char saved = data_0209caa0[8];
         if (std::getenv("SM64DS_GFX2D_PREINTRO"))
             data_0209caa0[8] &= ~0x80;
-        else
-            data_0209caa0[8] |= 0x80;
         Stage::LoadGraphics2D(false, data_0209f2f8);
         data_0209caa0[8] = saved;
         std::printf("[sub] Stage::LoadGraphics2D(0, %d) done, layer mask "
@@ -3529,8 +3536,15 @@ extern "C" void hal_sub_screen_level_init(void)
     }
 }
 
-/* Top of the 2D frame: both shadows back to "every sprite disabled" and both
-   entry counters to zero, so this frame's Render calls fill from the start. */
+/* Top of the 2D frame. It used to put both OAM shadows back to "every sprite
+   disabled" and both entry counters to zero with OAM::Reset, so the frame's
+   Render calls filled from the start. That is the ROM's frame phase 2's first
+   statement on its full arm (src/func_02019390.c), and both host loops call the
+   ROM's phase 2 now (hal/fader_wipes.cpp's port_frame_phase2, run linkfull lane
+   RESET2), before anything renders, so the reset is gone from here: the ROM
+   decides it, including the scenes whose graphics block answers 0 and skips it
+   (the title). hal/scene_boot.cpp keeps a host OAM::Reset for the frames its
+   own pause holds still, which the ROM has no counterpart for. */
 void hal_sub_screen_frame_begin(void)
 {
     /* Once, on the first frame, and deliberately here rather than in init:
@@ -3572,7 +3586,6 @@ void hal_sub_screen_frame_begin(void)
             tab_was = tab;
         }
     }
-    OAM::Reset();
     poll_touch();
     /* Inert unless SM64DS_TOUCH_CLIENT_PROBE is set, and here rather than
        inside poll_touch because it wants a present rectangle the frame loop
@@ -4039,16 +4052,15 @@ void hal_sub_screen_present(unsigned int *dst, int w, int h)
         *(volatile unsigned *)0x04001000 =
             (*(volatile unsigned *)0x04001000 & ~0x1f00u) | (mask << 8);
     }
-    /* func_02019144's FIRST beat, for the one block the port cannot dispatch:
-       the Stage's. Its table (data_02092188) is hosted by nobody, so
-       hal/scene_boot.cpp's beat refuses it and answers 1, and this hand copy
-       of Stage::GraphCallback2 is what stands in. It runs exactly when the
-       beat did NOT dispatch a real block, which is every level frame and
-       leaves the 46-level net where it was. port/unmatched/Minimap_Affine.cpp
-       carries the callback; the rest of func_02019144 is the layer-mask
-       publish above and the OAM upload below. */
+    /* func_02019144's FIRST beat, the current block's slot 2, is
+       hal/scene_boot.cpp's port_graph_block_beat for every block now, the
+       Stage's included: its table is seated and registered
+       (hal/arm9_tables_link100.cpp, run linkfull lane SEATS3), so
+       Stage::GraphCallback2 -- the minimap's BG3 affine -- runs there, once a
+       frame, and the hand copy of it this branch used to call is retired. The
+       rest of func_02019144 is the layer-mask publish above and the OAM upload
+       below. */
     if (run_tail) {
-        port_minimap_affine_update();
         /* IMMEDIATELY BEFORE THE UPLOAD, and that placement is the whole point.
            port_message_composite_engine_a ran a few lines earlier in both frame
            loops and rasterised engine A's sprites out of 0x07000000 as it
@@ -5179,12 +5191,11 @@ void hal_touch_client_probe(void)
     std::fflush(stderr);
 }
 
-// ---- the three leaves LoadGraphics2D names but never reaches ---------------
+// ---- the three leaves LoadGraphics2D names, and what became of each --------
 //
-// Each of these sits on a branch the port does not take, and each drags a
-// subsystem with no host seam behind it. They are stubbed by name rather than
-// sliced in, and each says so if it is ever actually called -- which would
-// mean the branch analysis is wrong, not that the stub is.
+// Each once sat on a branch the port did not take, or dragged a subsystem with
+// no host seam behind it, and was stubbed here by name. None is stubbed here
+// any more; the three blocks below say where each body came from.
 
 /* LoadFont3D is NOT faced here any more (VS wiring lane, run vs1). The
    "only from LoadGraphics2D(b != 0)" premise stopped holding when scene 6
@@ -5198,18 +5209,25 @@ void hal_touch_client_probe(void)
    src/LoadFont3D.c is the body, compiled by slice_vs. Leaving the stub here
    would be a duplicate definition -- the wave-C precedent above. */
 
-/* Top-screen furniture: it rasterises the controller-mode caption into
-   G2::GetBG2CharPtr through func_0201d590, the main engine's text path. The
-   bottom screen never reads any of it.
-   PORT_HOST_ABI: src writes the top-screen BG2 text layer, a subsystem the port
-   does not host. */
-void LoadControllerModeText(int a)
-{
-    static int said;
-    if (!said++)
-        std::printf("  [sub] LoadControllerModeText(%d): top-screen text is "
-                    "not hosted\n", a);
-}
+/* LoadControllerModeText is NOT stubbed here any more (run linkfull, wave 31B,
+   lane S42D). The stub that stood here said the top-screen BG2 text layer was
+   "a subsystem the port does not host", and that stopped being true when
+   hal/message_compositor.cpp started scanning engine A's text BGs over the 3D
+   frame: the caption path is the same one the dialogue box already takes.
+   Stage::LoadGraphics2D calls LoadControllerModeText(0x280) on every single-
+   player level load; the matched src/LoadControllerModeText.c rasterises the
+   three mode captions (message 0x280, 0x281, 0x282) through func_0201d590
+   (src/func_0201d590.cpp: the font blit into G2::GetBG2CharPtr, tiles 0x280
+   and up) and writes their tile rows into G2::GetBG2ScrPtr at +0x40, +0x840
+   and +0x1040 -- row 1 of three consecutive 2 KB screen blocks. Stage::
+   PS_Update's controller-mode page (case 7) then points BG2CNT's screen base
+   at block 0xd + the chosen mode, which is how ONE of the three captions
+   shows on the top screen while that page is up and none of them otherwise.
+   Every callee and every global of both bodies was already in the link
+   (func_0201eaac, func_0201b6f8, func_0201b100, MultiStore_Int, the G2
+   getters); port/slice_w31_s42d.txt compiles the two TUs on all three
+   targets this file is on. Leaving the stub here would be a duplicate
+   definition -- the LoadFont3D precedent above. */
 
 /* The third leaf, func_ov004_020adc4c, is NOT stubbed here any more (run linkw
    wave C, lane cat-2d). It was tagged `src reads data_ov004_020beb60, and

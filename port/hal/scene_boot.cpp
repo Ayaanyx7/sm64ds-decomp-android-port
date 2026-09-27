@@ -591,8 +591,6 @@ void port_scene_mg_seed_rng(int id, int windowed);
 void port_graph_block_register(void *vt);
 extern "C" int port_graph_block_beat(void);
 extern "C" int port_graph_block_verdict(void);
-/* func_02019390 phase 2's head: the same block's WORD 0, scene slot 23 */
-extern "C" int port_graph_block_word0(void);
 
 
 /* the frame: the same calls, in the same order, that walk_window's own loop
@@ -601,13 +599,22 @@ extern "C" int port_graph_block_word0(void);
 void port_actor_tick(void);          /* phases 4/2/3 */
 void port_actor_render(void);        /* phase 5 */
 void port_actor_scene_pass(void);    /* phase 1 */
+/* phase 4 whole: func_02044120 and the frame's account (lane K1LOOP) */
+void port_actor_frame(int level_camera);
+void port_actor_frame_begin(void);
+void port_actor_frame_end(int frame, const char *loop);
+int port_actor_frame_split_forced(void);
 /* THE 16:9 OBJECT-CULL SEAM, hal/camera_bridges.cpp. Declared unconditionally:
    the aspect is a RUNTIME choice now, not a compile tier, so there is no tier to
    guard on. The widen call below is guarded on ntr::widescreen instead, and the
    probe gates itself on SM64DS_WIDEN_PROBE. */
 void hal_camera_widen_frustum_scene(void);
 void hal_widen_probe_scene_frame(int frame, const char *where);  /* inert unset */
-void port_fader_advance(void);
+/* phase 2: the ROM's func_02019390 and the settle-clear (hal/fader_wipes.cpp) */
+void port_frame_phase2(void);
+/* phase 5: the ROM's func_02019404 (hal/rom_frame.cpp, lane K2RENDER) */
+void port_frame_phase5(void);
+extern "C" int data_0209d50c;        /* the ROM's phase word (hal/rom_frame.cpp) */
 void port_frame_clock_tick(void);    /* phase 6: data_020a0db0 (hal/fader_wipes.cpp) */
 /* SM64DS_MG_RESULTS_PROBE (hal/scene_mg.cpp), off unless the variable is set */
 void port_mg_results_probe(int frame);
@@ -652,6 +659,9 @@ extern int data_020a4b6c[8];         /* the scene tree: head, callback, 0 */
 extern void *data_0209f5bc;          /* the installed fader; hal/fader_wipes.cpp */
 
 }  /* extern "C" */
+/* C++ linkage, outside the block above: the OAM reset port_scene_tick
+   makes on the frames its own pause holds still (src/_ZN3OAM5ResetEv.cpp). */
+namespace OAM { void Reset(); }
 
 DSSTATE_BEGIN
 extern "C" {
@@ -955,6 +965,14 @@ extern "C" { int overlay_60, overlay_98; }
    mount is heap-shaped, and hal/card_mount.cpp's "THE MOUNT BRANCH" section is
    where the three things standing in the way of that are written down.
 
+   AND NOW IT IS NOT FACED AT ALL (run linkfull, lane S4ARC). The mount is
+   heap-shaped: hal/card_mount.cpp's publish is retired, the ROM's LoadArchive
+   mounts off the heap it records at +0x04, and an entry that is not mounted
+   reads zero. So src/UnloadArchives.c runs as the cartridge's: the title
+   (dScTitle_c::InitResources) and the DS theatre (dScDSMT_c::InitResources)
+   unmount whatever is resident through func_02018908 and free it to the heap
+   it came off. The face's line below is replaced by that note.
+
    The observable each face has to reproduce is nothing: three return void and
    the fourth is void, none has an out-parameter, and the ROM's own answer when
    the overlay is not resident is to do nothing. */
@@ -970,7 +988,9 @@ extern "C" void LoadOverlay(int)                       {}
    data_0209d3c4 is never filled, so the ROM's own body does exactly what this
    empty face did -- for the ROM's own reason instead of by assertion. The
    split of targets is hal/nitrofs_face.cpp's, for its reason. */
-extern "C" void UnloadArchives(void)                   {}
+/* UnloadArchives WAS FACED HERE; it is src/UnloadArchives.c now, on
+   port/slice_w31_s4arc.txt (run linkfull, lane S4ARC). See the paragraph
+   above that ends "the face's line below is replaced by that note". */
 /* AND THE FOURTH IS RETIRED (run link100, lane STAGEFIX). It stood here as
        extern "C" void LoadOrUnloadObjectOverlays(void (*)(int), int) {}
    until gate 213 enrolled the ROM's own src/
@@ -2016,12 +2036,62 @@ __declspec(naked) static void l2_eb2c_s10(void)
    call for l2_ea6c_s1c's reason: the matched IsBetweenStartAndEnd re-dispatches
    two slots, and the face in hal/fdr_arm9_fader_seat.cpp is the one that lands
    them on this object's ROM +0x14 and +0x18. */
+/* THE RECEIVER, TAKEN FROM WHERE THE CALLER PUT IT (run linkfull, lane
+   GAMEOVER1). These three were plain __fastcall faces, so they took the
+   receiver out of ECX, and that is right for the two call shapes they were
+   written against: a __thiscall virtual (ECX = the fader) and
+   dScene_c::BeforeBehavior's ROM-shaped `vt->IsAtEnd(fader)`, which MSVC
+   compiles as `mov ecx,[data_0209f5bc]; push ecx; call [eax+0x18]` -- the
+   fader in ECX AND on the stack. It is WRONG for the third shape, and that
+   shape is the Game Over screen's own gate: dScGameOver_c::Behavior opens with
+   `o = data_0209f5bc; if (o->vt->m_14(o) == 0) goto end;` (src/actors/
+   dScGameOver_c.cpp), compiled as `mov edx,[data_0209f5bc]; push edx; ...;
+   call [eax+0x14]` with ECX still holding the scene's own `this`. The face
+   asked "is the fader at its start" of the dScGameOver_c object, reading its
+   +0x04 word as currInterp. MEASURED (cdb, lane GAMEOVER1): 299 Behavior
+   calls, the drop-in phase byte +0x94 stuck at 0 for all of them, so the
+   letters never land and no press is ever read. A direct SM64DS_SCENE=8 boot
+   only escaped it because the scene's +0x04 happened to read 0 there.
+   So the receiver is ECX when ECX IS a fader on one of the two tables these
+   faces are seated in, and otherwise the first stack argument when THAT one
+   is -- the cdecl shape's own receiver. Anything else keeps ECX, which is
+   what every call did before. No shape that answered correctly changes. */
+extern "C" void *_AddressOfReturnAddress(void);
+#pragma intrinsic(_AddressOfReturnAddress)
+
+static int l2_eb2c_is_fader(const void *p)
+{
+    if (!p || ((size_t)p & 3) || IsBadReadPtr(p, 4))
+        return 0;
+    const void *vt = *(const void *const *)p;
+    return vt == (const void *)data_0208eb2c || vt == (const void *)data_0208eacc;
+}
+
+static void *l2_eb2c_recv(void *ecx_recv, void *const *ret_slot)
+{
+    if (l2_eb2c_is_fader(ecx_recv))
+        return ecx_recv;
+    void *stack_recv = ret_slot[1];            /* [esp+4] at entry */
+    if (l2_eb2c_is_fader(stack_recv))
+        return stack_recv;
+    return ecx_recv;
+}
+
 static int __fastcall l2_eb2c_s14(void *s, void *)
-{ l2_eb2c_note(5); return _ZN15FaderBrightness9IsAtStartEv(s); }
+{
+    s = l2_eb2c_recv(s, (void *const *)_AddressOfReturnAddress());
+    l2_eb2c_note(5); return _ZN15FaderBrightness9IsAtStartEv(s);
+}
 static int __fastcall l2_eb2c_s18(void *s, void *)
-{ l2_eb2c_note(6); return _ZN15FaderBrightness7IsAtEndEv(s); }
+{
+    s = l2_eb2c_recv(s, (void *const *)_AddressOfReturnAddress());
+    l2_eb2c_note(6); return _ZN15FaderBrightness7IsAtEndEv(s);
+}
 static int __fastcall l2_eb2c_s1c(void *s, void *)
-{ l2_eb2c_note(7); return _ZN15FaderBrightness20IsBetweenStartAndEndEv(s); }
+{
+    s = l2_eb2c_recv(s, (void *const *)_AddressOfReturnAddress());
+    l2_eb2c_note(7); return _ZN15FaderBrightness20IsBetweenStartAndEndEv(s);
+}
 
 /* +0x20 and +0x24. Both matched, both non-virtual in the header, so a
    qualified call is a direct call and no host vtable is read. */
@@ -2835,16 +2905,18 @@ L2_UNMATCHED(func_02140d80)
 //     0x020c3d1c is an ov007 function and the community label on it is a
 //     Player state name; ov007 is the title scene and has no Player. The
 //     matched TU is src/func_ov007_020c3d1c.cpp, it is in this
-//     slice, and it defines the flat Itanium name. Its callers spell the same
-//     body FOUR ways between them -- once by address and three times as a
-//     C++ method, with three different MSVC manglings because the three
-//     declaring TUs disagree on the return type and on staticness.
+//     slice, and it defines the flat Itanium name. Its callers USED TO spell
+//     the same body FOUR ways between them -- once by address and three times
+//     as a C++ method, with three different MSVC manglings because the three
+//     declaring TUs disagreed on the return type and on staticness.
 //
 //     THREE OF THOSE FOUR DIRECTIVES WERE RECEIVER DEFECTS AND ARE GONE. They
-//     are defects 4, 5 and 6 of port/abi_checks.txt section 6; the faces that
-//     replace them are further down this file and carry the evidence,
-//     including what the ROM actually dispatches through
-//     data_ov007_02103254. Only the by-address spelling stays an alias: both
+//     are defects 4, 5 and 6 of port/abi_checks.txt section 6. The two faces
+//     that replaced them are gone as well (run linkfull, lane ENDFLY1): main's
+//     ov007 sources now call func_ov007_020c3d1c by its flat name, so no ov007
+//     site spells the body as a Player method any more (the retirement note
+//     further down says what the last referrer was and why it was wrong).
+//     Only the by-address spelling stays an alias: both
 //     sides are flat __cdecl names, so it is a NAME bridge and nothing else,
 //     which is the only thing an /alternatename may ever be.
 //
@@ -2875,24 +2947,10 @@ L2_UNMATCHED(func_02140d80)
 //     overlay image, so the safety of the status quo does not rest on this
 //     comment being complete.
 #pragma comment(linker, "/alternatename:_func_020c3d1c=_func_ov007_020c3d1c")
-//     The int-returning spelling now rides the void one. Both sides are
-//     public __thiscall taking no arguments, so the receiver AGREES and the
-//     pop agrees; only the return type differs, and EAX is exactly as
-//     indeterminate here as r0 is in the ROM (0x020c3d1c returns whatever the
-//     pointer it dispatched left behind, and all seven int-form call sites in
-//     src/func_ov007_020cbb04.cpp discard it). This is the void/int return
-//     bridge hal/lk4_solidheap_seat.cpp takes for Heap::Rescue, and it exists
-//     because two decorations that differ only in return type cannot both be
-//     declared on one class in one TU.
-#pragma comment(linker, "/alternatename:?St_EndingFly_Main@Player@@QAEHXZ=?St_EndingFly_Main@Player@@QAEXXZ")
-//     The free-function spelling: src/func_ov007_020b7764.cpp is its only
-//     referrer and the receiver it must pass is a GLOBAL, so the face below
-//     can supply it exactly. Alias rather than a second face declaration for
-//     the reason the Sound::Func_02048ec4 row in hal/actor_classes_ov073.cpp
-//     gives: a `namespace Player` in this TU would collide with the `struct
-//     Player` the QAEX face needs. Both sides are __cdecl with no receiver,
-//     so this is not a crossing.
-#pragma comment(linker, "/alternatename:?St_EndingFly_Main@Player@@YAXXZ=_port_ov007_b7764_endingfly")
+//     The two Player::St_EndingFly_Main rows that followed here (the int
+//     spelling riding the void one, and the free-function spelling onto
+//     port_ov007_b7764_endingfly) are retired with their faces; see the
+//     retirement note further down.
 //
 // (d) SIX C++-DECLARED CALLS ONTO FLAT DEFINITIONS. The cxxname_bridge defect
 //     in its usual direction: an ov007 TU declares the callee inside a struct
@@ -3131,95 +3189,31 @@ struct ActorBase {
     int Virtual38(unsigned a, unsigned b);           /* slot 14 body */
 };
 
-/* ==== THE TWO RECEIVER-BRIDGING FACES FOR "Player::St_EndingFly_Main" =====
+/* ==== RETIRED: THE TWO RECEIVER-BRIDGING FACES FOR "Player::St_EndingFly_Main"
 
-   port/abi_checks.txt section 6, defects 4/5 (the two __thiscall spellings)
-   and 6 (the free-function spelling aritycheck had to learn a new declaration
-   shape to see at all). The three deleted directives were
+   Run linkfull, lane ENDFLY1. This block held a void __thiscall
+   Player::St_EndingFly_Main() whose body was func_ov007_020c3d1c(this), and
+   port_ov007_b7764_endingfly(), the same call with the receiver read out of
+   data_ov007_02103448; block (c) above bound the int and the free-function
+   spellings onto them. They were the fix for port/abi_checks.txt section 6,
+   defects 4 to 6: ov007 TUs that declared ov007's 0x020c3d1c under a
+   community Player name. That body is ov007's free() trampoline (it loads
+   data_ov007_02103254 = 0x020c3e4c and tail-calls func_020590fc, free, on
+   its one argument); ov002 has a different function at the same address.
 
-     ?St_EndingFly_Main@Player@@QAEHXZ = _func_ov007_020c3d1c
-     ?St_EndingFly_Main@Player@@QAEXXZ = _func_ov007_020c3d1c
-     ?St_EndingFly_Main@Player@@YAXXZ  = _func_ov007_020c3d1c
-
-   WHAT THE BODY ACTUALLY IS, derived from the ROM rather than from the name,
-   because the name is wrong and the fix depends on the answer. 0x020c3d1c is
-
-     stmdb sp!,{lr} / sub sp,#4
-     ldr r1,[pc,#0x10] / ldr r1,[r1]    <- r1 = *data_ov007_02103254
-     blx r1                             <- r0 UNTOUCHED, rides into the callee
-     add sp,#4 / ldm sp!,{lr} / bx lr
-
-   and config/arm9/overlays/ov007/relocs.txt:3264 says what that word holds:
-
-     from:0x02103254 kind:load to:0x020c3e4c module:overlay(7)
-
-   0x020c3e4c is six instructions and four of them are the argument setup, so
-   all six are worth carrying:
-
-     020c3e4c  ldr ip,[pc,#0xc]     ip = 0x020590fc
-     020c3e50  mov r2,r0            arg 3 = the object
-     020c3e54  mov r0,#0            arg 1 = 0, the table index
-     020c3e58  mvn r1,#0            arg 2 = -1, "the current handle"
-     020c3e5c  bx  ip
-     020c3e60  .word 0x020590fc
-
-   func_020590fc is free(). Under an interrupt lock it indexes a 12-byte
-   record by the current handle and calls two list functions on the node at
-   (obj - 0x20): func_02059364 UNLINKS it from the allocated list at rec+8,
-   and func_0205929c INSERTS it into the address-sorted FREE list at rec+4,
-   reading node[+8] as a size to coalesce with the neighbour above. So the
-   body is a TEARDOWN TRAMPOLINE whose one argument is the object being freed,
-   and the Player name on it is a mislabel -- the 2d map's section 1 says so
-   and this is the disassembly behind that warning. The callers agree:
-   src/func_ov007_020cbb04.cpp calls it on five sub-objects and then on the
-   parent, and src/func_ov007_020b9770.cpp calls it on two globals and nulls
-   each one immediately after.
-
-   THE TRUE BODY IS SEATED AND MATCHED, so these are BRIDGES and not traps.
-   src/func_ov007_020c3d1c.cpp is in this slice and defines the
-   flat name as `void f(void *self)`. Nothing here is unseated, so a loud trap
-   would be refusing to run a path the port already has the code for.
-
-   WHAT THE DIRECTIVES DID. QAE is __thiscall: the nine call sites put the
-   object in ECX and push NOTHING, and the flat cdecl body then read its first
-   stack slot -- the RETURN ADDRESS -- and handed that to free(). YA is a
-   free function: src/func_ov007_020b7764.cpp:9 spells
-   `Player::St_EndingFly_Main()` with no arguments at all, so that site read
-   the same return address. Either way the caller's own return address is
-   INSERTED INTO THE FREE LIST as a block header at (return address - 0x20),
-   with its size field read out of whatever instruction sits eight bytes into
-   that header, and the coalescing test then compares that against the next
-   free block. It has never fired because ov007's ending path is not drivable,
-   which is why these two faces are proved by the checker and the disassembly
-   and claim no drive.
-
-   NEITHER FACE IS A SHADOW: all three directives are DELETED. */
-struct Player {
-    /* the void spelling, which is what src/func_ov007_020b9770.cpp declares
-       and what the flat body's own return type says. The int spelling is
-       bridged onto this one by the alias in block (c) above. */
-    void St_EndingFly_Main();
-};
-
-extern "C" {
-/* the matched flat body, and the ov007 global whose VALUE is the object
-   src/func_ov007_020b7764.cpp's call site is torn down. The ov007 mount
-   defines it as `u8 data_ov007_02103448[4]`; the matched TU reads it as an
-   int, and so does this, because extern "C" data carries no type in the
-   symbol and the int reading is the one the ROM's `ldr r0,[r0]` performs. */
-void func_ov007_020c3d1c(void *self);
-extern int data_ov007_02103448;
-
-/* the RHS of the YA alias in block (c). A free __cdecl function taking
-   nothing, exactly like the declaration it stands behind -- the receiver is
-   not passed to it and never was, so the face reads it from the same global
-   the ROM reads it from. */
-void port_ov007_b7764_endingfly(void)
-{ func_ov007_020c3d1c((void *)(size_t)data_ov007_02103448); }
-}
-
-void Player::St_EndingFly_Main()
-{ func_ov007_020c3d1c(this); }
+   WHY THEY WENT. Main has since respelled every ov007 caller to call
+   func_ov007_020c3d1c by its flat name (src/func_ov007_020b7764.cpp,
+   _020b9770.cpp, _020cbb04.cpp and the rest), so no ov007 site reached
+   either face any more. The void member kept ONE referrer, and it was the
+   wrong one: the port/faces_sync.txt row for __ZN6Player17St_EndingFly_MainEv,
+   ov002's EndingFly state main (the state object 0x0211058c pairs it with
+   St_EndingFly_Init; hal/player_bridges.cpp dispatches case 0x020c3d1c to
+   it). So at the game's ending the Player's state ran the ov007 trampoline on
+   the Player and returned junk, and the real ending flight, the int member
+   src/actors/Player.cpp defines (phase 0 func_ov002_020c3bdc, phase 1
+   func_ov002_020c3a48, phase 2 func_ov002_020c38a0), was never linked. The
+   ledger row now binds that int member, and nothing is left for a face here
+   to bridge. */
 
 // ---- the shared eleven -----------------------------------------------------
 static int  __fastcall sc_binit(void *s, void *)
@@ -4084,10 +4078,16 @@ extern "C" int port_graph_block_beat(void)
  * (func_02019440, _ZN7dScMB_c16CleanupResourcesEv, _ZN7dScMB_c13InitResourcesEv and two in the 0x0202Cxxx pair).
  *
  * WHERE WORD 0 IS CALLED FROM: src/func_020197b8.c, the ROM's frame loop, at
- * PHASE 2 -- `data_0209d50c = 2; func_02019390();`. This port has that position
- * already; it is where port_fader_advance() is called from, because
- * func_02019390's TAIL is the two fade advances hal/fader_wipes.cpp
- * reproduces. What the port never had was func_02019390's HEAD, which is this.
+ * PHASE 2 -- `data_0209d50c = 2; func_02019390();`. This file used to dispatch
+ * it itself (port_graph_block_word0, a registry-checked beat whose answer was
+ * discarded), beside hal/fader_wipes.cpp's stand-in for the phase's fade
+ * advances. BOTH ARE RETIRED (run linkfull, lane RESET2): the two loops call
+ * the ROM's own func_02019390 through hal/fader_wipes.cpp's port_frame_phase2,
+ * which dispatches word 0 of whatever block is current -- no registry test,
+ * the ROM has none, and every block this port can hold carries host addresses
+ * now (the Stage's data_02092188 included, hal/arm9_tables_link100.cpp) -- and
+ * USES the answer: the title's dScDSMT_c::graphCallback_c::GraphCallback0 and
+ * dScMB_c's answer 0, so on those scenes phase 2 takes its early arm.
  *
  * WHAT IT UNBLOCKS. Scene slot 23 is the stylus stroke-connected test's
  * dispatcher, and its ONLY dispatch site in the entire ROM is word 0. With the
@@ -4124,11 +4124,6 @@ extern "C" int port_graph_block_beat(void)
  * func_02019100 discards) and SEVEN override, including the whole D3D family.
  * That is a separate census and a separate proof and it is queued, not taken.
  */
-extern "C" int port_graph_block_word0(void)
-{
-    return graph_block_word(0);
-}
-
 /* What the beat answered THIS frame, for the second half of the tail. The
    engine A display path runs the beat; the engine B one reads the answer,
    because the block's slot 2 is called once per frame on the DS and calling
@@ -7500,6 +7495,30 @@ static void port_title_state_trace(int frame)
     l_pick = pick; l_f10 = f10; l_f14 = f14; l_pend = pend; l_dlg = dlg;
 }
 
+/* ---- PHASE 0x17's LAST CALL, ON THIS LOOP TOO (run linkfull, lane LOOPIN2) --
+   src/func_020197b8.c:47 is func_02023498(), the ROM's soft-reset latch, at the
+   end of phase 0x17 and before phase 3. port_scene_tick calls it at that point
+   (after phase 2, before the scene-request carrier and the actor phases), on
+   every frame the game ticks, as tests/walk_window.cpp's level loop does.
+
+   IT ONLY EVER ACTS ON data_020a0e44, which func_0203bc7c raises when a key
+   word is exactly L+R+START+SELECT. That builder runs on the LEVEL loop (lane
+   B5INPUT) and, on a scene, only inside a session's fan-out: the scene half of
+   phase 0x17 -- func_0203bc7c and the ring over this loop's records -- is still
+   lane B5INPUT's LATER (the stylus cadence). So in single player nothing can
+   raise the latch on a scene and the call runs its idle path; the combo on a
+   title or minigame screen does what it did before, nothing. The level loop's
+   answer to a raised latch (starting the game again at the title) is
+   walk_window.cpp's and has no counterpart here; a latch seen up on a scene
+   frame is printed, once per edge, so a session that ever reaches it says so.
+
+   The two counters are the lane's census: this loop's func_02023498 calls,
+   and port_scene_run's phase-7 func_0201a4bc calls, printed at the headless
+   loop's end beside its [r3g] G1 line. */
+extern "C" void func_02023498(void);
+extern "C" void func_0201a4bc(void);
+static unsigned g_loopin2_sc_p17, g_loopin2_sc_p7;
+
 extern "C" void port_scene_tick(int frame, int tick_game)
 {
     ntr::Framebuffer &fb = scn_fb;
@@ -7545,6 +7564,44 @@ extern "C" void port_scene_tick(int frame, int tick_game)
            the record from the ring, func_0203e0ac broadcasts it, and the
            scene's Behavior reads the broadcast, all in one frame. */
         port_scene_comms_publish();
+        /* PHASE 2, THE FRAME'S RESET (run linkfull, lane RESET2): the ROM's
+           func_02019390 at the ROM's point -- after the input read above and
+           before phase 3 (the carrier below) and phase 4 (port_actor_tick), as
+           src/func_020197b8.c orders them. tests/walk_window.cpp's level loop
+           calls it at the same point; hal/fader_wipes.cpp's port_frame_phase2
+           carries the argument. It retires this function's late pair (the
+           word-0 beat and the fade step after the tick) and
+           hal_sub_screen_frame_begin's OAM::Reset.
+
+           UNDER tick_game, as the pair it replaces was: the debug menu's pause
+           holds a scene still (the ROM has no pause), and a stylus stroke must
+           not reach a minigame's word 0 while it does. A paused frame still
+           renders, so it gets the one piece of phase 2 its render needs, the
+           OAM reset, from the host: without it the frozen scene's sprites would
+           be appended to the shadow again every frame. */
+        if (tick_game) {
+            data_0209d50c = 2;
+            port_frame_phase2();
+        } else {
+            OAM::Reset();
+        }
+        /* PHASE 0x17's LAST CALL, func_02023498 (lane LOOPIN2; the banner
+           above port_scene_tick): after phase 2, before phase 3's carrier
+           below, under tick_game with the rest of the frame's game phases. */
+        if (tick_game) {
+            data_0209d50c = 0x17;
+            ++g_loopin2_sc_p17;
+            func_02023498();
+            static int sc_latch_was;
+            if ((data_0209f1e0[0] != 0) != sc_latch_was) {
+                sc_latch_was = data_0209f1e0[0] != 0;
+                std::fprintf(stderr, "[loopin2] scene f%d: the soft-reset latch "
+                             "data_0209f1e0 is %s on the scene loop (only a "
+                             "session's fan-out can raise it here)\n", frame,
+                             sc_latch_was ? "UP" : "down again");
+                std::fflush(stderr);
+            }
+        }
         /* THE SCENE-REQUEST CARRIER, run mg16 arc 3.
          *
          * The port ran HALF of the ROM's scene change. Scene::SetSceneToSpawn
@@ -7608,8 +7665,39 @@ extern "C" void port_scene_tick(int frame, int tick_game)
                 std::fflush(stdout);
             }
         }
+        /* PHASE 4 IS THE ROM'S func_02044120 (run linkfull, lane K1LOOP): all
+           five walks at the ROM's point, right after phase 3's scene request
+           above. Its render walk submits this frame's geometry here, as on the
+           DS, so the host geometry buffer is reset BEFORE it (on every
+           ticking frame, NO_RENDER included: the walk submits either way) and
+           the rasteriser below consumes it; the render block then neither
+           resets nor walks, and the scene tree is not walked again after it.
+           A frame that does not tick (tick_game 0) keeps the host split's
+           render-only frame, and SM64DS_K1_SPLIT=1 puts the whole split back
+           for the census A/B. port_actor_frame(0): a scene's Camera slots are
+           left as they were. */
+        port_actor_frame_begin();
+        const int k1_rom = tick_game && !port_actor_frame_split_forced();
+        if (k1_rom) {
+            if (trace) std::fprintf(stderr, "[scene-trace] f%d gx_reset\n", frame);
+            ntr::gx_reset();
+            if (trace) std::fprintf(stderr, "[scene-trace] f%d actor_frame\n", frame);
+            hal_widen_probe_scene_frame(frame, "pre ");
+        }
         if (tick_game) {
-            port_actor_tick();
+            if (k1_rom) {
+                port_actor_frame(0);
+                /* PHASE 5 (run linkfull, lane K2RENDER): src/func_020197b8.c:48,
+                   `data_0209d50c = 5; func_02019404();`, the graphics block's
+                   word 1, right after the render walk it follows on the DS.
+                   Every scene block's word 1 is a `return 1` body
+                   (hal/rom_frame.cpp's banner has the census; the exit line
+                   names each table phase 5 met). A frame whose render walk
+                   runs in the render block below takes phase 5 there. */
+                port_frame_phase5();
+            } else {
+                port_actor_tick();
+            }
             /* AFTER the actor phases, so it reports the state the frame ended
                in rather than the one it started in. */
             port_title_state_trace(frame);
@@ -7625,29 +7713,19 @@ extern "C" void port_scene_tick(int frame, int tick_game)
             port_title_skip_tick(frame);
             /* THE FRAME CLOCK, func_020197b8 phase 6 (hal/fader_wipes.cpp).
                After the actor phases and before the render. NOT the ROM's exact
-               slot: the ROM steps it at phase 6, after phase 5 and so after its
-               phase 2 fade advance, while this sits before port_fader_advance --
-               one phase early, with nothing in between that reads the word.
+               slot: the ROM steps it at phase 6, after phase 5, while this sits
+               before the render -- one phase early, with nothing in between that
+               reads the word. Phase 2 runs before the tick, above.
                Every blink in the game hangs off this counter, and on this path
                that includes the only visual difference between a SELECTED
                Pair-a-Gone card and an idle one. */
             port_frame_clock_tick();
-            /* PHASE 2's HEAD, AHEAD OF ITS TAIL, which is the ROM's own order:
-               func_02019390 dispatches the graphics block's word 0 first and
-               only then reaches the two fade advances port_fader_advance
-               stands in for.
-
-               THE ANSWER IS DISCARDED, and that is a statement rather than an
-               oversight. On the DS a 0 here skips OAM::Reset, func_0200f468
-               and func_02018ec0 and still runs func_02018efc -- so inside what
-               this port reproduces, the whole difference between the two arms
-               is the SECOND fade advance. Word 0's forwarder
-               _ZN11dScMgBase_c15graphCallback_c14GraphCallback0Ev returns 1 on every path with no branch in it,
-               and it is what every one of the thirty-two ov006 blocks reaches,
-               so no scene in this game can take the 0 arm. If one ever does,
-               this is the line that has to grow the split. */
-            port_graph_block_word0();
-            port_fader_advance();
+            /* PHASE 2 (the word-0 beat and the fade step) used to be called
+               here, after the tick, with word 0's answer discarded on the claim
+               that no scene answers 0. The title does:
+               dScDSMT_c::graphCallback_c::GraphCallback0 is `return 0;`. It is
+               the ROM's func_02019390 now, before the tick, and the answer is
+               the ROM's to use (PHASE 2, THE FRAME'S RESET, above). */
             /* SM64DS_MG_RESULTS_PROBE=<frame> (hal/scene_mg.cpp): raise the
                minigame framework's results panel through the ROM's own slot 27
                at a chosen frame, so the play-again prompt can be captured on a
@@ -7692,11 +7770,14 @@ extern "C" void port_scene_tick(int frame, int tick_game)
                unbuffered, so a HANG (not a fault, which the probe already
                catches) can be attributed without a debugger. Each line goes
                out before the step it names. */
-            if (trace) std::fprintf(stderr, "[scene-trace] f%d gx_reset\n", frame);
-            ntr::gx_reset();
-            if (trace) std::fprintf(stderr, "[scene-trace] f%d actor_render\n", frame);
-            hal_widen_probe_scene_frame(frame, "pre ");
-            port_actor_render();
+            if (!k1_rom) {   /* a ROM actor frame did both at phase 4 */
+                if (trace) std::fprintf(stderr, "[scene-trace] f%d gx_reset\n", frame);
+                ntr::gx_reset();
+                if (trace) std::fprintf(stderr, "[scene-trace] f%d actor_render\n", frame);
+                hal_widen_probe_scene_frame(frame, "pre ");
+                port_actor_render();
+                port_frame_phase5();   /* phase 5 after this frame's render walk */
+            }
             /* WIDESCREEN OBJECT CULL, THE SCENE PATH'S HALF, gated on the
                RUNTIME aspect (ntr::widescreen) rather than a compile tier.
                tests/walk_window.cpp
@@ -7784,8 +7865,9 @@ extern "C" void port_scene_tick(int frame, int tick_game)
             port_title_attract_probe(frame, "rend");
         if (tick_game)
             t3w_tick(frame, "rend");
-        if (tick_game)
+        if (tick_game && !k1_rom)   /* a ROM actor frame's last walk */
             port_actor_scene_pass();
+        port_actor_frame_end(frame, "scene");
 
         /* THE HOSTED ARM7, ONE TICK PER FRAME -- drain the sound queue and
            feed the mixer, exactly as the level loop does in
@@ -8222,7 +8304,13 @@ extern "C" int port_scene_run(void)
             r3g_census("the scene frame foot", port_rom_frame());
             r3g_heap_watch("the scene frame foot", port_rom_frame());
             ++r3g_sleeps;
-            OS_SleepThread((unsigned short *)data_0209d500);
+            /* func_020197b8.c:57, `data_0209d50c = 7; func_0201a4bc();`: the
+               ROM's own TU for the statement that was inlined here
+               (OS_SleepThread(data_0209d500)), run linkfull lane LOOPIN2. The
+               same sleep and the same wait. */
+            data_0209d50c = 7;
+            ++g_loopin2_sc_p7;
+            func_0201a4bc();
             r3g_heap_watch("the scene frame foot, after the ROM's sleep",
                            port_rom_frame());
             /* func_020197b8.c:56 -- and down the instant the wait returns. */
@@ -8234,6 +8322,10 @@ extern "C" int port_scene_run(void)
         std::fprintf(stderr, "[r3g] G1: phase 7 was the ROM's own sleep on %d "
                              "of %d scene frames (SM64DS_ROM_LOOP)\n",
                      r3g_sleeps, scn_frames);
+        std::fprintf(stderr, "[loopin2] scene loop: phase 0x17 func_02023498 "
+                             "%u call(s), phase 7 func_0201a4bc %u call(s), %d "
+                             "frame(s) of the ROM's phase-6 account\n",
+                     g_loopin2_sc_p17, g_loopin2_sc_p7, port_rom_frame());
         std::fprintf(stderr, "[r3g] G2(a): graphics-block face entries by slot "
                              "0/1/2/3 = %u/%u/%u/%u, entered with the WRONG "
                              "block %u time(s). Slots 2 and 3 are what the "
