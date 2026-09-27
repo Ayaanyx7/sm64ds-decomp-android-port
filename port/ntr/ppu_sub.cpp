@@ -1106,9 +1106,10 @@ void scan_ref(SubFramebuffer &fb, uint32_t dispcnt, const uint8_t *skip,
  *     overflow: 28-bit reference, 16-bit P times at most 255). sample_bg only
  *     reads memory, so sampling a layer where a nearer one covers it changes
  *     nothing; every address it forms is inside the VRAM reservation.
- *   - THE PRIORITY WALK uses per-frame lists of the enabled BGs at each
- *     priority, in index order -- the same visit order as the four nested tests,
- *     with the disabled and other-priority layers already skipped.
+ *   - THE PRIORITY WALK uses a per-frame list of the enabled BGs in the
+ *     reference's visit order (priority, then index) with the sprite pixel
+ *     slotted in by its own priority, and stops at the first layer when the
+ *     colour-effect unit will not read the one below it (see the walk).
  *   - THE WINDOW MASK is 0x3F without a call when no window is on.
  *
  * The resolve, the colour-effect unit and master brightness are the reference's
@@ -1244,11 +1245,15 @@ void scan_fast(SubFramebuffer &fb, uint32_t dispcnt, const uint8_t *skip,
     const uint32_t backdrop = pal32[0];
     const Blend bld = read_blend();
 
-    int order[4][4], norder[4] = {0, 0, 0, 0};
+    /* The enabled BGs in the reference's visit order (priority, then index),
+       flattened: flat[k] with its priority fprio[k]. */
+    int flat[4], fprio[4], nflat = 0;
     for (int prio = 0; prio < 4; ++prio)
         for (int bg = 0; bg < 4; ++bg)
-            if (bgs[bg].kind != BG_OFF && bgs[bg].prio == prio)
-                order[prio][norder[prio]++] = bg;
+            if (bgs[bg].kind != BG_OFF && bgs[bg].prio == prio) {
+                flat[nflat] = bg;
+                fprio[nflat++] = prio;
+            }
 
     uint32_t lcol[4][256];
     uint8_t lok[4][256];
@@ -1264,18 +1269,33 @@ void scan_fast(SubFramebuffer &fb, uint32_t dispcnt, const uint8_t *skip,
             bool semi = false;
             int found = 0;
             const ObjPixel &o = orow[x];
-            for (int prio = 0; prio < 4 && found < 2; ++prio) {
-                if (o.hit && o.prio == prio && (mask & 0x10)) {
+            /* THE WALK, flattened: the sprite pixel goes in front of the
+               first BG whose priority is not nearer than its own (at equal
+               priority a sprite is above a BG), and after all of them if
+               every BG is nearer -- the reference's order exactly. It stops
+               at the first layer when the colour-effect unit will not read
+               the one below it: blend_apply reads `below` only when effects
+               are on, the window's bit 5 is set, and the top is a
+               semi-transparent sprite or BLDCNT is in alpha mode. */
+            int lim = 2;
+            bool objpend = o.hit && (mask & 0x10);
+            for (int k = 0; k <= nflat; ++k) {
+                if (objpend && (k == nflat || o.prio <= fprio[k])) {
+                    objpend = false;
                     if (!found) semi = o.semi;
                     col[found] = o.color; id[found] = 4; ++found;
-                    if (found >= 2) break;
+                    if (found == 1)
+                        lim = (!bld.off && (mask & 0x20) && (semi || bld.mode == 1)) ? 2 : 1;
+                    if (found >= lim) break;
                 }
-                for (int k = 0; k < norder[prio] && found < 2; ++k) {
-                    const int bg = order[prio][k];
-                    if (!(mask & (1u << bg))) continue;
-                    if (lok[bg][x]) {
-                        col[found] = lcol[bg][x]; id[found] = bg; ++found;
-                    }
+                if (k == nflat) break;
+                const int bg = flat[k];
+                if (!(mask & (1u << bg))) continue;
+                if (lok[bg][x]) {
+                    col[found] = lcol[bg][x]; id[found] = bg; ++found;
+                    if (found == 1)
+                        lim = (!bld.off && (mask & 0x20) && (semi || bld.mode == 1)) ? 2 : 1;
+                    if (found >= lim) break;
                 }
             }
             const uint32_t c = found ? blend_apply(bld, mask, col[0], id[0], semi,
