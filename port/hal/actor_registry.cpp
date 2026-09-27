@@ -302,10 +302,35 @@ static int port_host_abi_blocked(unsigned id)
 
 extern "C" const char *port_actor_class_name(unsigned id);
 
+/* THE OVERLAY LOAD THIS HOOK STANDS IN FOR (run hunt1, lane MGMENU1).
+   The ROM's occupant of data_020a4b58 is func_0201a694 (src/func_0201a694.c,
+   seated by src/func_0201a5cc.c). For a scene id it asks GetSceneOverlayID
+   and, for a minigame (0x169..0x186, IsMinigameActorID's range), calls
+   func_0201a798(&overlay_6), which loads ov004 and then ov006
+   (src/func_0201a798.c). The DS overlay load runs each overlay's static-init
+   range, so all 35 ov004/ov006 constructors have run before the factory is
+   reached. One of them, __sinit_ov004_020b948c, constructs
+   dScMgBase_c::graphCallback_c in data_ov004_020beb74 (its vtable word is
+   data_ov004_020bc03c); every minigame's slot 33 then parks that block in
+   data_0209d4a8.
+
+   The port's model of "ov004 + ov006 are loaded" is hal/scene_mg.cpp's
+   port_scene_mg_prepare (the constructors, then the seats that follow them),
+   and until now only the direct SM64DS_SCENE=<minigame> boot ran it. A
+   minigame picked from the minigame menu (scene 5) spawns through this hook
+   with none of it done, and the frame's graphics-block dispatch
+   (func_02019404 / func_02019144) calls through the block's zero vtable word.
+   So the hook does it here, at func_0201a694's point, before the factory.
+   The gate is the ROM's own predicate, inside port_scene_mg_prepare; every
+   other id is untouched. It runs once per process, as on the direct boot:
+   the port never unloads ov006, so there is no FS_EndOverlay to undo it. */
+extern "C" void port_scene_mg_prepare(int id);
+
 extern "C" int port_prespawn_hook(void *idv)
 {
     unsigned id = (unsigned)(size_t)idv;
     if (id < PORT_ACTOR_IDS && data_020a4bb8[id] && !port_host_abi_blocked(id)) {
+        port_scene_mg_prepare((int)id);
         static int trc = -1;
         if (trc < 0) trc = std::getenv("SM64DS_TRACE_SPAWN") != 0;
         if (trc) std::fprintf(stderr, "  [spawn+] actor 0x%x %s proceed\n",
