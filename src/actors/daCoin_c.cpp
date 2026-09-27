@@ -815,11 +815,13 @@ s32 daCoin_c::CleanupResources()
 
 
 
+    extern "C" {
     void _ZN13SharedFilePtr7ReleaseEv(char *p);
     void _ZN8Particle6System9NewSimpleEj5Fix12IiES2_S2_(unsigned int a, Fix12i x, Fix12i y, Fix12i z);
     extern char data_ov002_0210d9a8;
     extern char *data_ov002_020ff06c[];
     extern char *data_ov002_020ff060[];
+    }
 
     dActor_c *o;
     int b = (int)(actorID == 0x121);

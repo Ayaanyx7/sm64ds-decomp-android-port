@@ -42,9 +42,8 @@
  * slot 9 (Render) -- all still fBase_c's own slots in dActor_c -- plus 18
  * (OnYoshiTryEat) and 19 (OnTurnIntoEgg). Every other slot holds the base's
  * own word and is inherited, so it is deliberately not redeclared here.
- * InitResources and CleanupResources are defined as extern "C" free
- * functions under their mangled names (src/_ZN8daCoin_c13InitResourcesEv.c,
- * src/_ZN8daCoin_c16CleanupResourcesEv.c), the same idiom fBase_c.h itself uses
+ * InitResources and CleanupResources are the methods in
+ * src/actors/daCoin_c.cpp, the same slots fBase_c.h itself uses
  * for slot 0 -- declaring them here only fills the vtable slot, it does not
  * make this TU or theirs the key function.
  */
@@ -84,7 +83,7 @@ struct daCoin_c : dActor_c {
        from (src/stage/LevelObjects.cpp). A red coin
        claims a star-marker slot only when it matches (or the level is 0x13); a
        blue coin with a filter under 8 clears bit 0 of mCoinFlags.
-       [_ZN8daCoin_c13InitResourcesEv.cpp] */
+       [src/actors/daCoin_c.cpp] */
     u8  mSpawnFilter;            /* 0x3ab */
     s8  mTrackStarID;            /* 0x3ac */
     u8  pad_3ad[0x1];
@@ -92,8 +91,7 @@ struct daCoin_c : dActor_c {
        Render entirely; Behavior tests bits 0 and 1. Every read-modify-write of
        it keeps its raw `*(u8*)((int)c + 0x3ae)` spelling on purpose -- see the
        "FOUR SITES KEEP RAW OFFSETS" note in
-       src/_ZN8daCoin_c13InitResourcesEv.cpp. [_ZN8daCoin_c6RenderEv.cpp,
-       _ZN8daCoin_c8BehaviorEv.cpp] */
+       src/actors/daCoin_c.cpp. */
     u8  mCoinFlags;            /* 0x3ae */
     u8  pad_3af[0x1];
     u8  mInBrickBlock;            /* 0x3b0 */
