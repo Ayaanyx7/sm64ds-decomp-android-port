@@ -318,6 +318,53 @@ void gx_debug_viewport(int &x, int &y, int &w, int &h, int &sets);
 void gx_debug_commands(uint32_t counts[256], uint32_t &ports, uint32_t &fifo,
                        uint32_t &swap_param, uint32_t &resets, bool take);
 
+// ---- MOTION INTERPOLATION (run interp1, the SmoothMotion key) -------------
+//
+// PRESENTATION ONLY. With the key on, the host records each level frame's
+// geometry command stream (everything exec() ran between the gx_reset that
+// opened the frame and its gx_render) and can draw an EXTRA picture between two
+// game ticks by replaying that record with every matrix parameter blended
+// between the previous tick's value and this tick's. The game's code runs once
+// per tick exactly as before; a replay is never visible to it (GXSTAT, the
+// census counters and the swap latch stand down while one runs). The full
+// description is the banner over the implementation in ntr/gx.cpp.
+//
+// With gx_interp_arm never called (the default) nothing is recorded and none
+// of the functions below does anything.
+struct GxInterpStats {
+    int groups, matched, unmatched, teleport, shape;
+    int snap;             // why the frame cannot blend (0 = it can); bits:
+                          // 1 caller, 2 no previous tick, 4 texture cache
+                          // dropped, 8 no sealed record, 16 camera cut
+    float eye_step;       // camera eye movement since the previous tick
+    float turn_deg;       // camera view-axis turn since the previous tick
+};
+void gx_interp_arm(int on);
+int gx_interp_armed();
+// runtime.cpp's GXFIFO copy names the display list it is streaming (0 after).
+void gx_dma_source(uint32_t src);
+// The next commit has no previous tick to blend from.
+void gx_interp_invalidate();
+// After the tick's gx_render: key the record, pair it with the previous one.
+// `view` is the ROM's live view matrix (data_0209b3ec). Returns 1 when the
+// frame can blend.
+int gx_interp_commit(const int32_t view[12], int snap, GxInterpStats *st);
+int gx_interp_ready();
+// The blended camera's eye, for the probe.
+void gx_interp_view(float alpha, float eye[3]);
+// Replay the current record at alpha (0 = the previous tick, 1 = this tick)
+// into the polygon list, with the live engine state saved; gx_render then
+// draws the blended picture, and gx_interp_end puts the live state back.
+int gx_interp_begin(float alpha);
+void gx_interp_end();
+// Probe helpers: the screen box of one draw group's triangles in the replayed
+// list (between begin and end), the group count, whether a group was paired.
+int gx_interp_group_box(int group, float box[4]);
+int gx_interp_group_count();
+int gx_interp_group_matched(int group);
+void gx_interp_dump_groups(void *file, int frame);
+
+
 }  // namespace ntr
 
 #endif  // NTR_GX_H

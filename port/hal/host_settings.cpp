@@ -1264,6 +1264,8 @@ int renderer_sanitise(int n)
 int g_render_scale = 0;
 int g_hd_textures = 0;
 int g_smooth_models = 0;
+/* SmoothMotion (run interp1): 0 off, 1 on. Boot-latched like FrameRate. */
+int g_smooth_motion = 0;
 
 /* run hd2's two, latched beside them and for the same kind of reason: the
    filter mode decides whether the texture cache builds a mip chain at the
@@ -1405,6 +1407,7 @@ void load_once(void)
     g_render_scale = 0;
     g_hd_textures = 0;
     g_smooth_models = 0;
+    g_smooth_motion = 0;
     /* run hd2's two, here for the same reason: nearest sampling and no
        smoothing pass are the picture the port shipped with, so a missing file
        and a file that will not parse both have to land on them. */
@@ -1707,6 +1710,9 @@ void load_once(void)
                          json_bool(text, "HdTextures", 0) != 0) ? 1 : 0;
         g_smooth_models =
             smooth_models_sanitise(json_int(text, "SmoothModels", 0));
+        /* SmoothMotion: both spellings of a toggle, HdTextures' rule. */
+        g_smooth_motion = (json_int(text, "SmoothMotion", 0) != 0 ||
+                           json_bool(text, "SmoothMotion", 0) != 0) ? 1 : 0;
         /* run hd2's two, read the same way and sanitised here rather than at
            the accessor, so the stored value is always one the sampler can
            choose a tap count from and the smoothing pass can size itself
@@ -1899,6 +1905,11 @@ void load_once(void)
                         "the ROM's own texture is used everywhere else. This "
                         "is a mod, not the game. (%s)\n",
                 host_setting_hd_textures_dir(), path);
+    if (g_smooth_motion)
+        fprintf(stderr, "[settings] SmoothMotion on -- with FrameRate above "
+                        "the game's tick rate, the pictures between two ticks "
+                        "are drawn with the moving 3D blended between them "
+                        "(%s)\n", path);
     if (g_smooth_models)
         fprintf(stderr, "[settings] SmoothModels %d -- the game's models are "
                         "subdivided %d level(s) before they are drawn, so the "
@@ -2924,6 +2935,26 @@ extern "C" const char *host_setting_minimap_dir(void)
 
 /* SmoothModels: the subdivision level, 0 for the ROM's own geometry.
    SM64DS_SMOOTH_MODELS overrides; junk reads as 0. */
+/* SmoothMotion: 1 on, 0 off. SM64DS_SMOOTH_MOTION overrides with the same
+   grammar (any nonzero number is on; junk and 0 are off). */
+extern "C" int host_setting_smooth_motion(void)
+{
+    static int env_read = 0;
+    static int env = -1;             /* <0 means "the environment said nothing" */
+    if (!env_read) {
+        env_read = 1;
+        const char *e = getenv("SM64DS_SMOOTH_MOTION");
+        if (e && *e) {
+            char *end = 0;
+            const long v = strtol(e, &end, 10);
+            env = (end != e && v != 0) ? 1 : 0;
+        }
+    }
+    if (env >= 0) return env;
+    load_once();
+    return g_smooth_motion;
+}
+
 extern "C" int host_setting_smooth_models(void)
 {
     static int env_read = 0;
