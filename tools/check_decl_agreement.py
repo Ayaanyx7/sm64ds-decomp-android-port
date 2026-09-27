@@ -2503,18 +2503,30 @@ HUNK = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
 def added_lines(base, rels, root=REPO):
-    """{rel: set of line numbers} each file ADDS against `base`, renames followed."""
+    """{rel: set of line numbers} each file ADDS against `base`, renames followed.
+
+    `-M` alone does not follow a rename here: a pathspec naming only the new path
+    hides the old one from git, so a moved file diffs as all-new and every extern
+    in it reads as added. Pass both sides of each rename git detects."""
+    proc = subprocess.run(["git", "diff", "--name-status", "-M", "--no-color", base],
+                          cwd=str(root), capture_output=True, text=True)
+    renamed_from = {}
+    for row in proc.stdout.splitlines():
+        parts = row.split("\t")
+        if len(parts) == 3 and parts[0].startswith("R"):
+            renamed_from[parts[2]] = parts[1]
     out = {}
     for rel in rels:
+        paths = [renamed_from[rel], rel] if rel in renamed_from else [rel]
         proc = subprocess.run(["git", "diff", "-U0", "-M", "--no-color", base, "--",
-                               rel], cwd=str(root), capture_output=True, text=True)
+                               *paths], cwd=str(root), capture_output=True, text=True)
         lines = set()
         for row in proc.stdout.splitlines():
             m = HUNK.match(row)
             if m:
                 start, count = int(m.group(1)), int(m.group(2) or 1)
                 lines.update(range(start, start + count))
-        if not lines and blob_text(rel, base, root) is None:
+        if not lines and blob_text(paths[0], base, root) is None:
             # Untracked: `git diff` says nothing about a file git has never seen,
             # and every line of it is new.
             text = (pathlib.Path(root) / rel).read_text(encoding="utf-8",
