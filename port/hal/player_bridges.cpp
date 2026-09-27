@@ -39,6 +39,8 @@ extern "C" unsigned g_port_unhosted_hits = 0;
 extern "C" unsigned int _ZNK6Player14GetBodyModelIDEjb(char *, unsigned int, char);
 extern "C" unsigned func_ov002_020becf4(char *self, unsigned j, int b);
 extern "C" int func_ov002_020d225c(char *o);   /* src/func_ov002_020d225c.c */
+extern "C" void func_ov002_020e3e00(void *obj, const void *vec,
+                                    unsigned opacity);  /* src/func_ov002_020e3e00.cpp */
 extern "C" int _ZN6Player13InitResourcesEv(void *);
 
 /* C++-linkage globals some slice TUs call under Itanium-style names */
@@ -1771,6 +1773,8 @@ void hal_render_player_world(void *player)
         hsink_t1 = hsink_t0;
         if (hsink_on()) ntr::gx_polygons(hsink_t1);
         hal_player_texseq_body(c);
+        /* the mirror, src/_ZN6Player6RenderEv.cpp:81 (see the head's call) */
+        func_ov002_020e3e00(ma, c + 0x80, *(const unsigned char *)(c + 0x6f5));
     }
 
     unsigned hid = func_ov002_020becf4(c, *(unsigned char *)(c + 0x6db), 1);
@@ -1786,6 +1790,20 @@ void hal_render_player_world(void *player)
             if (ghost) ghost_opacity(head);
             hal_render_head_group(c, head, hid, ma, scene);
             hal_player_texseq_head(c, hid);
+            /* THE MIRROR, once for the body (above) and once here for the
+               head, src/_ZN6Player6RenderEv.cpp:81 and :128:
+
+                   func_ov002_020e3e00(model, this + 0x80, mOpacity);
+
+               src/func_ov002_020e3e00.cpp draws the model a second time
+               reflected in X about the room's mirror plane (x = 0 in the
+               King Boo arena, level 0x2f, while its ov055 gate allows; x =
+               0x1086000 in the castle's mirror room, level 5 area 3), with
+               the material flags that flip its winding, and restores the
+               model's matrix after. It is linked (port/slice_hostgen4.txt)
+               and this copy never called it, so the player had no
+               reflection in either mirror. */
+            func_ov002_020e3e00(head, c + 0x80, *(const unsigned char *)(c + 0x6f5));
             /* THE LAST STATEMENT OF THE ROM'S HEAD BLOCK,
                src/_ZN6Player6RenderEv.cpp:129-131:
 
