@@ -2013,6 +2013,109 @@ void bm_fill_default(uint32_t dispcnt, const Windows &w) {
     g_bm_live = true;
 }
 
+/* ---- lane TWOD: engine A's BG loop, the old one kept as the reference -------
+ *
+ * bg_loop_ref is the BG loop of port_message_composite_engine_a as it shipped
+ * (0.5.1), word for word, drawing into whatever hit buffer it is handed. The live
+ * loop now walks a per-frame list of the enabled BGs in paint order instead of
+ * testing all sixteen (priority, BG) pairs at every pixel. SM64DS_TWOD_VERIFY=1
+ * copies the hit buffer as it stands before the loop, runs this reference over the
+ * copy, and compares every cell's colour, hit, owner and priority with the live
+ * result: one line per differing frame (the first 20) and a SUMMARY line at exit.
+ * SM64DS_TWOD_OLD=1 draws through the reference alone (timing A/B on one binary). */
+void bg_loop_ref(Cell (*a)[256], const BgConfig *bgs, const Windows &win,
+                 unsigned lmask, const Blend &bl)
+{
+    for (int y = 0; y < 192; ++y) {
+        for (int x = 0; x < 256; ++x) {
+            const unsigned mask = window_mask(win, x, y);
+            for (int prio = 3; prio >= 0; --prio) {
+                for (int bg = 3; bg >= 0; --bg) {
+                    if (!bgs[bg].enabled || bgs[bg].priority != prio) continue;
+                    if (!(mask & (1u << bg))) continue;
+                    if (!(lmask & (1u << bg))) continue;
+                    uint32_t s;
+                    if (sample_bg(bgs[bg], x, y, s)) {
+                        // BGs draw far->near (prio 3..0, then bg 3..0), so when
+                        // a 1st-target BG writes, g_a already holds the layer
+                        // directly below it. Mode-1 alpha over a 2nd-target 2D
+                        // layer, gated by window bit 5.
+                        if (!bl.off && bl.mode == 1 && (mask & 0x20)
+                            && (bl.first & (1u << bg)) && a[y][x].hit
+                            && (bl.second & (1u << a[y][x].owner)))
+                            s = blend_alpha(s, a[y][x].color, bl.eva, bl.evb);
+                        a[y][x].color = s;
+                        a[y][x].hit = true;
+                        a[y][x].owner = (uint8_t)bg;
+                        a[y][x].prio = (uint8_t)prio;
+                    }
+                }
+            }
+        }
+    }
+}
+
+Cell (*g_a_ref)[256];
+long g_a_frames, g_a_bad, g_a_badcells;
+
+int twod_env_on(const char *name, int &v)
+{
+    if (v < 0) {
+        const char *e = std::getenv(name);
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v;
+}
+
+int twod_verify_a_on() { static int v = -1; return twod_env_on("SM64DS_TWOD_VERIFY", v); }
+int twod_old_a_on() { static int v = -1; return twod_env_on("SM64DS_TWOD_OLD", v); }
+
+void twod_verify_a_summary()
+{
+    std::fprintf(stderr, "[twod] SUMMARY engA verify: %ld composites compared, %ld differ "
+                 "(%ld cells)\n", g_a_frames, g_a_bad, g_a_badcells);
+}
+
+/* Before the loop: keep the hit buffer as the loop will find it. */
+bool twod_verify_a_begin()
+{
+    if (!twod_verify_a_on()) return false;
+    if (!g_a_ref) {
+        g_a_ref = static_cast<Cell (*)[256]>(std::calloc(192, sizeof(Cell) * 256));
+        if (!g_a_ref) return false;
+        std::atexit(twod_verify_a_summary);
+    }
+    std::memcpy(g_a_ref, g_a, sizeof(Cell) * 192 * 256);
+    return true;
+}
+
+/* After the loop: the reference over the copy, then every cell compared. */
+void twod_verify_a_end(const BgConfig *bgs, const Windows &win, unsigned lmask,
+                       const Blend &bl, uint32_t dispcnt)
+{
+    bg_loop_ref(g_a_ref, bgs, win, lmask, bl);
+    ++g_a_frames;
+    long n = 0;
+    int fx = -1, fy = -1;
+    for (int y = 0; y < 192; ++y)
+        for (int x = 0; x < 256; ++x) {
+            const Cell &p = g_a[y][x], &q = g_a_ref[y][x];
+            if (p.color != q.color || p.hit != q.hit || p.owner != q.owner || p.prio != q.prio) {
+                if (!n) { fx = x; fy = y; }
+                ++n;
+            }
+        }
+    if (!n) return;
+    ++g_a_bad;
+    g_a_badcells += n;
+    if (g_a_bad <= 20)
+        std::fprintf(stderr, "[twod] engA MISMATCH composite %ld: %ld cells, first (%d,%d) "
+                     "new %08x/%d/%u ref %08x/%d/%u, DISPCNT %08x\n", g_a_frames, n, fx, fy,
+                     (unsigned)g_a[fy][fx].color, (int)g_a[fy][fx].hit, (unsigned)g_a[fy][fx].owner,
+                     (unsigned)g_a_ref[fy][fx].color, (int)g_a_ref[fy][fx].hit,
+                     (unsigned)g_a_ref[fy][fx].owner, (unsigned)dispcnt);
+}
+
 }  // namespace
 
 /* The fade composite's question (tests/walk_window.cpp): null = lighten or
@@ -2506,14 +2609,29 @@ extern "C" void port_message_composite_engine_a(void *fbp)
     const unsigned lmask = layer_mask_env();
     const Blend bl = read_blend();
 
-    for (int y = 0; y < 192; ++y) {
-        for (int x = 0; x < 256; ++x) {
-            const unsigned mask = window_mask(win, x, y);
-            for (int prio = 3; prio >= 0; --prio) {
-                for (int bg = 3; bg >= 0; --bg) {
-                    if (!bgs[bg].enabled || bgs[bg].priority != prio) continue;
+    /* THE ENABLED BGs IN PAINT ORDER, once a frame (lane TWOD). The loop below
+       used to test all sixteen (priority, BG) pairs at every pixel, far to near,
+       and skip the ones not enabled, not at that priority or not in the layer
+       filter; this list is those same tests answered once, in the same order,
+       so each pixel visits only the layers that can draw. A frame with none
+       (every level's HUD is sprites) skips the loop. The window test and
+       everything after it are per pixel as before. bg_loop_ref is the old loop
+       (SM64DS_TWOD_VERIFY=1 compares the two, SM64DS_TWOD_OLD=1 runs it alone). */
+    int bgorder[4], nbg = 0;
+    for (int prio = 3; prio >= 0; --prio)
+        for (int bg = 3; bg >= 0; --bg)
+            if (bgs[bg].enabled && bgs[bg].priority == prio && (lmask & (1u << bg)))
+                bgorder[nbg++] = bg;
+    const bool verify_a = twod_verify_a_begin();
+    if (twod_old_a_on()) {
+        bg_loop_ref(g_a, bgs, win, lmask, bl);
+    } else if (nbg) {
+        for (int y = 0; y < 192; ++y) {
+            for (int x = 0; x < 256; ++x) {
+                const unsigned mask = window_mask(win, x, y);
+                for (int k = 0; k < nbg; ++k) {
+                    const int bg = bgorder[k];
                     if (!(mask & (1u << bg))) continue;
-                    if (!(lmask & (1u << bg))) continue;
                     uint32_t s;
                     if (sample_bg(bgs[bg], x, y, s)) {
                         // BGs draw far->near (prio 3..0, then bg 3..0), so when
@@ -2527,12 +2645,13 @@ extern "C" void port_message_composite_engine_a(void *fbp)
                         g_a[y][x].color = s;
                         g_a[y][x].hit = true;
                         g_a[y][x].owner = (uint8_t)bg;
-                        g_a[y][x].prio = (uint8_t)prio;
+                        g_a[y][x].prio = (uint8_t)bgs[bg].priority;
                     }
                 }
             }
         }
     }
+    if (verify_a) twod_verify_a_end(bgs, win, lmask, bl, dispcnt);
 
     if (obj_on && (lmask & (1u << kOwnerObj)))
         raster_obj(dispcnt, bl, win, fb);
