@@ -611,7 +611,7 @@ void ct_frame(void)
             l.on = 0;
             continue;
         }
-        int vol = c.ampl / 128 + c.volDb10 + c.lfoDb10;
+        int vol = (c.ampl >> 7) + c.volDb10 + c.lfoDb10;
         if (vol < -723) vol = -723;
         int pan = c.pan + c.lfoPan;
         pan = pan < 0 ? 0 : (pan > 127 ? 127 : pan);
@@ -660,8 +660,13 @@ void sd_mix_frame(void)
         apply_pitch(c);
         switch (c.state) {
         case ENV_ATTACK:
-            // ampl is negative and climbs toward 0 multiplicatively.
-            c.ampl = (sd_s32)(((long long)c.attackCoef * c.ampl) / 255);
+            /* ampl is negative and climbs toward 0 multiplicatively, the
+               ARM7's way (0x037FBCC0..0x037FBCE8): -((-ampl * coef) >> 8),
+               decay once it reads exactly 0. This used to divide by 255,
+               which is a different curve -- slower for every attack
+               coefficient, and never reaching 0 at all for coefficient 255
+               (attack 0). */
+            c.ampl = -(sd_s32)(((long long)(-c.ampl) * c.attackCoef) >> 8);
             if (c.ampl >= 0) { c.ampl = 0; c.state = ENV_DECAY; }
             break;
         case ENV_DECAY:
@@ -706,7 +711,7 @@ void sd_mix_render(sd_s16 *dst, int frames)
         for (int i = 0; i < SD_CHANNELS; i++) {
             Channel &c = g_ch[i];
             if (!c.active || !c.pcm) continue;
-            int envDb10 = c.ampl / 128;
+            int envDb10 = c.ampl >> 7;   /* 0x037FBD48: asr 7, not a divide */
             int total = envDb10 + c.volDb10 + c.lfoDb10;
             if (total < -723) total = -723;
             double g = db10_to_gain(total);
