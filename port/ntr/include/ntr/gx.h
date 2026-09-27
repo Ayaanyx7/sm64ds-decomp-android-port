@@ -241,6 +241,28 @@ int gx_gpu_opaque_registered();
 // draw one list both ways.
 GxGpuOpaqueFn gx_gpu_opaque();
 
+// ---- THE OPTIONAL GRAPHICS-CARD BACKEND FOR THE EDGE SMOOTHING (run perf2) --
+//
+// aa_pass (AntiAliasing 1) is the other CPU pass left after the card draws the
+// opaque picture. A backend is handed the frame as it stands (aa_pass's own
+// copy of it, which is also what the display capture reads), the coverage
+// mask and the live framebuffer; it writes every pixel the smoothing changes
+// into fb, exactly as aa_band would, sets `changed` and returns 1. 0 is never
+// an error: aa_pass then runs its own bands on the same frame. Nothing is
+// registered unless the "Renderer" setting is on (hal/gpu_raster.cpp), so the
+// software renderer's smoothing is untouched: one null test per smoothed frame.
+struct GxGpuAa {
+    const uint32_t *src;   // the frame before smoothing, SCREEN_W stride
+    const uint8_t *cover;  // the 3D coverage mask, same stride
+    uint32_t *fb;          // the live framebuffer, same stride
+    int stride;
+    int w, h;              // the active picture
+    unsigned long long changed;  // out: pixels rewritten
+};
+typedef int (*GxGpuAaFn)(GxGpuAa *);
+void gx_set_gpu_aa(GxGpuAaFn fn);
+#define GX_HAS_GPU_AA 1   // hal/gpu_raster.cpp registers its backend only when this exists
+
 // Rasterise them into fb with a depth buffer. Does not clear fb -- the 3D layer
 // composites over whatever the 2D engine already drew.
 void gx_render(Framebuffer &fb);

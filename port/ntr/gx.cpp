@@ -1825,6 +1825,8 @@ std::map<const uint32_t *, TexIdent> g_tex_ids;
 /* The registered backend for the opaque pass, or null. See GxGpuFrame in
    ntr/gx.h for what it is handed and what returning 0 means. */
 GxGpuOpaqueFn g_gpu_opaque = nullptr;
+/* and the one for the edge smoothing, or null (see GxGpuAa in ntr/gx.h) */
+GxGpuAaFn g_gpu_aa = nullptr;
 }  // namespace
 
 void gx_bind_texture(const uint32_t *rgba, int width, int height) {
@@ -2292,6 +2294,8 @@ int gx_gpu_opaque_registered() { return g_gpu_opaque != nullptr; }
    ways can put it back after taking it out. The A/B inside gx_render does
    that without help because it is inside; a test outside cannot. */
 GxGpuOpaqueFn gx_gpu_opaque() { return g_gpu_opaque; }
+
+void gx_set_gpu_aa(GxGpuAaFn fn) { g_gpu_aa = fn; }
 
 /* ---- THE TWO PICTURE-SMOOTHING SETTINGS' LATCHES (run hd2) ---------------
    Both are called once at boot from walk_window, beside ntr::configure_aspect,
@@ -3456,6 +3460,24 @@ static void aa_pass(Framebuffer &fb, int cw, int ch, int nt) {
     for (int y = 0; y < ch; ++y)
         std::memcpy(g_aa_src + (size_t)y * SCREEN_W, fb.px[y],
                     (size_t)cw * sizeof(uint32_t));
+    /* THE GRAPHICS CARD, when the "Renderer" setting registered one: the same
+       rule on the same copy, the changed pixels written back, the same count.
+       0 means it did not run, and the bands below do the frame instead. */
+    if (g_gpu_aa) {
+        GxGpuAa a;
+        a.src = g_aa_src;
+        a.cover = &g_cover[0][0];
+        a.fb = &fb.px[0][0];
+        a.stride = SCREEN_W;
+        a.w = cw;
+        a.h = ch;
+        a.changed = 0;
+        if (g_gpu_aa(&a)) {
+            g_aa_changed += a.changed;
+            g_aa_pre_valid = 1;
+            return;
+        }
+    }
     AaCtx ctx{&fb, cw, ch};
     /* THE SAME THREAD COUNT THE RASTER JUST USED, and through the same pool.
        RasterPool::run hands every band the width it was started at, so asking
