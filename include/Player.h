@@ -725,6 +725,27 @@ struct Player : dActor_c {
     void SetRealCharacter(unsigned int chr_);
     void TurnOffToonShading(unsigned int j);
     void Unk_020ca488();
+
+    void func_ov002_020bda48();
+    void func_ov002_020bdd9c();
+    void func_ov002_020bdef0();
+    void func_ov002_020bdf8c();
+    void func_ov002_020be3b0();
+    void func_ov002_020beabc();
+    int func_ov002_020beb38();
+    void func_ov002_020bf13c();
+    int func_ov002_020bf40c();
+    void func_ov002_020bf5e0();
+    void func_ov002_020bf88c();
+    void func_ov002_020bf90c();
+    void func_ov002_020bf9d4();
+    int func_ov002_020bfa74();
+    int func_ov002_020bfec0();
+    int func_ov002_020c0434();
+    int func_ov002_020c04ac();
+    int func_ov002_020c04e0();
+    int func_ov002_020c0688();
+    int func_ov002_020c0cbc();
 };
 
 /* Hold both claims with the compiler rather than a comment. State's 0x18 is
