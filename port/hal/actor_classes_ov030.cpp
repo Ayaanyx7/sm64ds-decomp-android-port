@@ -126,9 +126,10 @@
 // is `add r1, r2, r1, lsl #4` -- 16 bytes -- and then `bx ip` straight into
 // func_ov030_02114170, so installing a cell IS entering its state.
 //
-// STATE 3's TICK HALF HAS NO BODY. func_ov030_021136b0 (0x3d0 bytes) is the ONE
-// missing body in the whole overlay: no delink block and no src file. It gets a
-// LOUD face below, never a silent stub.
+// STATE 3's TICK HALF, func_ov030_021136b0 (0x3d0 bytes), was once the ONE
+// missing body in the overlay and sat behind a loud trap. It is matched now:
+// src/actors/daMky_c.cpp carries it (ROM ordinal 27) inside the complete ov030
+// TU 0x02111688..0x021145e0, and the cell seats that body like the other ten.
 //
 // ============================================================================
 // WHAT THIS FILE DOES NOT CLAIM
@@ -357,7 +358,7 @@ int func_ov030_02113d20(void *c);
 int _ZN7daMky_c11EnterState2Ev(void *c);
 int func_ov030_02113b38(void *c);
 int _ZN7daMky_c11EnterState3Ev(void *c);
-/* state 3's tick half, func_ov030_021136b0, HAS NO BODY -- faced below */
+int func_ov030_021136b0(void *c);
 int _ZN7daMky_c11EnterState4Ev(void *c);
 int func_ov030_02113324(void *c);
 int _ZN7daMky_c11EnterState5Ev(void *c);
@@ -399,34 +400,6 @@ static void ov30_trap_report(void *self, int slot, const char *what)
 }
 static int __fastcall ov30_trap13(void *s, void *) { ov30_trap_report(s, 13, "vtable slot 13 fBase_c::Virtual34(u32,u32)"); return 0; }
 static int __fastcall ov30_trap14(void *s, void *) { ov30_trap_report(s, 14, "vtable slot 14 fBase_c::Virtual38(u32,u32)"); return 0; }
-
-// ---- THE ONE MISSING BODY -------------------------------------------------
-// func_ov030_021136b0 (0x3d0 bytes) is the Ukiki's state 3 TICK half. It has
-// neither a delink block in config/arm9/overlays/ov030/delinks.txt nor a src
-// file anywhere in the tree -- the only such symbol in the overlay (63 function
-// symbols, 62 with a body). It is faced LOUDLY rather than stubbed, the
-// hal/scene_boot.cpp l2_trap model: a silent stub here would make the Ukiki
-// sit in state 3 doing nothing and read as "the monkey is idle" rather than as
-// a hole.
-static int ov30_missing_021136b0_said;
-static void ov30_missing_021136b0(void *c)
-{
-    unsigned id = c ? *(unsigned short *)((char *)c + 0xc) : 0u;
-    if (!ov30_missing_021136b0_said) {
-        ov30_missing_021136b0_said = 1;
-        std::fprintf(stderr,
-                     "UNHOSTED: func_ov030_021136b0 (ov030 state 3 tick, 0x3d0 "
-                     "bytes) HAS NO MATCHED BODY -- no delink block and no src "
-                     "file. The Ukiki (actor id %u %s) entered state 3 and its "
-                     "tick does nothing. This is the ONE missing body in "
-                     "ov030; see port/slice_ov030cast.txt section 2.\n",
-                     id, port_actor_class_name(id));
-    }
-    { static char _m[128];
-      std::snprintf(_m, sizeof _m,
-                    "unhosted ov030 state 3 tick (func_ov030_021136b0) on id %u", id);
-      port_actor_slot_decline(_m); }
-}
 
 // ---- the shared 1..30 half; all three tables share it ---------------------
 static int __fastcall ov30_binit(void *s, void *)
@@ -526,7 +499,6 @@ static void ov30_fill_shared(void **vt)
    SoundObject/Cap/MrBlizzard/BabyPenguin shape: a mount pointing at the wrong
    bytes ABORTS instead of silently calling into garbage. */
 typedef void (*PortUkikiFn)(void *);
-static void ukiki_state3_tick(void *c) { ov30_missing_021136b0(c); }
 
 /* ---- RUN link100 LANE PMFSWEEP3'S HANDOFF: THE ELEVEN TICK CELLS TAKE THEIR
    RECEIVER IN ECX. ?Behavior@daMky_c@@UAEHXZ +0x1f5..+0x203 dispatches the
@@ -538,7 +510,7 @@ static void ukiki_state3_tick(void *c) { ov30_missing_021136b0(c); }
        add ecx,edi           this + delta
        call eax              a REAL call
 
-   while the eleven tick_rom bodies below (func_ov030_* and ukiki_state3_tick)
+   while the eleven tick_rom bodies below (func_ov030_*)
    are matched flat cdecl bodies that read their receiver off the stack at
    [ebp+8]. This is 5ae983797's family at another class (daMip_c and
    Scuttlebug already fixed on port/l7-pmfsweep2). The ENTER half is NOT
@@ -552,8 +524,11 @@ static void __fastcall uk_02113d20(void *self, void *)
 { func_ov030_02113d20(self); }
 static void __fastcall uk_02113b38(void *self, void *)
 { func_ov030_02113b38(self); }
+/* state 3's tick: the Ukiki Mario is holding. Before it had a body this cell
+   quarantined the Ukiki the moment it was grabbed, which froze it in the air
+   with the stolen cap still riding it. */
 static void __fastcall uk_021136b0(void *self, void *)
-{ ukiki_state3_tick(self); }
+{ func_ov030_021136b0(self); }
 static void __fastcall uk_02113324(void *self, void *)
 { func_ov030_02113324(self); }
 static void __fastcall uk_02113094(void *self, void *)
