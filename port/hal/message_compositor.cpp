@@ -2023,6 +2023,27 @@ extern "C" const unsigned char *port_engine_a_bright_mask(void)
     return g_bm_live ? g_bm : nullptr;
 }
 
+/* ONE VERDICT FOR A HOST RECTANGLE (hal/sub_screen.cpp, the corner-inset
+   panel). The inset is engine B's picture pasted into engine A's framebuffer,
+   a host layout and not a DS layer, so the per-pixel rule above has nothing to
+   say about it: judged by the engine-A layer that happens to lie under it, a
+   partial-target blend (the course-info and pause screens' BLDCNT 00e1)
+   punched that layer's shape into the map. The panel keeps the whole-panel
+   behaviour it always had: every pixel of it takes the blend, whenever a mask
+   is live. Inert when no mask was built (then the whole panel is blended
+   anyway). Clipped to the live picture. */
+extern "C" void port_engine_a_bright_mask_rect(int x0, int y0, int x1, int y1)
+{
+    if (!g_bm_live || !g_bm) return;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > ntr::active_w) x1 = ntr::active_w;
+    if (y1 > ntr::active_h) y1 = ntr::active_h;
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x)
+            g_bm[(size_t)y * ntr::SCREEN_W + x] = 1;
+}
+
 /* THE FADE COMPOSITE, ENGINE A'S, for both frame loops.
 
    The DS colour-special-effects unit's brightness modes (BLDCNT mode 2 or 3
