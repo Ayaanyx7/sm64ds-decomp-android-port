@@ -1516,6 +1516,7 @@ int  port_vs_match_end_frozen(void);
    builds the text and the loop below draws it */
 int  port_vs_match_end_banner(char *out, int n);
 void port_message_composite_engine_a(void *fb);
+void port_fader_wipe_render(void);   /* hal/fader_wipes.cpp */
 /* engine A's brightness targets for the fade composite below: null = the whole
    panel, else one byte per host pixel (SCREEN_W stride), 1 = apply BLDY there
    (hal/message_compositor.cpp, ENGINE A'S BRIGHTNESS TARGETS) */
@@ -16362,6 +16363,11 @@ int main(void)
         if (selftest && frame == 0)
             fprintf(stderr, "[w] rendered\n");
 
+        /* THE FADER WIPE'S MESH (hal/fader_wipes.cpp, THE WIPE'S PICTURE): the
+           iris FaderWipe::AdvanceFade queued at phase 2, submitted into this
+           frame's geometry now that the frame is open and before it is
+           rasterised. Nothing queued on a frame with no wipe moving. */
+        port_fader_wipe_render();
         ph_begin(&t_phase);
         /* clear: build one row, memcpy the rest (0xFF101820 is not a
            repeating byte pattern, so memset cannot do it directly) */
