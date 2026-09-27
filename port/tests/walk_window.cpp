@@ -1516,6 +1516,10 @@ int  port_vs_match_end_frozen(void);
    builds the text and the loop below draws it */
 int  port_vs_match_end_banner(char *out, int n);
 void port_message_composite_engine_a(void *fb);
+/* engine A's brightness targets for the fade composite below: null = the whole
+   panel, else one byte per host pixel (SCREEN_W stride), 1 = apply BLDY there
+   (hal/message_compositor.cpp, ENGINE A'S BRIGHTNESS TARGETS) */
+extern "C" const unsigned char *port_engine_a_bright_mask(void);
 int port_probe_message_id(void);
 int port_probe_message_fire(void *player, int id);
 /* frame-scripted headless pad press (hal/input_probe.cpp): apply ORs the
@@ -16417,9 +16421,16 @@ int main(void)
             int evy = 0, toWhite = 0;
             if (!rb_skip_render() && port_fader_blend_state(&evy, &toWhite)) {
                 if (evy > 16) evy = 16;
+                /* ONLY THE PIXELS THE DS BLENDS: the layer on top there is one
+                   of BLDCNT's first targets and its window's effect bit is
+                   set. Null when every pixel qualifies (a plain fade). */
+                const unsigned char *bm = port_engine_a_bright_mask();
                 for (int y = 0; y < ntr::active_h; ++y) {
                     uint32_t *row = fb.px[y];
+                    const unsigned char *brow =
+                        bm ? bm + (size_t)y * ntr::SCREEN_W : nullptr;
                     for (int x = 0; x < ntr::active_w; ++x) {
+                        if (brow && !brow[x]) continue;
                         uint32_t p = row[x];
                         int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff,
                             b = p & 0xff;
