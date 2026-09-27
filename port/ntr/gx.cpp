@@ -3786,6 +3786,577 @@ void ab_bmp(const char *path, const uint32_t *px, int stride, int x0, int y0,
 
 }  // namespace
 
+/* ---- SM64DS_RASTER_AB=1: THE OLD RASTER AGAINST THE NEW, ON EVERY FRAME ----
+   (run perf2, lane RASTER)
+
+   The raster in gx_render is allowed to get faster only if it draws the same
+   frame, to the byte. This is the instrument that says whether it does, and it
+   was written before any of the speed work so that every step of it could be
+   measured against the code as it stood.
+
+   With the switch on, each call that runs the raster passes runs them TWICE
+   from the same starting buffers. First the frozen copy below: the raster
+   body, the nearest and filtered samplers and the wrap rule exactly as they
+   were before the speed work, on one thread. Its six planes are set aside, the
+   buffers are put back as they were, and then the live code runs the same
+   passes on however many threads it chooses. The six planes the passes write
+   -- colour, depth, coverage, stencil, polygon id and the translucent
+   attribute -- are compared byte for byte over the WHOLE allocation, not just
+   the picture, and the live result is the one the frame keeps.
+
+   A frame with any difference prints its counts and the first pixel that
+   differs; a line every 300 frames and one at exit carry the running totals,
+   and the exit line says VERDICT=PASS only when every count is zero. Depth is
+   compared as bits, so a -0 against a +0 or a changed NaN counts.
+
+   Off, which is the default, this costs one test of a flag per frame, and the
+   copy below is never called. It stays in the file as the reference the next
+   change to the raster is measured against. */
+namespace {
+
+static int ref_tex_coord_i(int i, int size, bool repeat, bool flip) {
+    if (!repeat) return i < 0 ? 0 : (i >= size ? size - 1 : i);
+    if (!flip) {
+        i %= size;
+        return i < 0 ? i + size : i;
+    }
+    const int period = size * 2;
+    i %= period;
+    if (i < 0) i += period;
+    return i < size ? i : period - 1 - i;
+}
+
+static int ref_tex_coord(float f, int size, bool repeat, bool flip) {
+    return ref_tex_coord_i(static_cast<int>(std::floor(f)), size, repeat, flip);
+}
+
+static uint32_t ref_sample_bilinear(const TexLevel &L, float u, float v,
+                                bool rs, bool rt, bool fs, bool ft) {
+    const float fu = u - 0.5f, fv = v - 0.5f;
+    const float flu = std::floor(fu), flv = std::floor(fv);
+    const int iu = static_cast<int>(flu), iv = static_cast<int>(flv);
+    const float du = fu - flu, dv = fv - flv;
+    const int x0 = ref_tex_coord_i(iu, L.w, rs, fs);
+    const int x1 = ref_tex_coord_i(iu + 1, L.w, rs, fs);
+    const int y0 = ref_tex_coord_i(iv, L.h, rt, ft);
+    const int y1 = ref_tex_coord_i(iv + 1, L.h, rt, ft);
+    const uint32_t p00 = L.px[(size_t)y0 * L.w + x0];
+    const uint32_t p10 = L.px[(size_t)y0 * L.w + x1];
+    const uint32_t p01 = L.px[(size_t)y1 * L.w + x0];
+    const uint32_t p11 = L.px[(size_t)y1 * L.w + x1];
+    const float w00 = (1.0f - du) * (1.0f - dv);
+    const float w10 = du * (1.0f - dv);
+    const float w01 = (1.0f - du) * dv;
+    const float w11 = du * dv;
+    const float a00 = (float)(p00 >> 24) * w00;
+    const float a10 = (float)(p10 >> 24) * w10;
+    const float a01 = (float)(p01 >> 24) * w01;
+    const float a11 = (float)(p11 >> 24) * w11;
+    const float asum = a00 + a10 + a01 + a11;
+    if (asum <= 0.0f) return 0;
+    const float inv = 1.0f / asum;
+    auto ch = [&](int sh) {
+        const float s = (float)((p00 >> sh) & 0xFF) * a00 +
+                        (float)((p10 >> sh) & 0xFF) * a10 +
+                        (float)((p01 >> sh) & 0xFF) * a01 +
+                        (float)((p11 >> sh) & 0xFF) * a11;
+        const int i = (int)(s * inv + 0.5f);
+        return (uint32_t)(i < 0 ? 0 : (i > 255 ? 255 : i));
+    };
+    const int ai = (int)(asum + 0.5f);
+    const uint32_t a = (uint32_t)(ai < 0 ? 0 : (ai > 255 ? 255 : ai));
+    return (a << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
+}
+
+template <int FILTER>
+static uint32_t ref_sample_filtered(const TriTex &tt, const uint32_t *base, int w,
+                                int h, float u, float v, bool rs, bool rt,
+                                bool fs, bool ft) {
+    if (FILTER == 1) {
+        const TexLevel L{base, w, h};
+        return ref_sample_bilinear(L, u, v, rs, rt, fs, ft);
+    }
+    const TexLevel L0 = tex_level(tt, base, w, h, tt.lod);
+    const float s0 = (float)L0.w / (float)w, t0 = (float)L0.h / (float)h;
+    const uint32_t c0 = ref_sample_bilinear(L0, u * s0, v * t0, rs, rt, fs, ft);
+    if (tt.frac <= 0.0f) return c0;
+    const TexLevel L1 = tex_level(tt, base, w, h, tt.lod + 1);
+    if (L1.px == L0.px) return c0;
+    const float s1 = (float)L1.w / (float)w, t1 = (float)L1.h / (float)h;
+    const uint32_t c1 = ref_sample_bilinear(L1, u * s1, v * t1, rs, rt, fs, ft);
+    /* THE TWO LEVELS BLEND IN PREMULTIPLIED ALPHA TOO, for sample_bilinear's
+       reason: a coarse level of a cut-out is mostly transparent, and mixing
+       its colour in unweighted would grey the sharp level's edge. */
+    const float f1 = tt.frac, f0 = 1.0f - f1;
+    const float a0 = (float)(c0 >> 24) * f0, a1 = (float)(c1 >> 24) * f1;
+    const float asum = a0 + a1;
+    if (asum <= 0.0f) return 0;
+    const float inv = 1.0f / asum;
+    auto ch = [&](int sh) {
+        const float s = (float)((c0 >> sh) & 0xFF) * a0 +
+                        (float)((c1 >> sh) & 0xFF) * a1;
+        const int i = (int)(s * inv + 0.5f);
+        return (uint32_t)(i < 0 ? 0 : (i > 255 ? 255 : i));
+    };
+    const int ai = (int)(asum + 0.5f);
+    const uint32_t a = (uint32_t)(ai < 0 ? 0 : (ai > 255 ? 255 : ai));
+    return (a << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
+}
+
+struct RefArgs {
+    Framebuffer *fb;
+    uint32_t only;
+    bool have_shadow, have_translucent, want_id;
+    int pass_lo, pass_hi;
+};
+
+/* The raster body as it stood at the start of run perf2, verbatim apart from
+   the sampler names; the names it read from gx_render are rebound here. */
+template <int FILTER>
+void raster_ref(const RefArgs &ra, int tid, int nt) {
+    Framebuffer &fb = *ra.fb;
+    const uint32_t only = ra.only;
+    const bool have_shadow = ra.have_shadow;
+    const bool have_translucent = ra.have_translucent;
+    const bool want_id = ra.want_id;
+    const int pass_lo = ra.pass_lo, pass_hi = ra.pass_hi;
+    DepthRow *const depth = g_depth;
+    MaskRow *const stencil = g_stencil;
+    MaskRow *const attrid = g_attrid;
+    MaskRow *const tlattr = g_tlattr;
+    bool prev_mask = false;
+    for (int pass = pass_lo; pass <= pass_hi; ++pass)
+    for (const GxTriangle &t : g.tris) {
+        if (static_cast<int>(t.translucent) != pass) continue;
+        if (only && t.dbg_tex != only) continue;
+        if (have_shadow && pass == 1) {
+            /* The stencil clears when a NEW mask group begins -- a mask
+               polygon arriving after any non-mask polygon -- so one
+               volume's leftover bits cannot leak into the next volume's
+               draw. Every band walks the same list in the same order and
+               clears only its own rows, so this is the single-thread
+               semantics exactly. */
+            const bool is_mask = t.mode == 3 && t.polyid == 0;
+            if (is_mask && !prev_mask)
+                for (int y = tid; y < SCREEN_H; y += nt)
+                    std::memset(stencil[y], 0, SCREEN_W);
+            prev_mask = is_mask;
+        }
+        const GxVertex &a = t.v[0], &b = t.v[1], &c = t.v[2];
+        const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        if (std::fabs(area) < 1e-6f) continue;
+
+        // Back-face culling per POLYGON_ATTR bits 6-7 (bit 6 renders the back
+        // surface, bit 7 the front; stage meshes use double-sided ground).
+        // Screen Y is flipped relative to DS space, so a front face is
+        // clockwise here (negative area).
+        const bool backface = area > 0.0f;
+        if (backface && !(t.cull & 1)) continue;
+        if (!backface && !(t.cull & 2)) continue;
+
+        int minx = static_cast<int>(std::floor(std::fmin(a.x, std::fmin(b.x, c.x))));
+        int maxx = static_cast<int>(std::ceil(std::fmax(a.x, std::fmax(b.x, c.x))));
+        int miny = static_cast<int>(std::floor(std::fmin(a.y, std::fmin(b.y, c.y))));
+        int maxy = static_cast<int>(std::ceil(std::fmax(a.y, std::fmax(b.y, c.y))));
+        /* CLAMPED TO THE PRESENT RECTANGLE. There is no side clip against the
+           viewport in this raster -- off-screen geometry has always been
+           bounded by the screen edge, which at every other aspect IS the
+           viewport edge. Inside a pillarbox they are different rectangles, and
+           a triangle that runs past the 4:3 edge would otherwise paint into
+           the margin. present_* is (0,0,active_w,active_h) on every other run,
+           so these are the same four compares as before. */
+        const int px0 = present_x(), py0 = present_y();
+        const int px1 = px0 + present_w() - 1, py1 = py0 + present_h() - 1;
+        if (minx < px0) minx = px0;
+        if (miny < py0) miny = py0;
+        if (maxx > px1) maxx = px1;
+        if (maxy > py1) maxy = py1;
+
+        /* EVERYTHING BELOW THAT DOES NOT DEPEND ON THE PIXEL IS COMPUTED ONCE.
+           The edge functions were three full expressions per pixel, each
+           ending in a divide by `area`; the 1/w reciprocals were three fabs,
+           three compares and three divides per pixel for values that belong
+           to the triangle; and the vertex colours were converted from bytes to
+           float per channel per pixel. The arithmetic is left in exactly the
+           order it was written -- same operands, same operations, so the same
+           floats come out -- only the loop level it happens at moves. */
+        const float eax = b.x - a.x, eay = b.y - a.y;
+        const float ebx = c.x - b.x, eby = c.y - b.y;
+        const float ecx = a.x - c.x, ecy = a.y - c.y;
+        const float iwa = (std::fabs(a.w) > 1e-6f) ? 1.0f / a.w : 0.0f;
+        const float iwb = (std::fabs(b.w) > 1e-6f) ? 1.0f / b.w : 0.0f;
+        const float iwc = (std::fabs(c.w) > 1e-6f) ? 1.0f / c.w : 0.0f;
+        /* NOTE the UV terms below stay written as l0 * a.u * iwa. Folding
+           a.u * iwa out to the triangle would regroup the multiply, and float
+           multiplication does not associate -- (l0*a.u)*iwa and l0*(a.u*iwa)
+           are different numbers. Only the reciprocal itself is hoisted. */
+        const bool textured = t.tex && t.tw > 0 && t.th > 0;
+        const bool rep_s = (t.wrap & 1) != 0, rep_t = (t.wrap & 2) != 0;
+        const bool flip_s = (t.wrap & 4) != 0, flip_t = (t.wrap & 8) != 0;
+        /* Host pixels per DS texel (GxTriangle::tex_scale). The UVs the
+           geometry engine produced are in DS TEXELS, and tw/th are the bound
+           buffer's real pixel dimensions, so the sampler works in buffer
+           pixels by multiplying. 1 for everything the ROM supplies, and a
+           multiply by exactly 1.0f returns its operand bit for bit, so the
+           default run samples the texel it always sampled. */
+        const float tsc = (float)(t.tex_scale ? t.tex_scale : 1);
+        /* WHICH CHAIN LEVELS THIS TRIANGLE SITS BETWEEN, looked up rather than
+           computed: the head of gx_render already resolved it once for every
+           triangle in the frame. Nothing here runs at any other filter mode --
+           FILTER is a constant, so the whole statement folds away. */
+        TriTex tt{nullptr, 0, 0.0f};
+        if (FILTER == 2 && textured)
+            tt = g_tritex[(size_t)(&t - g.tris.data())];
+        const float acol[3] = {(float)((a.color >> 16) & 0xFF),
+                               (float)((a.color >> 8) & 0xFF),
+                               (float)(a.color & 0xFF)};
+        const float bcol[3] = {(float)((b.color >> 16) & 0xFF),
+                               (float)((b.color >> 8) & 0xFF),
+                               (float)(b.color & 0xFF)};
+        const float ccol[3] = {(float)((c.color >> 16) & 0xFF),
+                               (float)((c.color >> 8) & 0xFF),
+                               (float)(c.color & 0xFF)};
+        const uint32_t poly_a = (t.alpha >= 31 || t.alpha == 0) ? 31u : t.alpha;
+
+        /* first row of this band at or after miny */
+        const int y_first = miny + (((tid - miny) % nt) + nt) % nt;
+
+        if (t.mode == 3) {
+            /* Shadow polygons, the two-step protocol from the block comment
+               at the buffers above. Both loops share the standard loop's
+               coverage and barycentric arithmetic -- same expressions, same
+               order -- and neither ever writes depth. */
+            if (t.polyid == 0) {
+                /* the mask: set stencil where the depth test FAILS; no
+                   colour, no depth, no texture */
+                for (int y = y_first; y <= maxy; y += nt) {
+                    const float py = y + 0.5f;
+                    const float r0 = eax * (py - a.y);
+                    const float r1 = ebx * (py - b.y);
+                    const float r2 = ecx * (py - c.y);
+                    const float *drow = depth[y];
+                    uint8_t *srow = stencil[y];
+                    for (int x = minx; x <= maxx; ++x) {
+                        const float px = x + 0.5f;
+                        const float n0 = r0 - eay * (px - a.x);
+                        const float n1 = r1 - eby * (px - b.x);
+                        const float n2 = r2 - ecy * (px - c.x);
+                        if (!((n0 >= 0 && n1 >= 0 && n2 >= 0) ||
+                              (n0 <= 0 && n1 <= 0 && n2 <= 0)))
+                            continue;
+                        const float w0 = n0 / area, w1 = n1 / area,
+                                    w2 = n2 / area;
+                        const float l0 = w1, l1 = w2, l2 = w0;
+                        const float z = l0 * a.z + l1 * b.z + l2 * c.z;
+                        if (z >= drow[x]) srow[x] = 1;
+                    }
+                }
+            } else {
+                /* the drawn shadow: examine stencilled pixels, clear the
+                   bit whether it draws or not, blend where the depth test
+                   passes and the recorded polygon ID differs */
+                for (int y = y_first; y <= maxy; y += nt) {
+                    const float py = y + 0.5f;
+                    const float r0 = eax * (py - a.y);
+                    const float r1 = ebx * (py - b.y);
+                    const float r2 = ecx * (py - c.y);
+                    const float *drow = depth[y];
+                    uint8_t *srow = stencil[y];
+                    const uint8_t *irow = attrid[y];
+                    uint32_t *frow = fb.px[y];
+                    for (int x = minx; x <= maxx; ++x) {
+                        const float px = x + 0.5f;
+                        const float n0 = r0 - eay * (px - a.x);
+                        const float n1 = r1 - eby * (px - b.x);
+                        const float n2 = r2 - ecy * (px - c.x);
+                        if (!((n0 >= 0 && n1 >= 0 && n2 >= 0) ||
+                              (n0 <= 0 && n1 <= 0 && n2 <= 0)))
+                            continue;
+                        if (!srow[x]) continue;
+                        srow[x] = 0;
+                        const float w0 = n0 / area, w1 = n1 / area,
+                                    w2 = n2 / area;
+                        const float l0 = w1, l1 = w2, l2 = w0;
+                        const float z = l0 * a.z + l1 * b.z + l2 * c.z;
+                        if (z >= drow[x]) continue;
+                        if (irow[x] == t.polyid) continue;
+                        uint32_t texel = 0xFFFFFFFFu;
+                        if (textured) {
+                            const float iw = l0 * iwa + l1 * iwb + l2 * iwc;
+                            float uu, vv;
+                            if (iw > 1e-9f) {
+                                uu = (l0 * a.u * iwa + l1 * b.u * iwb +
+                                      l2 * c.u * iwc) / iw;
+                                vv = (l0 * a.v * iwa + l1 * b.v * iwb +
+                                      l2 * c.v * iwc) / iw;
+                            } else {
+                                uu = l0 * a.u + l1 * b.u + l2 * c.u;
+                                vv = l0 * a.v + l1 * b.v + l2 * c.v;
+                            }
+                            const int ui = ref_tex_coord(uu * tsc, t.tw, rep_s, flip_s);
+                            const int vi = ref_tex_coord(vv * tsc, t.th, rep_t, flip_t);
+                            texel = t.tex[vi * t.tw + ui];
+                            if ((texel >> 24) == 0) continue;
+                        }
+                        auto ch = [&](int k, int sh) {
+                            const float v = l0 * acol[k] + l1 * bcol[k] +
+                                            l2 * ccol[k];
+                            const float m = inv255.v[(texel >> sh) & 0xFF];
+                            const int i = static_cast<int>(v * m + 0.5f);
+                            return static_cast<uint32_t>(
+                                i < 0 ? 0 : (i > 255 ? 255 : i));
+                        };
+                        const uint32_t tex_a = texel >> 24;
+                        const uint32_t sa = (poly_a * tex_a + 127) / 255;
+                        const uint32_t dst = frow[x];
+                        auto bl = [&](int k, int sh) {
+                            const uint32_t s = ch(k, sh);
+                            const uint32_t d = (dst >> sh) & 0xFF;
+                            return ((s * sa + d * (31 - sa)) / 31) & 0xFF;
+                        };
+                        frow[x] = 0xFF000000u | (bl(0, 16) << 16) |
+                                  (bl(1, 8) << 8) | bl(2, 0);
+                        g_cover[y][x] = 1;
+                    }
+                }
+            }
+            continue;
+        }
+        for (int y = y_first; y <= maxy; y += nt) {
+            const float py = y + 0.5f;
+            /* the half of each edge function that only moves with the row */
+            const float r0 = eax * (py - a.y);
+            const float r1 = ebx * (py - b.y);
+            const float r2 = ecx * (py - c.y);
+            float *drow = depth[y];
+            uint32_t *frow = fb.px[y];
+            uint8_t *irow = attrid[y];
+            uint8_t *trow = tlattr[y];
+            for (int x = minx; x <= maxx; ++x) {
+                const float px = x + 0.5f;
+                /* Coverage is decided on the undivided edge functions. The
+                   test asks whether all three share a sign, and dividing all
+                   three by the same non-zero area cannot change that whichever
+                   way the area points -- so the three divides only have to
+                   happen for pixels that are actually inside. */
+                const float n0 = r0 - eay * (px - a.x);
+                const float n1 = r1 - eby * (px - b.x);
+                const float n2 = r2 - ecy * (px - c.x);
+                // Accept either winding; back-face culling is a POLYGON_ATTR job.
+                if (!((n0 >= 0 && n1 >= 0 && n2 >= 0) || (n0 <= 0 && n1 <= 0 && n2 <= 0)))
+                    continue;
+                const float w0 = n0 / area, w1 = n1 / area, w2 = n2 / area;
+                const float l0 = w1, l1 = w2, l2 = w0;   // barycentric for a, b, c
+                const float z = l0 * a.z + l1 * b.z + l2 * c.z;
+                if (z >= drow[x]) continue;
+                // Depth is written only after the texel passes the alpha test
+                // below -- a transparent texel must not occlude what is behind it.
+                // Texture first; the vertex colour modulates it. UVs are
+                // perspective-corrected via 1/w interpolation; with w == 1
+                // everywhere (the ortho harnesses) the math reduces exactly
+                // to the old affine lerp.
+                uint32_t texel = 0xFFFFFFFFu;
+                if (textured) {
+                    const float iw = l0 * iwa + l1 * iwb + l2 * iwc;
+                    float uu, vv;
+                    if (iw > 1e-9f) {
+                        uu = (l0 * a.u * iwa + l1 * b.u * iwb + l2 * c.u * iwc) / iw;
+                        vv = (l0 * a.v * iwa + l1 * b.v * iwb + l2 * c.v * iwc) / iw;
+                    } else {
+                        uu = l0 * a.u + l1 * b.u + l2 * c.u;
+                        vv = l0 * a.v + l1 * b.v + l2 * c.v;
+                    }
+                    /* THE ONE SAMPLING DECISION IN THE WHOLE RASTER, and it
+                       is made by the compiler rather than by this pixel:
+                       FILTER is a constant in this instantiation, so the
+                       nearest body below is exactly the two tex_coord calls
+                       and the one load it always was, with nothing added. */
+                    if constexpr (FILTER == 0) {
+                        const int ui = ref_tex_coord(uu * tsc, t.tw, rep_s, flip_s);
+                        const int vi = ref_tex_coord(vv * tsc, t.th, rep_t, flip_t);
+                        texel = t.tex[vi * t.tw + ui];
+                    } else {
+                        texel = ref_sample_filtered<FILTER>(
+                            tt, t.tex, t.tw, t.th, uu * tsc, vv * tsc, rep_s,
+                            rep_t, flip_s, flip_t);
+                    }
+                    if ((texel >> 24) == 0) continue;      // transparent texel
+                }
+
+                // Round, do not truncate: barycentrics sum to 0.9999 rather than
+                // exactly 1, and a truncating cast bands a flat surface 255/254.
+                auto ch = [&](int k, int sh) {
+                    const float v = l0 * acol[k] + l1 * bcol[k] + l2 * ccol[k];
+                    const float m = inv255.v[(texel >> sh) & 0xFF];
+                    const int i = static_cast<int>(v * m + 0.5f);
+                    return static_cast<uint32_t>(i < 0 ? 0 : (i > 255 ? 255 : i));
+                };
+                /* effective alpha = poly attr alpha combined with the
+                   TEXEL alpha (A3I5/A5I3 gradients -- the grass-fade
+                   strips render solid without it) */
+                const uint32_t tex_a = texel >> 24;            /* 0..255 */
+                const uint32_t sa = (poly_a * tex_a + 127) / 255; /* 0..31 */
+                if (sa >= 31) {
+                    /* opaque (the DS treats attr alpha 0 as wire/opaque
+                       depending on mode; opaque is the safe read) */
+                    drow[x] = z;
+                    frow[x] = 0xFF000000u | (ch(0, 16) << 16) | (ch(1, 8) << 8)
+                              | ch(2, 0);
+                    g_cover[y][x] = 1;
+                    /* the ID travels with the depth write so a shadow can
+                       recognise its own caster; one predictable branch on
+                       shadow-free frames, and the colour above is untouched
+                       either way */
+                    if (want_id) irow[x] = t.polyid;
+                    /* an opaque write replaces the pixel, so the translucent
+                       half of its attribute word goes with it (melonDS stores
+                       polyattr & 0x3F008000 on the opaque path, bit 22 clear).
+                       Our two passes draw every opaque polygon before any
+                       translucent one, so this only ever fires for a
+                       translucent-CLASS triangle whose per-pixel alpha came out
+                       31: an A3I5 or A5I3 texel at full opacity. */
+                    if (have_translucent) trow[x] = 0;
+                } else {
+                    /* translucent: blend over the framebuffer, keep depth
+                       (DS translucent polys depth-test but do not write).
+                       The hardware's translucent polygon-ID rule comes first: a
+                       pixel that already took a fragment of THIS polygon ID
+                       this frame refuses the next one outright. */
+                    const uint8_t tl =
+                        static_cast<uint8_t>(0x40 | t.polyid);
+                    if (trow[x] == tl) continue;
+                    trow[x] = tl;
+                    const uint32_t dst = frow[x];
+                    auto bl = [&](int k, int sh) {
+                        const uint32_t s = ch(k, sh);
+                        const uint32_t d = (dst >> sh) & 0xFF;
+                        return ((s * sa + d * (31 - sa)) / 31) & 0xFF;
+                    };
+                    frow[x] = 0xFF000000u | (bl(0, 16) << 16) | (bl(1, 8) << 8)
+                              | bl(2, 0);
+                    g_cover[y][x] = 1;
+                }
+            }
+        }
+    }
+}
+
+int g_rab = -1;                        /* -1 not read yet */
+unsigned long long g_rab_frames, g_rab_runs, g_rab_cover;
+unsigned long long g_rab_bad[6];
+unsigned long long g_rab_bad_frames;
+const char *const k_rab_name[6] = {"colour", "depth", "coverage",
+                                   "stencil", "attrid", "tlattr"};
+std::vector<uint8_t> g_rab_start[6], g_rab_ref[6];
+
+void rab_planes(Framebuffer &fb, uint8_t *p[6], size_t sz[6], size_t es[6]) {
+    const size_t n = (size_t)SCREEN_W * (size_t)SCREEN_H;
+    p[0] = (uint8_t *)&fb.px[0][0];  es[0] = 4;
+    p[1] = (uint8_t *)&g_depth[0][0]; es[1] = 4;
+    p[2] = &g_cover[0][0];           es[2] = 1;
+    p[3] = &g_stencil[0][0];         es[3] = 1;
+    p[4] = &g_attrid[0][0];          es[4] = 1;
+    p[5] = &g_tlattr[0][0];          es[5] = 1;
+    for (int i = 0; i < 6; ++i) sz[i] = n * es[i];
+}
+
+void rab_save(Framebuffer &fb, std::vector<uint8_t> *dst) {
+    uint8_t *p[6]; size_t sz[6], es[6];
+    rab_planes(fb, p, sz, es);
+    for (int i = 0; i < 6; ++i) {
+        dst[i].resize(sz[i]);
+        std::memcpy(dst[i].data(), p[i], sz[i]);
+    }
+}
+
+void rab_load(Framebuffer &fb, const std::vector<uint8_t> *src) {
+    uint8_t *p[6]; size_t sz[6], es[6];
+    rab_planes(fb, p, sz, es);
+    for (int i = 0; i < 6; ++i) std::memcpy(p[i], src[i].data(), sz[i]);
+}
+
+void rab_summary() {
+    unsigned long long total = 0;
+    for (int i = 0; i < 6; ++i) total += g_rab_bad[i];
+    std::fprintf(stderr,
+                 "[raster-ab] summary over %llu frame(s), %llu pass run(s), "
+                 "%llu covered pixel(s) in the reference: mismatches colour "
+                 "%llu depth %llu coverage %llu stencil %llu attrid %llu "
+                 "tlattr %llu, frames with any %llu VERDICT=%s\n",
+                 g_rab_frames, g_rab_runs, g_rab_cover, g_rab_bad[0],
+                 g_rab_bad[1], g_rab_bad[2], g_rab_bad[3], g_rab_bad[4],
+                 g_rab_bad[5], g_rab_bad_frames,
+                 !g_rab_runs ? "NOFRAMES" : (total ? "FAIL" : "PASS"));
+    std::fflush(stderr);
+}
+
+int raster_ab() {
+    if (g_rab < 0) {
+        g_rab = env_i("SM64DS_RASTER_AB", 0) ? 1 : 0;
+        if (g_rab) std::atexit(rab_summary);
+    }
+    return g_rab;
+}
+
+/* The live planes against the reference's, element by element. */
+void rab_compare(Framebuffer &fb, int lo, int hi) {
+    uint8_t *p[6]; size_t sz[6], es[6];
+    rab_planes(fb, p, sz, es);
+    unsigned long long bad[6] = {0, 0, 0, 0, 0, 0};
+    int first_plane = -1;
+    size_t first_at = 0;
+    for (int i = 0; i < 6; ++i) {
+        const uint8_t *a = g_rab_ref[i].data(), *b = p[i];
+        if (std::memcmp(a, b, sz[i]) == 0) continue;
+        const size_t n = sz[i] / es[i];
+        for (size_t k = 0; k < n; ++k) {
+            if (std::memcmp(a + k * es[i], b + k * es[i], es[i]) == 0) continue;
+            if (!bad[i]++ && first_plane < 0) {
+                first_plane = i;
+                first_at = k;
+            }
+        }
+    }
+    {
+        const uint8_t *c = g_rab_ref[2].data();
+        for (size_t k = 0; k < sz[2]; ++k) g_rab_cover += c[k] != 0;
+    }
+    ++g_rab_runs;
+    if (hi == 1) ++g_rab_frames;
+    unsigned long long any = 0;
+    for (int i = 0; i < 6; ++i) {
+        g_rab_bad[i] += bad[i];
+        any += bad[i];
+    }
+    if (any) {
+        ++g_rab_bad_frames;
+        uint32_t rv = 0, nv = 0;
+        const size_t e = es[first_plane];
+        std::memcpy(&rv, g_rab_ref[first_plane].data() + first_at * e, e);
+        std::memcpy(&nv, p[first_plane] + first_at * e, e);
+        std::fprintf(stderr,
+                     "[raster-ab] frame %llu passes %d..%d MISMATCH colour %llu "
+                     "depth %llu coverage %llu stencil %llu attrid %llu tlattr "
+                     "%llu; first: %s at (%d,%d) reference %08x live %08x\n",
+                     g_rab_frames, lo, hi, bad[0], bad[1], bad[2], bad[3],
+                     bad[4], bad[5], k_rab_name[first_plane],
+                     (int)(first_at % SCREEN_W), (int)(first_at / SCREEN_W),
+                     rv, nv);
+        std::fflush(stderr);
+    }
+    if (hi == 1 && (g_rab_frames % 300) == 1) {
+        unsigned long long total = 0;
+        for (int i = 0; i < 6; ++i) total += g_rab_bad[i];
+        std::fprintf(stderr,
+                     "[raster-ab] frame %llu: %llu pass run(s) compared, "
+                     "%llu mismatching element(s) so far\n",
+                     g_rab_frames, g_rab_runs, total);
+        std::fflush(stderr);
+    }
+}
+
+}  // namespace
+
 void gx_render(Framebuffer &fb) {
     /* run interp1: what reached the raster is the frame; seal its record. */
     if (g_ip_rec) ip_rec_seal();
@@ -4356,6 +4927,27 @@ void gx_render(Framebuffer &fb) {
                          &band);
         }
     };
+    /* THE SAME PASSES UNDER SM64DS_RASTER_AB, see the block above gx_render:
+       the frozen reference first, then the live code from the same buffers,
+       then the comparison. With the switch off this is run_passes. */
+    auto run_checked = [&](int lo, int hi) {
+        if (!raster_ab()) {
+            run_passes(lo, hi);
+            return;
+        }
+        rab_save(fb, g_rab_start);
+        const RefArgs ra{&fb, only, have_shadow, have_translucent, want_id,
+                         lo, hi};
+        switch (filt) {
+        case 1: raster_ref<1>(ra, 0, 1); break;
+        case 2: raster_ref<2>(ra, 0, 1); break;
+        default: raster_ref<0>(ra, 0, 1); break;
+        }
+        rab_save(fb, g_rab_ref);
+        rab_load(fb, g_rab_start);
+        run_passes(lo, hi);
+        rab_compare(fb, lo, hi);
+    };
 
     /* ---- THE SEAM: THE OPAQUE PASS, MAYBE ON A GRAPHICS CARD (run hd2) ----
        With nothing registered -- every run with the "Renderer" key absent --
@@ -4418,7 +5010,7 @@ void gx_render(Framebuffer &fb) {
                 std::memcpy(&g_ab_save[(size_t)y * SCREEN_W + x0],
                             &fb.px[y][x0], (size_t)w * sizeof(uint32_t));
 
-            run_passes(0, 0);                       /* arm B: this file */
+            run_checked(0, 0);                      /* arm B: this file */
             for (int y = y0; y < y0 + h; ++y) {
                 const size_t o = (size_t)y * SCREEN_W + x0;
                 std::memcpy(&g_ab_fb[o], &fb.px[y][x0], (size_t)w * sizeof(uint32_t));
@@ -4655,7 +5247,7 @@ void gx_render(Framebuffer &fb) {
 
     if (tm) t_seam1 = std::chrono::steady_clock::now();
 
-    run_passes(gpu_drew ? 1 : 0, 1);
+    run_checked(gpu_drew ? 1 : 0, 1);
 
     if (tm) t_pass1 = std::chrono::steady_clock::now();
 
