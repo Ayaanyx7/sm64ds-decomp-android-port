@@ -130,7 +130,17 @@ inline uint16_t rd16(uint32_t a) { return *reinterpret_cast<volatile uint16_t *>
 inline uint32_t rd32(uint32_t a) { return *reinterpret_cast<volatile uint32_t *>(a); }
 inline uint8_t rd8(uint32_t a) { return *reinterpret_cast<volatile uint8_t *>(a); }
 
-inline uint32_t bgr555(uint16_t c) {
+/* THE PER-PIXEL HELPERS ARE FORCED INLINE (lane TWOD). cl kept bgr555 and
+   tile_px as real calls inside the scan-out's per-pixel loops (a sampling
+   profile of the bottom screen put a fifth of its time in the two calls).
+   Inlining changes where the arithmetic runs, not what it computes. */
+#if defined(_MSC_VER)
+#define PPU_SUB_INLINE __forceinline
+#else
+#define PPU_SUB_INLINE inline __attribute__((always_inline))
+#endif
+
+PPU_SUB_INLINE uint32_t bgr555(uint16_t c) {
     const uint32_t r = (c >> 0) & 0x1F, g = (c >> 5) & 0x1F, b = (c >> 10) & 0x1F;
     return 0xFF000000u | ((r << 3 | r >> 2) << 16) | ((g << 3 | g >> 2) << 8)
            | (b << 3 | b >> 2);
@@ -865,7 +875,7 @@ void read_windows(uint32_t dispcnt, Windows &w) {
 }
 
 /* Is column x inside window i's horizontal extent on line y? */
-inline bool win_h_inside(const Windows &w, int i, int x, int y) {
+PPU_SUB_INLINE bool win_h_inside(const Windows &w, int i, int x, int y) {
     if (!w.rows_on) return x >= w.x1[i] && x < w.x2[i];
     const int x1 = w.rx1[i][y], x2 = w.rx2[i][y];
     if (x1 < x2) return x < x1 ? w.rs[i][y] != 0 : x < x2;
@@ -873,8 +883,8 @@ inline bool win_h_inside(const Windows &w, int i, int x, int y) {
     return x < x2 ? w.rs[i][y] != 0 : false;
 }
 
-inline unsigned window_mask(const Windows &w, int x, int y,
-                            const uint8_t (*objwin)[256]) {
+PPU_SUB_INLINE unsigned window_mask(const Windows &w, int x, int y,
+                                    const uint8_t (*objwin)[256]) {
     if (!w.any) return 0x3F;
     for (int i = 0; i < 2; ++i)
         if (w.on[i] && win_h_inside(w, i, x, y) && y >= w.y1[i] && y < w.y2[i])
@@ -887,7 +897,7 @@ inline unsigned window_mask(const Windows &w, int x, int y,
 
 struct Bright { int mode, factor; };
 
-inline uint32_t apply_bright(uint32_t c, const Bright &b) {
+PPU_SUB_INLINE uint32_t apply_bright(uint32_t c, const Bright &b) {
     if (!b.factor || b.mode == 0 || b.mode == 3) return c;
     int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, bl = c & 0xFF;
     if (b.mode == 1) {
@@ -949,7 +959,7 @@ inline Blend read_blend() {
 // DS's own arithmetic. The framebuffer holds bgr555-expanded 8-bit channels and
 // (v<<3|v>>2)>>3 recovers the original 5-bit value exactly, so the round trip
 // is lossless and the blend is what the hardware produces.
-inline uint32_t blend_alpha(uint32_t top, uint32_t below, int eva, int evb) {
+PPU_SUB_INLINE uint32_t blend_alpha(uint32_t top, uint32_t below, int eva, int evb) {
     const int r1 = ((top >> 16) & 0xFF) >> 3, g1 = ((top >> 8) & 0xFF) >> 3,
               b1 = (top & 0xFF) >> 3;
     const int r2 = ((below >> 16) & 0xFF) >> 3, g2 = ((below >> 8) & 0xFF) >> 3,
@@ -965,9 +975,9 @@ inline uint32_t blend_alpha(uint32_t top, uint32_t below, int eva, int evb) {
 // The effect for one pixel, given the top layer and the one directly below it.
 // `below` (col[1]/id[1]) is always valid: a pixel with nothing under the top is
 // resolved against the backdrop, id 5, which BLDCNT can name as a 2nd target.
-inline uint32_t blend_apply(const Blend &bl, unsigned mask, uint32_t top,
-                            int top_id, bool top_semi, uint32_t below,
-                            int below_id) {
+PPU_SUB_INLINE uint32_t blend_apply(const Blend &bl, unsigned mask, uint32_t top,
+                                    int top_id, bool top_semi, uint32_t below,
+                                    int below_id) {
     if (bl.off) return top;
     // Window bit 5 disables colour special effects inside this region.
     if (!(mask & 0x20)) return top;
@@ -1104,8 +1114,8 @@ void scan_ref(SubFramebuffer &fb, uint32_t dispcnt, const uint8_t *skip,
  * The resolve, the colour-effect unit and master brightness are the reference's
  * own functions. SM64DS_TWOD_VERIFY=1 compares this against scan_ref every frame;
  * SM64DS_TWOD_OLD=1 draws through scan_ref alone (timing A/B on one binary). */
-inline bool tile_px(const BgLayer &c, const uint32_t *pal32, uint32_t tile,
-                    int fx, int fy, uint16_t se, uint32_t &out)
+PPU_SUB_INLINE bool tile_px(const BgLayer &c, const uint32_t *pal32, uint32_t tile,
+                            int fx, int fy, uint16_t se, uint32_t &out)
 {
     uint32_t index;
     if (c.bpp8) {
