@@ -5457,11 +5457,6 @@ int gx_interp_group_count() {
     return g_ip_c >= 0 ? (int)g_ipr[g_ip_c].groups.size() : 0;
 }
 
-int gx_interp_group_matched(int group) {
-    if (g_ip_c < 0 || group < 0 || (size_t)group >= g_ipr[g_ip_c].groups.size())
-        return 0;
-    return g_ipr[g_ip_c].groups[group].match >= 0;
-}
 
 /* The ticks' own geometry as a key/position table, one line per group, for
    the discontinuity probe: which groups were paired and how far they moved. */

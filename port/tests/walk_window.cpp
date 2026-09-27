@@ -2613,7 +2613,6 @@ static void present(void);   /* the blit, defined with the window code below */
    the turn that was running when the tick's work ran is the tick's first. */
 static int g_ip_on = -1;
 static int g_ip_tick_ok;
-static int g_ip_tick_frame = -1;
 static unsigned g_ip_serial;   /* commits so far: a tick's identity in traces */
 static long long g_ip_t0;
 static long long g_ip_tick_t0, g_ip_tick_len;
@@ -2623,7 +2622,9 @@ static long long g_ip_tick_t0, g_ip_tick_len;
    frame_pace last ran, which is what says a clock exists to hand it to. */
 static int g_ip_deferred;
 static long long g_ip_pace_seen;
-static void ip_present_slot(long long t);
+static double g_ip_cost_ms = 4.0;   /* running average blended-picture cost */
+static int g_ip_tick_shown;         /* this tick has put a picture up */
+static int ip_present_slot(long long t, long long deadline);
 static void ip_flush_deferred(void);
 
 /* THE PICTURE COUNT. Every picture this program hands to the window goes
@@ -2645,7 +2646,12 @@ static int port_frame_rate_target(void)
     static int rate = -1;
     if (rate < 0) {
         rate = host_setting_frame_rate();
-        if (rate)
+        if (rate && host_setting_smooth_motion())
+            fprintf(stderr, "[frame-pace] FrameRate %d: pictures are handed to "
+                    "the display %d times a second. The game tick is untouched; "
+                    "SmoothMotion draws the ones between two course ticks.\n",
+                    rate, rate);
+        else if (rate)
             fprintf(stderr, "[frame-pace] FrameRate %d: the finished picture "
                     "is handed to the display %d times a second. The game tick "
                     "is untouched and nothing is interpolated at this rung, so "
@@ -2776,11 +2782,14 @@ extern "C" double port_present_clock(long long now, long long deadline,
     while (g_pic_due < deadline) {
         LARGE_INTEGER at;
         port_sleep_until(g_pic_due, qpf);
-        ip_present_slot(g_pic_due);
-        ++g_pic_extra;
-        g_pic_clock_ran = 1;
-        QueryPerformanceCounter(&at);
-        port_pic_note(at.QuadPart, qpf, trace, rate);
+        /* 0 back only with SmoothMotion on, for a slot it had no time to
+           draw: nothing was presented, so nothing is counted */
+        if (ip_present_slot(g_pic_due, deadline)) {
+            ++g_pic_extra;
+            g_pic_clock_ran = 1;
+            QueryPerformanceCounter(&at);
+            port_pic_note(at.QuadPart, qpf, trace, rate);
+        }
         g_pic_due += step;
     }
 
@@ -7323,6 +7332,8 @@ static void ip_present_alpha(double alpha)
     g_present_fb = was;
     QueryPerformanceCounter(&q2);
     ++g_ip_blended;
+    const double cost = (q2.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
+    g_ip_cost_ms = g_ip_cost_ms * 0.8 + cost * 0.2;
     ip_note((q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart,
             (q2.QuadPart - q1.QuadPart) * 1000.0 / (double)qf.QuadPart);
 }
@@ -7334,16 +7345,62 @@ static int ip_owns_picture(void)
            g_ip_tick_len > 0;
 }
 
-/* The pacer's extra picture, due at slot time t (QPC). The blend is taken at
-   the moment the picture is actually drawn, not at the slot it was due in: a
-   slot drawn late (the first one after a tick's work, usually) then shows
+/* A BLENDED PICTURE NEVER MAKES THE GAME LATE. It costs a whole raster, and
+   a picture started a millisecond before the pacer's deadline would push the
+   next tick back by the rest of it, so the game itself would slow down on a
+   machine (or a RenderScale) where the raster is slow. So a blended picture
+   is only started when the time left before the deadline covers what the
+   recent ones cost (an average kept here, plus a quarter millisecond). Otherwise the slot
+   gets the tick's own finished picture -- free, and never behind what is on
+   screen -- if the tick has not been shown at all yet, and nothing at all if
+   it has: the picture already up simply stays one slot longer. */
+static void ip_present_plain_or_skip(int *presented)
+{
+    if (!g_ip_tick_shown) {
+        ++g_ip_pictures;
+        ++g_ip_plain;
+        present();
+        g_ip_tick_shown = 1;
+        *presented = 1;
+    } else {
+        *presented = 0;
+    }
+}
+
+/* THE DEADLINE THAT MATTERS IS THE TICK'S END, not the pacer turn's. While
+   the ROM loop's halt pumps the pacer once per VBLANK, a course tick is two
+   turns, and a picture that runs a few milliseconds into the second turn
+   costs the game nothing: that turn simply sleeps less. What it may not do is
+   run past the start of the next tick. (`deadline`, the turn's own, is the
+   later of the two only when the pacer paces whole ticks.) */
+static int ip_fits(long long deadline)
+{
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    const long long tick_end = g_ip_tick_t0 + g_ip_tick_len;
+    const long long end = tick_end > deadline ? tick_end : deadline;
+    const double left = (end - ip_qpc()) * 1000.0 / (double)f.QuadPart;
+    return left >= g_ip_cost_ms + 0.25;
+}
+
+/* The pacer's extra picture, due at slot time t (QPC), to be finished before
+   `deadline`. Returns 1 when a picture went to the screen. The blend is taken
+   at the moment the picture is actually drawn, not at the slot it was due in:
+   a slot drawn late (the first one after a tick's work, usually) then shows
    the world as it is when it is drawn, so what is on screen keeps pace with
    the clock even when the grid does not. */
-static void ip_present_slot(long long t)
+static int ip_present_slot(long long t, long long deadline)
 {
     (void)t;
-    if (!ip_owns_picture()) { present(); return; }
+    if (!ip_owns_picture()) { present(); return 1; }
+    if (!ip_fits(deadline)) {
+        int shown = 0;
+        ip_present_plain_or_skip(&shown);
+        return shown;
+    }
     ip_present_alpha((double)(ip_qpc() - g_ip_tick_t0) / (double)g_ip_tick_len);
+    g_ip_tick_shown = 1;
+    return 1;
 }
 
 /* The tick's own picture, right after its work. While the pacer is running
@@ -7361,16 +7418,18 @@ static void ip_present_tick(void)
     }
     ip_present_alpha((double)(now.QuadPart - g_ip_tick_t0) /
                      (double)g_ip_tick_len);
+    g_ip_tick_shown = 1;
 }
 
+/* The clock had no slack this turn (an overrun, or under a millisecond left):
+   the tick is already late, so it gets its own finished picture, which costs
+   nothing, rather than a blend that would make it later still. */
 static void ip_flush_deferred(void)
 {
     g_ip_deferred = 0;
     if (!ip_owns_picture()) { present(); return; }
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    ip_present_alpha((double)(now.QuadPart - g_ip_tick_t0) /
-                     (double)g_ip_tick_len);
+    int shown = 0;
+    ip_present_plain_or_skip(&shown);
 }
 
 /* SM64DS_INTERP_PROBE=<k> (with SM64DS_INTERP_PROBE_FROM / _TO, ROM frames):
@@ -16748,14 +16807,24 @@ int main(void)
            split path, under the F5 menu, in the stacked layout or through
            the rollback skip is a SNAP: its extra pictures are this one. */
         if (g_ip_on > 0) {
-            ip_snap(g_ip_p3, fb);
-            const int ip_snapit = (menu_on || !k1_rom || stacked ||
+            /* TOO SLOW TO HELP: when a blended picture costs more than a
+               third of a tick (measured: a software raster at RenderScale 4,
+               13 to 15 ms), almost no blend fits beside the tick's own work,
+               and the snapshots would only make the tick itself late. Such ticks snap without them; one tick in
+               128 still blends, so the cost is measured again and the pictures
+               come back when the machine or the setting allows. */
+            static unsigned ip_retry;
+            const double tick_ms = PORT_VBLANK_MS * port_frame_divider();
+            const int ip_slow = g_ip_cost_ms > 0.3 * tick_ms &&
+                                (++ip_retry & 127u) != 0;
+            if (!ip_slow) ip_snap(g_ip_p3, fb);
+            const int ip_snapit = (menu_on || !k1_rom || stacked || ip_slow ||
                                    rb_skip_render() || rb_resim_skip_render())
                                       ? 1 : 0;
             ntr::GxInterpStats ist;
             g_ip_tick_ok = ntr::gx_interp_commit(data_0209b3ec, ip_snapit, &ist);
-            g_ip_tick_frame = port_rom_frame();
             ++g_ip_serial;
+            g_ip_tick_shown = 0;
             g_ip_rate_ok = port_frame_rate_target() * port_frame_divider() > 60;
             {
                 LARGE_INTEGER qf;
