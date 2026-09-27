@@ -11,6 +11,7 @@
 #include "ntr/smooth.h"
 #include "ntr/texture.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -192,6 +193,22 @@ struct State {
 
 State g;
 int g_store_count;
+
+/* MOTION INTERPOLATION (run interp1): the recorder's switches, declared here
+   because exec() and the texture binds below feed it. The whole mechanism is
+   the block after gx_render; with the SmoothMotion key off g_ip_armed is 0
+   and every hook is one test of it. */
+enum { IPK_CMD = 0, IPK_BIND, IPK_LIGHT, IPK_LMASK, IPK_SLOT };
+int g_ip_armed = 0;       // the key is on: level frames are recorded
+int g_ip_rec = 0;         // a frame's stream is being recorded right now
+int g_ip_replaying = 0;   // a recorded stream is being replayed right now
+int g_ip_open = 0;        // gx_interp_begin has saved the live state
+int g_ip_in_vram = 0;     // inside the VRAM bind, which records its own result
+uint32_t g_ip_dma_src = 0;
+void ip_push(uint8_t kind, uint8_t cmd, int np, const uint32_t *p);
+void ip_rec_bind_now();
+void ip_rec_begin();
+void ip_rec_seal();
 int g_tex_decodes;            // VRAM texture decodes since the last perf report
 
 /* MTX_PUSH / MTX_POP / MTX_STORE / MTX_RESTORE, counted BY MATRIX MODE.
@@ -250,6 +267,7 @@ int mtx_texstack() {
    ntr::io_gxstat_publish() is gxstat_normalize() with io.cpp's own init guard
    in front of it, so the register model stays in the file that owns it. */
 void gxstat_publish() {
+    if (g_ip_replaying) return;   /* a replay is never visible to the game */
     if (gxstat_live()) io_gxstat_publish();
 }
 
@@ -1318,8 +1336,11 @@ int param_count(uint8_t cmd);   /* defined below; the trap needs it */
 
 void exec(uint8_t cmd, const uint32_t *p, int np) {
     (void)np;
-    ++g_cmd_n[cmd];
-    if (cmd == 0x50) g_swap_param = p[0];
+    if (g_ip_rec) ip_push(IPK_CMD, cmd, np, p);
+    if (!g_ip_replaying) {
+        ++g_cmd_n[cmd];
+        if (cmd == 0x50) g_swap_param = p[0];
+    }
     switch (cmd) {
         case 0x00: break;                                        // NOP
         case 0x10: g.mode = p[0] & 3; break;                     // MTX_MODE
@@ -1741,6 +1762,12 @@ void gx_set_matrix_slot(int slot, const float m[16]) {
     for (int i = 0; i < 16; ++i) mm.m[i] = m[i];
     g.pos_stack[slot] = mm;
     g.vec_stack[slot] = mm;
+    if (g_ip_rec) {
+        uint32_t q[17];
+        q[0] = (uint32_t)slot;
+        std::memcpy(q + 1, m, 16 * sizeof(float));
+        ip_push(IPK_SLOT, 0, 17, q);
+    }
 }
 
 void gx_set_material(uint32_t dif_amb, uint32_t spe_emi) {
@@ -1750,6 +1777,15 @@ void gx_set_material(uint32_t dif_amb, uint32_t spe_emi) {
 
 void gx_set_light(int index, float dx, float dy, float dz, uint32_t bgr555) {
     if (index < 0 || index > 3) return;
+    if (g_ip_rec) {
+        uint32_t q[5];
+        q[0] = (uint32_t)index;
+        std::memcpy(q + 1, &dx, 4);
+        std::memcpy(q + 2, &dy, 4);
+        std::memcpy(q + 3, &dz, 4);
+        q[4] = bgr555;
+        ip_push(IPK_LIGHT, 0, 5, q);
+    }
     const float len = std::sqrt(dx * dx + dy * dy + dz * dz);
     if (len > 1e-6f) { dx /= len; dy /= len; dz /= len; }
     g.lights[index] = {dx, dy, dz,
@@ -1757,7 +1793,10 @@ void gx_set_light(int index, float dx, float dy, float dz, uint32_t bgr555) {
                        ((bgr555 >> 10) & 0x1F) / 31.0f};
 }
 
-void gx_enable_lights(uint32_t mask) { g.light_mask = mask & 0xF; }
+void gx_enable_lights(uint32_t mask) {
+    g.light_mask = mask & 0xF;
+    if (g_ip_rec) ip_push(IPK_LMASK, 0, 1, &mask);
+}
 
 /* ---- WHICH TEXTURE IS THIS, AS A NUMBER (run hd2, lane GPU2) -------------
    An optional graphics-card backend holds its own copy of every texture it
@@ -1816,6 +1855,7 @@ void gx_bind_texture(const uint32_t *rgba, int width, int height) {
             g.tex_id = e.id;
         }
     }
+    if (g_ip_rec && !g_ip_in_vram) ip_rec_bind_now();
 }
 
 // --- VRAM-sourced texturing: the game path ----------------------------------
@@ -2105,8 +2145,20 @@ void bind_from_vram() {
 
 }  // namespace
 
-void gx_teximage_param(uint32_t v) { g_teximage = v; bind_from_vram(); }
-void gx_pltt_base(uint32_t v) { g_plttbase = v; bind_from_vram(); }
+void gx_teximage_param(uint32_t v) {
+    g_teximage = v;
+    ++g_ip_in_vram;
+    bind_from_vram();
+    --g_ip_in_vram;
+    if (g_ip_rec) ip_rec_bind_now();
+}
+void gx_pltt_base(uint32_t v) {
+    g_plttbase = v;
+    ++g_ip_in_vram;
+    bind_from_vram();
+    --g_ip_in_vram;
+    if (g_ip_rec) ip_rec_bind_now();
+}
 
 // Diagnostic: a running hash of every word entering the engine, so a smoke
 // can tell "the game emitted a different stream" from "the decode ignored
@@ -2449,6 +2501,8 @@ void gx_reset() {
        has to say so too or the first reader of the new frame is told the last
        frame's depth. */
     gxstat_publish();
+    /* run interp1: a frame's stream opens here, so its record does too. */
+    if (g_ip_armed && !g_ip_open) ip_rec_begin();
 }
 
 void gx_debug_proj(float out[16]) {
@@ -3733,6 +3787,8 @@ void ab_bmp(const char *path, const uint32_t *px, int stride, int x0, int y0,
 }  // namespace
 
 void gx_render(Framebuffer &fb) {
+    /* run interp1: what reached the raster is the frame; seal its record. */
+    if (g_ip_rec) ip_rec_seal();
     /* LAST FRAME'S PRE-SMOOTHING COPY STOPS BEING THIS FRAME'S HERE, before
        anything is drawn. A capture that somehow ran against a frame this
        function never finished would otherwise sample the frame before it. */
@@ -4648,6 +4704,778 @@ void gx_render(Framebuffer &fb) {
             acc_raster = acc_frame = 0; acc_tris = 0; n = 0; g_tex_decodes = 0;
             acc_seam = acc_pass = acc_aa = 0;
         }
+    }
+}
+
+/* ==== MOTION INTERPOLATION: THE RECORDED STREAM, REPLAYED (run interp1) =====
+ *
+ * WHAT THIS IS FOR. A course ticks 30 times a second (data_0208ee44 = 2
+ * vblanks a tick) and the FrameRate key can hand the display 60 to 240
+ * pictures a second. Without this block every extra picture is the same
+ * finished frame again. With the SmoothMotion key on, an extra picture is
+ * drawn from THIS TICK'S OWN GEOMETRY COMMAND STREAM, replayed through exec()
+ * with every matrix parameter blended between the previous tick's value and
+ * this tick's. No game code runs for it: the ROM submitted the stream once, at
+ * its own point in the tick, and what is replayed is the record of it.
+ *
+ * THE RECORD is everything exec() executed between the gx_reset that opened a
+ * frame and that frame's gx_render, with the parameter words, the display
+ * list each command was streamed from (runtime.cpp's GXFIFO copy names its
+ * source through gx_dma_source), and the side channels a harness or the host
+ * frame opener uses (gx_set_light, gx_enable_lights, gx_set_matrix_slot) plus
+ * the RESOLVED result of every texture bind, so a replay never decodes VRAM.
+ * The engine state right after that gx_reset is kept beside it, so the replay
+ * starts where the frame started.
+ *
+ * THE MATCH. The stream is cut into draw groups: a run of matrix-parameter
+ * commands (LOAD, MULT, SCALE, TRANS) and the geometry after it up to the next
+ * such command. SM64DS's model path (ModelComponents::Render) makes one group
+ * per model part: the part's bone matrices composed with the view on the CPU,
+ * loaded and STOREd, then the part's display list DMA'd into the FIFO. A
+ * group's key is that display list's source address; geometry fed by hand
+ * (no display list) is keyed by a hash of its geometry opcodes. Groups are
+ * paired with the previous tick's by key and occurrence, by nearest world
+ * position when a key's count changed, and a pair is accepted only when its
+ * matrix-command shape is identical and its world position did not jump.
+ *
+ * THE BLEND. A paired group's matrix parameters are lerp(N-1, N, alpha) in
+ * position, position-vector and projection modes; texture-matrix loads are
+ * tick N's (a scrolling texture wraps, and a lerp across the wrap would run
+ * it backwards). An unpaired group is tick N's, and under a perspective
+ * projection its absolute LOAD is re-viewed through the blended camera, so a
+ * newly spawned object sits still in the world while the camera glides.
+ *
+ * WITH THE KEY OFF NOTHING HERE RUNS: g_ip_armed is 0, every hook below is one
+ * test of it, and exec() executes exactly the statements it did before.
+ */
+namespace {
+
+struct IpEv {
+    uint8_t kind, cmd, np, mode;
+    uint32_t off;        // into par (commands, lights, slots) or binds
+    uint32_t src;        // display list being streamed when the command ran
+};
+
+struct IpBind {
+    const uint32_t *rgba;
+    int w, h;
+    uint8_t wrap, scale;
+    uint32_t id, teximage, plttbase;
+};
+
+struct IpGroup {
+    uint64_t key;
+    uint32_t shape;      // hash of the matrix commands' (cmd, mode) sequence
+    int nmtx;            // how many matrix-parameter commands
+    int mtx0;            // first index into IpRec::mtx
+    int has_pos;
+    double px, py, pz;   // world position of its first absolute LOAD
+    int has_rel;
+    double rx, ry, rz;   // else the translation its first matrix command
+                         // carries, in that command's own space: a signature
+                         // that tells two instances of one model apart
+    int match;           // group index in the previous record, or -1
+    uint32_t ev0, ev1;   // event range [ev0, ev1)
+};
+
+struct IpRec {
+    std::vector<IpEv> ev;
+    std::vector<uint32_t> par;
+    std::vector<IpBind> binds;
+    std::vector<IpGroup> groups;
+    std::vector<int> mtx;        // event index of every matrix-parameter command
+    std::vector<int> ev_group;   // group of every event (-1 before the first)
+    std::vector<int> blend;      // per event: previous record's event, -1 none,
+                                 // -2 unpaired absolute LOAD (camera-corrected)
+    State start;
+    uint32_t start_teximage = 0, start_plttbase = 0;
+    uint32_t sealed = 0;         // events that reached the frame's gx_render
+    int is_sealed = 0;
+    int valid = 0;
+    int snap = 0;
+    uint32_t tex_gen = 0;
+    int32_t view[12] = {};
+};
+
+IpRec g_ipr[3];
+int g_ip_w = 0, g_ip_c = -1, g_ip_p = -1;   // writing, current (N), previous (N-1)
+double g_ip_prev_step = 0, g_ip_prev_turn = 0;   // the camera's previous tick
+double g_ip_prev_disp[3] = {0, 0, 0};
+
+/* The replay's own buffers, kept so a picture does not reallocate them. */
+std::vector<GxTriangle> g_ip_tris;
+std::vector<GxVertex> g_ip_strip;
+std::vector<GxRaw> g_ip_strip_raw;
+
+/* What the replay saves and puts back: the live engine state and the few
+   file statics exec() and the texture bind read or write. */
+struct IpSaved {
+    State g;
+    uint32_t teximage, plttbase;
+    Mat seen_pos, seen_vec;
+    uint32_t mtx_gen;
+    int similar;
+    Mat ring[MTX_RING];
+    uint32_t ring_gen[MTX_RING];
+    int ring_sim[MTX_RING];
+    int rec;
+};
+IpSaved g_ip_saved;
+
+/* Per group, the triangles one replay produced: [begin, end) into g.tris. The
+   probe reads it to measure how a group moved picture to picture. */
+std::vector<uint32_t> g_ip_group_tri0, g_ip_group_tri1;
+
+bool ip_is_mtx(uint8_t c) { return c >= 0x16 && c <= 0x1C; }
+bool ip_is_geom(uint8_t c) {
+    return (c >= 0x20 && c <= 0x2B) || c == 0x40 || c == 0x41;
+}
+
+/* The camera's eye and its view axis, out of a DS view matrix (4.12, row
+   vectors: view = world * R + t, so the eye is -t R^T). */
+void ip_eye(const int32_t v[12], double eye[3], double fwd[3]) {
+    double R[3][3], t[3];
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c) R[r][c] = v[r * 3 + c] / 4096.0;
+    for (int c = 0; c < 3; ++c) t[c] = v[9 + c] / 4096.0;
+    for (int j = 0; j < 3; ++j)
+        eye[j] = -(t[0] * R[j][0] + t[1] * R[j][1] + t[2] * R[j][2]);
+    /* the world direction that becomes view z: column 2 of R */
+    for (int j = 0; j < 3; ++j) fwd[j] = R[j][2];
+}
+
+/* World position of an absolute LOAD's origin under view v: (t_M - t_V) R^T. */
+void ip_world(const uint32_t *p, int np, const int32_t v[12], double out[3]) {
+    const int o = (np == 16) ? 12 : 9;
+    double d[3];
+    for (int c = 0; c < 3; ++c)
+        d[c] = ((int32_t)p[o + c] - v[9 + c]) / 4096.0;
+    for (int j = 0; j < 3; ++j)
+        out[j] = d[0] * v[j * 3 + 0] / 4096.0 + d[1] * v[j * 3 + 1] / 4096.0 +
+                 d[2] * v[j * 3 + 2] / 4096.0;
+}
+
+/* THE THRESHOLDS, in the view matrix's own units (fx / 4096). Measured over
+   every mounted level, 600 moving frames each (51 x 600 ticks): a camera that
+   is following play moved at most 17.9 units and turned at most 12.0 degrees
+   in one tick, and the jumps that are cuts were 92.6 units / 22.3 degrees
+   and more. So a tick past 40 units or 18 degrees that also jumped more than
+   twice as far as the tick before is a cut (gx_interp_commit). A paired object
+   whose world position jumps past 64 units in one tick is a teleport (every
+   object that was following play moved under that). SM64DS_INTERP_CUT,
+   SM64DS_INTERP_TURN and SM64DS_INTERP_TELE override them for a measurement. */
+double ip_cut_units() {
+    static double v = -1;
+    if (v < 0) { const char *e = getenv("SM64DS_INTERP_CUT"); v = e ? atof(e) : 40.0; }
+    return v;
+}
+double ip_cut_degrees() {
+    static double v = -1;
+    if (v < 0) { const char *e = getenv("SM64DS_INTERP_TURN"); v = e ? atof(e) : 18.0; }
+    return v;
+}
+double ip_tele_units() {
+    static double v = -1;
+    if (v < 0) { const char *e = getenv("SM64DS_INTERP_TELE"); v = e ? atof(e) : 64.0; }
+    return v;
+}
+
+void ip_rec_begin() {
+    IpRec &r = g_ipr[g_ip_w];
+    r.ev.clear();
+    r.par.clear();
+    r.binds.clear();
+    r.is_sealed = 0;
+    r.valid = 0;
+    r.start = g;
+    r.start_teximage = g_teximage;
+    r.start_plttbase = g_plttbase;
+    g_ip_rec = 1;
+}
+
+void ip_rec_seal() {
+    IpRec &r = g_ipr[g_ip_w];
+    r.sealed = static_cast<uint32_t>(r.ev.size());
+    r.is_sealed = 1;
+    r.tex_gen = g_tex_generation;
+    g_ip_rec = 0;
+}
+
+void ip_push(uint8_t kind, uint8_t cmd, int np, const uint32_t *p) {
+    IpRec &r = g_ipr[g_ip_w];
+    IpEv e;
+    e.kind = kind;
+    e.cmd = cmd;
+    e.np = static_cast<uint8_t>(np);
+    e.mode = static_cast<uint8_t>(g.mode & 3);
+    e.off = static_cast<uint32_t>(r.par.size());
+    e.src = g_ip_dma_src;
+    for (int i = 0; i < np; ++i) r.par.push_back(p[i]);
+    r.ev.push_back(e);
+}
+
+void ip_rec_bind_now() {
+    IpRec &r = g_ipr[g_ip_w];
+    IpBind b;
+    b.rgba = g.tex_rgba;
+    b.w = g.tw;
+    b.h = g.th;
+    b.wrap = g.tex_wrap;
+    b.scale = g.tex_scale;
+    b.id = g.tex_id;
+    b.teximage = g_teximage;
+    b.plttbase = g_plttbase;
+    IpEv e;
+    e.kind = IPK_BIND;
+    e.cmd = 0;
+    e.np = 0;
+    e.mode = static_cast<uint8_t>(g.mode & 3);
+    e.off = static_cast<uint32_t>(r.binds.size());
+    e.src = 0;
+    r.binds.push_back(b);
+    r.ev.push_back(e);
+}
+
+/* Cut the sealed record into groups and key them. */
+void ip_build_groups(IpRec &r) {
+    r.groups.clear();
+    r.mtx.clear();
+    r.ev_group.assign(r.sealed, -1);
+    int cur = -1;
+    bool geom = false;
+    uint32_t ghash = 2166136261u, shape = 2166136261u;
+    uint32_t key_src = 0;
+    auto close = [&]() {
+        if (cur < 0) return;
+        IpGroup &G = r.groups[cur];
+        /* the matrix shape rides in the key's top bits: two kinds of draw
+           that happen to stream the same display list or the same geometry
+           opcodes with different matrix setups are different things */
+        const uint64_t sh = (uint64_t)((shape ^ (shape >> 16)) & 0xFFFFu) << 44;
+        G.key = sh | (key_src ? ((uint64_t)1 << 40) | key_src
+                              : ((uint64_t)2 << 40) | ghash);
+        G.shape = shape;
+    };
+    for (uint32_t i = 0; i < r.sealed; ++i) {
+        const IpEv &e = r.ev[i];
+        if (e.kind == IPK_CMD && ip_is_mtx(e.cmd) && (cur < 0 || geom)) {
+            close();
+            IpGroup G;
+            G.key = 0; G.shape = 0; G.nmtx = 0;
+            G.mtx0 = static_cast<int>(r.mtx.size());
+            G.has_pos = 0; G.px = G.py = G.pz = 0;
+            G.has_rel = 0; G.rx = G.ry = G.rz = 0;
+            G.match = -1;
+            G.ev0 = i; G.ev1 = i;
+            r.groups.push_back(G);
+            cur = static_cast<int>(r.groups.size()) - 1;
+            geom = false;
+            ghash = shape = 2166136261u;
+            key_src = 0;
+        } else if (cur < 0) {
+            continue;   /* frame-head state before the first matrix: tick N's */
+        }
+        r.ev_group[i] = cur;
+        IpGroup &G = r.groups[cur];
+        G.ev1 = i + 1;
+        if (e.kind != IPK_CMD) continue;
+        if (ip_is_mtx(e.cmd)) {
+            r.mtx.push_back(static_cast<int>(i));
+            ++G.nmtx;
+            shape = (shape ^ (uint32_t)(e.cmd | (e.mode << 8))) * 16777619u;
+            if (!G.has_pos && (e.cmd == 0x16 || e.cmd == 0x17) &&
+                (e.mode == MTX_POS || e.mode == MTX_POSVEC)) {
+                double w[3];
+                ip_world(&r.par[e.off], e.np, r.view, w);
+                G.has_pos = 1;
+                G.px = w[0]; G.py = w[1]; G.pz = w[2];
+            }
+            /* the placement: the first MULT / TRANS translation, which is
+               where an instance differs from its siblings when they all
+               LOAD the same view first; a LOAD's own when there is none */
+            if ((!G.has_rel || (G.has_rel == 2 && e.cmd != 0x16 && e.cmd != 0x17)) &&
+                e.mode != MTX_TEX &&
+                (e.cmd == 0x16 || e.cmd == 0x17 || e.cmd == 0x18 ||
+                 e.cmd == 0x19 || e.cmd == 0x1C)) {
+                const int o = (e.cmd == 0x1C) ? 0
+                            : (e.np == 16 ? 12 : 9);
+                const uint32_t *q = &r.par[e.off];
+                G.has_rel = (e.cmd == 0x16 || e.cmd == 0x17) ? 2 : 1;
+                G.rx = (int32_t)q[o] / 4096.0;
+                G.ry = (int32_t)q[o + 1] / 4096.0;
+                G.rz = (int32_t)q[o + 2] / 4096.0;
+            }
+        } else if (ip_is_geom(e.cmd)) {
+            if (!geom) key_src = e.src;
+            geom = true;
+            ghash = (ghash ^ e.cmd) * 16777619u;
+        }
+    }
+    close();
+}
+
+double ip_dist2(const IpGroup &a, const IpGroup &b) {
+    const double dx = a.px - b.px, dy = a.py - b.py, dz = a.pz - b.pz;
+    return dx * dx + dy * dy + dz * dz;
+}
+
+double ip_rel2(const IpGroup &a, const IpGroup &b) {
+    const double dx = a.rx - b.rx, dy = a.ry - b.ry, dz = a.rz - b.rz;
+    return dx * dx + dy * dy + dz * dz;
+}
+
+/* How unlike two instances of one key are: their world positions when both
+   have one, else the translations their first matrix commands carry, else how
+   far apart they sit in the key's draw order. */
+double ip_unlike(const IpGroup &a, const IpGroup &b, int ia, int ib) {
+    const bool p = a.has_pos && b.has_pos, r = a.has_rel && b.has_rel;
+    if (p || r) return (p ? ip_dist2(a, b) : 0.0) + (r ? ip_rel2(a, b) : 0.0);
+    const double d = (double)(ia - ib);
+    return 1e12 + d * d;
+}
+
+struct IpCand { double d; int i, j; };
+bool ip_cand_less(const IpCand &x, const IpCand &y) {
+    if (x.d != y.d) return x.d < y.d;
+    if (x.i != y.i) return x.i < y.i;
+    return x.j < y.j;
+}
+
+/* Pair C's groups with P's, then fill C.blend. Returns counts through st. */
+void ip_match(IpRec &C, const IpRec &P, GxInterpStats *st) {
+    std::map<uint64_t, std::vector<int>> kc, kp;
+    for (size_t i = 0; i < C.groups.size(); ++i) kc[C.groups[i].key].push_back((int)i);
+    for (size_t i = 0; i < P.groups.size(); ++i) kp[P.groups[i].key].push_back((int)i);
+    const double tele2 = ip_tele_units() * ip_tele_units();
+    int matched = 0, tele = 0, shapebad = 0;
+    double max_moved = 0;
+    for (auto &kv : kc) {
+        auto it = kp.find(kv.first);
+        if (it == kp.end()) continue;
+        const std::vector<int> &lc = kv.second, &lp = it->second;
+        std::vector<int> pair(lc.size(), -1);
+        /* ONE INSTANCE EACH SIDE pairs directly. SEVERAL (the same model part
+           drawn for many objects: coins, goombas, a particle kind) pair by
+           likeness, closest first, whatever order they were drawn in: the
+           actor lists re-sort and a spawn or a death shifts every later
+           instance, so draw order alone would cross-pair them. A key with a
+           very long list on both sides falls back to draw order, which is
+           right whenever nothing was born or died. */
+        if (lc.size() == 1 && lp.size() == 1) {
+            pair[0] = lp[0];
+        } else if (lc.size() * lp.size() > 20000) {
+            for (size_t i = 0; i < lc.size() && i < lp.size(); ++i) pair[i] = lp[i];
+        } else {
+            std::vector<IpCand> cand;
+            cand.reserve(lc.size() * lp.size());
+            for (size_t i = 0; i < lc.size(); ++i)
+                for (size_t j = 0; j < lp.size(); ++j) {
+                    IpCand c;
+                    c.d = ip_unlike(C.groups[lc[i]], P.groups[lp[j]], (int)i, (int)j);
+                    c.i = (int)i;
+                    c.j = (int)j;
+                    cand.push_back(c);
+                }
+            std::sort(cand.begin(), cand.end(), ip_cand_less);
+            std::vector<char> usedc(lc.size(), 0), usedp(lp.size(), 0);
+            for (const IpCand &c : cand) {
+                if (usedc[c.i] || usedp[c.j]) continue;
+                usedc[c.i] = usedp[c.j] = 1;
+                pair[c.i] = lp[c.j];
+            }
+        }
+        for (size_t i = 0; i < lc.size(); ++i) {
+            if (pair[i] < 0) continue;
+            IpGroup &gc = C.groups[lc[i]];
+            const IpGroup &gp = P.groups[pair[i]];
+            if (gc.nmtx != gp.nmtx || gc.shape != gp.shape) { ++shapebad; continue; }
+            if (gc.has_pos && gp.has_pos && ip_dist2(gc, gp) > tele2) { ++tele; continue; }
+            if (!(gc.has_pos && gp.has_pos) && gc.has_rel && gp.has_rel &&
+                ip_rel2(gc, gp) > 16.0 * tele2) { ++tele; continue; }
+            gc.match = pair[i];
+            ++matched;
+            if (gc.has_pos && gp.has_pos) {
+                const double d = std::sqrt(ip_dist2(gc, gp));
+                if (d > max_moved) max_moved = d;
+            }
+        }
+    }
+    C.blend.assign(C.sealed, -1);
+    for (size_t gi = 0; gi < C.groups.size(); ++gi) {
+        const IpGroup &gc = C.groups[gi];
+        if (gc.match >= 0) {
+            const IpGroup &gp = P.groups[gc.match];
+            for (int k = 0; k < gc.nmtx; ++k)
+                C.blend[C.mtx[gc.mtx0 + k]] = P.mtx[gp.mtx0 + k];
+        } else {
+            for (int k = 0; k < gc.nmtx; ++k) {
+                const int ei = C.mtx[gc.mtx0 + k];
+                const IpEv &e = C.ev[ei];
+                if ((e.cmd == 0x16 || e.cmd == 0x17) &&
+                    (e.mode == MTX_POS || e.mode == MTX_POSVEC))
+                    C.blend[ei] = -2;
+            }
+        }
+    }
+    if (st) {
+        st->groups = (int)C.groups.size();
+        st->matched = matched;
+        st->unmatched = (int)C.groups.size() - matched;
+        st->teleport = tele;
+        st->shape = shapebad;
+        st->max_moved = (float)max_moved;
+    }
+}
+
+int32_t ip_lerp(uint32_t a, uint32_t b, double t) {
+    const double v = (double)(int32_t)a * (1.0 - t) + (double)(int32_t)b * t;
+    return (int32_t)(v < 0 ? v - 0.5 : v + 0.5);
+}
+
+/* The blended camera and what re-views an unpaired LOAD through it. */
+struct IpCam {
+    double RN[3][3], tN[3];     // tick N's view
+    double Rt[3][3], tt[3];     // the blended view
+};
+IpCam g_ip_cam;
+
+void ip_cam_setup(const int32_t *vp, const int32_t *vc, double t) {
+    IpCam &c = g_ip_cam;
+    for (int r = 0; r < 3; ++r)
+        for (int k = 0; k < 3; ++k) {
+            c.RN[r][k] = vc[r * 3 + k] / 4096.0;
+            c.Rt[r][k] = ip_lerp((uint32_t)vp[r * 3 + k], (uint32_t)vc[r * 3 + k], t) / 4096.0;
+        }
+    for (int k = 0; k < 3; ++k) {
+        c.tN[k] = vc[9 + k] / 4096.0;
+        c.tt[k] = ip_lerp((uint32_t)vp[9 + k], (uint32_t)vc[9 + k], t) / 4096.0;
+    }
+}
+
+/* LOAD' = LOAD x inv(V_N) x V_t. V_N is a rotation plus a translation, so its
+   inverse is [R^T ; -t R^T], and the product is [A R^T Rt ; (a - t) R^T Rt + tt]. */
+void ip_recamera(const uint32_t *p, int np, uint32_t *out) {
+    const IpCam &c = g_ip_cam;
+    const int four = (np == 16);
+    double A[3][3], a[3];
+    for (int r = 0; r < 3; ++r)
+        for (int k = 0; k < 3; ++k)
+            A[r][k] = (int32_t)p[four ? r * 4 + k : r * 3 + k] / 4096.0;
+    for (int k = 0; k < 3; ++k)
+        a[k] = (int32_t)p[four ? 12 + k : 9 + k] / 4096.0;
+    /* M = R^T Rt */
+    double M[3][3];
+    for (int r = 0; r < 3; ++r)
+        for (int k = 0; k < 3; ++k)
+            M[r][k] = c.RN[0][r] * c.Rt[0][k] + c.RN[1][r] * c.Rt[1][k] +
+                      c.RN[2][r] * c.Rt[2][k];
+    double B[3][3], b[3], d[3];
+    for (int r = 0; r < 3; ++r)
+        for (int k = 0; k < 3; ++k)
+            B[r][k] = A[r][0] * M[0][k] + A[r][1] * M[1][k] + A[r][2] * M[2][k];
+    for (int k = 0; k < 3; ++k) d[k] = a[k] - c.tN[k];
+    for (int k = 0; k < 3; ++k)
+        b[k] = d[0] * M[0][k] + d[1] * M[1][k] + d[2] * M[2][k] + c.tt[k];
+    auto fx = [](double v) {
+        const double s = v * 4096.0;
+        return (uint32_t)(int32_t)(s < 0 ? s - 0.5 : s + 0.5);
+    };
+    for (int i = 0; i < np; ++i) out[i] = p[i];
+    for (int r = 0; r < 3; ++r)
+        for (int k = 0; k < 3; ++k) out[four ? r * 4 + k : r * 3 + k] = fx(B[r][k]);
+    for (int k = 0; k < 3; ++k) out[four ? 12 + k : 9 + k] = fx(b[k]);
+}
+
+bool ip_proj_perspective() {
+    return g.proj.m[3] != 0.0f || g.proj.m[7] != 0.0f || g.proj.m[11] != 0.0f;
+}
+
+}  // namespace
+
+void gx_interp_arm(int on) {
+    g_ip_armed = on ? 1 : 0;
+    if (!g_ip_armed) {
+        g_ip_rec = 0;
+        g_ip_c = g_ip_p = -1;
+    }
+}
+
+int gx_interp_armed() { return g_ip_armed; }
+
+void gx_dma_source(uint32_t src) { g_ip_dma_src = src; }
+
+void gx_interp_invalidate() {
+    if (g_ip_c >= 0) g_ipr[g_ip_c].valid = 0;
+    if (g_ip_p >= 0) g_ipr[g_ip_p].valid = 0;
+}
+
+int gx_interp_commit(const int32_t view[12], int snap, GxInterpStats *st) {
+    if (st) std::memset(st, 0, sizeof *st);
+    if (!g_ip_armed) return 0;
+    IpRec &r = g_ipr[g_ip_w];
+    if (!r.is_sealed) {
+        gx_interp_invalidate();
+        if (st) st->snap = 8;
+        return 0;
+    }
+    for (int i = 0; i < 12; ++i) r.view[i] = view[i];
+    ip_build_groups(r);
+    r.valid = 1;
+    int why = snap ? 1 : 0;
+    const IpRec *P = (g_ip_c >= 0 && g_ipr[g_ip_c].valid) ? &g_ipr[g_ip_c] : 0;
+    if (!P) why |= 2;
+    if (P && P->tex_gen != r.tex_gen) why |= 4;
+    if (P) {
+        double e0[3], f0[3], e1[3], f1[3];
+        ip_eye(P->view, e0, f0);
+        ip_eye(r.view, e1, f1);
+        const double dx = e1[0] - e0[0], dy = e1[1] - e0[1], dz = e1[2] - e0[2];
+        const double step = std::sqrt(dx * dx + dy * dy + dz * dz);
+        double dot = f0[0] * f1[0] + f0[1] * f1[1] + f0[2] * f1[2];
+        const double l0 = std::sqrt(f0[0] * f0[0] + f0[1] * f0[1] + f0[2] * f0[2]);
+        const double l1 = std::sqrt(f1[0] * f1[0] + f1[1] * f1[1] + f1[2] * f1[2]);
+        if (l0 > 0 && l1 > 0) dot /= l0 * l1;
+        if (dot > 1) dot = 1;
+        if (dot < -1) dot = -1;
+        const double turn = std::acos(dot) * 57.29577951308232;
+        if (st) { st->eye_step = (float)step; st->turn_deg = (float)turn; }
+        /* A CUT IS A JUMP, NOT A SPEED. A scripted camera can sweep fast and
+           smoothly (the star-get swoop moves 40 to 55 units a tick for
+           several ticks, decelerating), and that motion should blend like
+           any other. What a cut does is move far MORE than the tick before
+           did: past the threshold AND more than twice the previous tick's
+           step (or turn), or off in another direction than the tick before
+           went (a sweep keeps its heading; one cut after another does not).
+           Past ten times the threshold it is a cut whatever came before. A
+           snap for any other reason leaves no "before", so the next tick is
+           judged against standing still. */
+        double hd = 1.0;
+        const double pl = std::sqrt(g_ip_prev_disp[0] * g_ip_prev_disp[0] +
+                                    g_ip_prev_disp[1] * g_ip_prev_disp[1] +
+                                    g_ip_prev_disp[2] * g_ip_prev_disp[2]);
+        if (pl > 1e-9 && step > 1e-9)
+            hd = (dx * g_ip_prev_disp[0] + dy * g_ip_prev_disp[1] +
+                  dz * g_ip_prev_disp[2]) / (pl * step);
+        const bool jump = step > ip_cut_units() &&
+                          (step > 2.0 * g_ip_prev_step || hd < 0.5 ||
+                           step > 10.0 * ip_cut_units());
+        const bool spin = turn > ip_cut_degrees() &&
+                          (turn > 2.0 * g_ip_prev_turn || turn > 60.0);
+        if (jump || spin) why |= 16;
+        g_ip_prev_step = step;
+        g_ip_prev_turn = turn;
+        g_ip_prev_disp[0] = dx;
+        g_ip_prev_disp[1] = dy;
+        g_ip_prev_disp[2] = dz;
+    }
+    if (why & ~16) {
+        g_ip_prev_step = g_ip_prev_turn = 0.0;
+        g_ip_prev_disp[0] = g_ip_prev_disp[1] = g_ip_prev_disp[2] = 0.0;
+    }
+    r.snap = why;
+    if (P && !why) ip_match(r, *P, st);
+    if (st) st->snap = why;
+    /* rotate: N becomes N-1, the record just sealed becomes N, and the old
+       N-1 (or whichever of the three is free) is written next */
+    g_ip_p = g_ip_c;
+    g_ip_c = g_ip_w;
+    for (int i = 0; i < 3; ++i)
+        if (i != g_ip_c && i != g_ip_p) { g_ip_w = i; break; }
+    g_ipr[g_ip_w].is_sealed = 0;
+    return why ? 0 : 1;
+}
+
+int gx_interp_ready() {
+    if (!g_ip_armed || g_ip_c < 0 || g_ip_p < 0) return 0;
+    const IpRec &C = g_ipr[g_ip_c];
+    if (!C.valid || C.snap || !g_ipr[g_ip_p].valid) return 0;
+    if (C.tex_gen != g_tex_generation) return 0;
+    return 1;
+}
+
+void gx_interp_view(float alpha, float eye[3]) {
+    eye[0] = eye[1] = eye[2] = 0;
+    if (g_ip_c < 0) return;
+    int32_t v[12];
+    const IpRec &C = g_ipr[g_ip_c];
+    for (int i = 0; i < 12; ++i)
+        v[i] = (g_ip_p >= 0) ? ip_lerp((uint32_t)g_ipr[g_ip_p].view[i],
+                                       (uint32_t)C.view[i], alpha)
+                             : C.view[i];
+    double e[3], f[3];
+    ip_eye(v, e, f);
+    for (int i = 0; i < 3; ++i) eye[i] = (float)e[i];
+}
+
+int gx_interp_begin(float alpha) {
+    if (g_ip_open || !gx_interp_ready()) return 0;
+    if (alpha < 0) alpha = 0;
+    if (alpha > 1) alpha = 1;
+    const IpRec &C = g_ipr[g_ip_c];
+    const IpRec &P = g_ipr[g_ip_p];
+    IpSaved &s = g_ip_saved;
+    s.g = std::move(g);
+    s.teximage = g_teximage;
+    s.plttbase = g_plttbase;
+    s.seen_pos = g_mtx_seen_pos;
+    s.seen_vec = g_mtx_seen_vec;
+    s.mtx_gen = g_mtx_gen;
+    s.similar = g_mtx_similar;
+    for (int i = 0; i < MTX_RING; ++i) {
+        s.ring[i] = g_mtx_ring[i];
+        s.ring_gen[i] = g_mtx_ring_gen[i];
+        s.ring_sim[i] = g_mtx_ring_sim[i];
+    }
+    s.rec = g_ip_rec;
+    g_ip_rec = 0;
+    g_ip_open = 1;
+
+    g = C.start;
+    g.tris = std::move(g_ip_tris);
+    g.strip = std::move(g_ip_strip);
+    g.strip_raw = std::move(g_ip_strip_raw);
+    g.tris.clear();
+    g.strip.clear();
+    g.strip_raw.clear();
+    g_teximage = C.start_teximage;
+    g_plttbase = C.start_plttbase;
+    ip_cam_setup(P.view, C.view, alpha);
+    g_ip_group_tri0.assign(C.groups.size(), 0);
+    g_ip_group_tri1.assign(C.groups.size(), 0);
+
+    g_ip_replaying = 1;
+    uint32_t tmp[32];
+    int last_group = -1;
+    for (uint32_t i = 0; i < C.sealed; ++i) {
+        const IpEv &e = C.ev[i];
+        const int gi = C.ev_group[i];
+        if (gi != last_group) {
+            if (last_group >= 0) g_ip_group_tri1[last_group] = (uint32_t)g.tris.size();
+            if (gi >= 0) g_ip_group_tri0[gi] = (uint32_t)g.tris.size();
+            last_group = gi;
+        }
+        switch (e.kind) {
+        case IPK_CMD: {
+            if (e.cmd == 0x50 || e.cmd == 0x2A || e.cmd == 0x2B) break;
+            const uint32_t *pp = e.np ? &C.par[e.off] : nullptr;
+            if (ip_is_mtx(e.cmd) && e.np <= 32) {
+                const int b = C.blend.empty() ? -1 : C.blend[i];
+                if (b >= 0 && e.mode != MTX_TEX) {
+                    const IpEv &pe = P.ev[b];
+                    const int n = e.np < pe.np ? e.np : pe.np;
+                    for (int k = 0; k < e.np; ++k)
+                        tmp[k] = k < n ? (uint32_t)ip_lerp(P.par[pe.off + k], pp[k], alpha)
+                                       : pp[k];
+                    pp = tmp;
+                } else if (b == -2 && alpha < 1.0f && ip_proj_perspective()) {
+                    /* at alpha 1 the blended camera IS tick N's and the
+                       re-view is the identity: skip it, so the last picture
+                       of a tick is the tick's own to the bit */
+                    ip_recamera(pp, e.np, tmp);
+                    pp = tmp;
+                }
+            }
+            exec(e.cmd, pp, e.np);
+            break;
+        }
+        case IPK_BIND: {
+            const IpBind &bd = C.binds[e.off];
+            g.tex_rgba = bd.rgba;
+            g.tw = bd.w;
+            g.th = bd.h;
+            g.tex_wrap = bd.wrap;
+            g.tex_scale = bd.scale;
+            g.tex_id = bd.id;
+            g_teximage = bd.teximage;
+            g_plttbase = bd.plttbase;
+            break;
+        }
+        case IPK_LIGHT: {
+            const uint32_t *q = &C.par[e.off];
+            float d[3];
+            std::memcpy(d, q + 1, sizeof d);
+            gx_set_light((int)q[0], d[0], d[1], d[2], q[4]);
+            break;
+        }
+        case IPK_LMASK:
+            gx_enable_lights(C.par[e.off]);
+            break;
+        case IPK_SLOT: {
+            float m[16];
+            std::memcpy(m, &C.par[e.off + 1], sizeof m);
+            gx_set_matrix_slot((int)C.par[e.off], m);
+            break;
+        }
+        default: break;
+        }
+    }
+    if (last_group >= 0) g_ip_group_tri1[last_group] = (uint32_t)g.tris.size();
+    g_ip_replaying = 0;
+    return 1;
+}
+
+void gx_interp_end() {
+    if (!g_ip_open) return;
+    IpSaved &s = g_ip_saved;
+    g_ip_tris = std::move(g.tris);
+    g_ip_strip = std::move(g.strip);
+    g_ip_strip_raw = std::move(g.strip_raw);
+    g = std::move(s.g);
+    g_teximage = s.teximage;
+    g_plttbase = s.plttbase;
+    g_mtx_seen_pos = s.seen_pos;
+    g_mtx_seen_vec = s.seen_vec;
+    g_mtx_gen = s.mtx_gen;
+    g_mtx_similar = s.similar;
+    for (int i = 0; i < MTX_RING; ++i) {
+        g_mtx_ring[i] = s.ring[i];
+        g_mtx_ring_gen[i] = s.ring_gen[i];
+        g_mtx_ring_sim[i] = s.ring_sim[i];
+    }
+    g_ip_rec = s.rec;
+    g_ip_open = 0;
+}
+
+int gx_interp_group_box(int group, float box[4]) {
+    if (group < 0 || (size_t)group >= g_ip_group_tri0.size()) return 0;
+    const uint32_t a = g_ip_group_tri0[group], b = g_ip_group_tri1[group];
+    if (b <= a || b > g.tris.size()) return 0;
+    float mnx = 1e30f, mxx = -1e30f, mny = 1e30f, mxy = -1e30f;
+    for (uint32_t i = a; i < b; ++i)
+        for (int v = 0; v < 3; ++v) {
+            const GxVertex &q = g.tris[i].v[v];
+            if (q.x < mnx) mnx = q.x;
+            if (q.x > mxx) mxx = q.x;
+            if (q.y < mny) mny = q.y;
+            if (q.y > mxy) mxy = q.y;
+        }
+    box[0] = mnx; box[1] = mny; box[2] = mxx; box[3] = mxy;
+    return (int)(b - a);
+}
+
+int gx_interp_group_count() {
+    return g_ip_c >= 0 ? (int)g_ipr[g_ip_c].groups.size() : 0;
+}
+
+
+/* The ticks' own geometry as a key/position table, one line per group, for
+   the discontinuity probe: which groups were paired and how far they moved. */
+void gx_interp_dump_groups(void *fp, int frame) {
+    FILE *f = static_cast<FILE *>(fp);
+    if (g_ip_c < 0 || !f) return;
+    const IpRec &C = g_ipr[g_ip_c];
+    for (size_t i = 0; i < C.groups.size(); ++i) {
+        const IpGroup &G = C.groups[i];
+        double d = -1;
+        if (G.match >= 0 && g_ip_p >= 0) {
+            const IpGroup &Q = g_ipr[g_ip_p].groups[G.match];
+            if (G.has_pos && Q.has_pos) d = std::sqrt(ip_dist2(G, Q));
+        }
+        const IpEv &e0 = C.ev[C.mtx[G.mtx0]];
+        std::fprintf(f, "[interpg] f%d g%zu key %010llx nmtx %d match %d pos %.1f %.1f %.1f moved %.2f first %02x/m%d rel %d %.2f %.2f %.2f\n",
+                     frame, i, (unsigned long long)G.key, G.nmtx, G.match,
+                     G.px, G.py, G.pz, d, e0.cmd, e0.mode, G.has_rel, G.rx,
+                     G.ry, G.rz);
     }
 }
 

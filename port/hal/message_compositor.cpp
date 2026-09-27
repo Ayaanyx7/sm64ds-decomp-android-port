@@ -113,6 +113,7 @@
 
 #include "ntr/gx.h"
 #include "ntr/ppu.h"
+#include "ntr/rt.h"
 
 /* THE TOP ENGINE'S OBJ DISPLAY SHIFT, in DS rows, from hal/screen_gap.cpp.
  *
@@ -408,6 +409,11 @@ struct Windows {
     bool on[2];
     bool obj_on;
     unsigned in[2], obj_in, out;
+    /* THE LINE-BY-LINE HORIZONTAL EDGES, on a frame whose mask-2 handler
+       rewrote WIN0H / WIN1H per scanline (ntr::rt_window_rows): each line's
+       X1, X2 and the in-window flag it inherits from the line above. */
+    bool rows_on;
+    uint8_t rx1[2][192], rx2[2][192], rs[2][192];
 };
 
 /* THE OBJ WINDOW'S MASK, engine A. The third window has no rectangle: its
@@ -585,6 +591,40 @@ void read_windows(uint32_t dispcnt, Windows &w) {
     w.in[0] = winin & 0x3F;
     w.in[1] = (winin >> 8) & 0x3F;
     w.out = rd16(kRegBase + 0x4A) & 0x3F;
+    /* A dWipe_c-style wipe programs the horizontal edges per scanline from
+       its HBlank handler (func_0202f2c4); read above, the rectangle is only
+       the last line's. Take every line's instead, and walk each the way the
+       DS 2D unit does (melonDS GPU2D::CalculateWindowMask, the reference
+       emulator this project's cartridge traces run on): along the line the
+       in-window flag is CLEARED at X2 and otherwise SET at X1, and it carries
+       into the next line. So X1 == X2 is an empty line, and X1 > X2 runs from
+       X1 to the right edge and on into the next line up to its X2. The flag
+       starts each frame clear. A frame with no handler keeps the rectangle
+       above unchanged. */
+    w.rows_on = false;
+    const uint32_t *rows = nullptr;
+    if (ntr::rt_window_rows(0, &rows)) {
+        w.rows_on = true;
+        for (int i = 0; i < 2; ++i) {
+            uint8_t carry = 0;
+            for (int y = 0; y < 192; ++y) {
+                const uint16_t hh = (uint16_t)(i == 0 ? rows[y] : rows[y] >> 16);
+                w.rx1[i][y] = (uint8_t)(hh >> 8);
+                w.rx2[i][y] = (uint8_t)(hh & 0xFF);
+                w.rs[i][y] = carry;
+                carry = w.rx1[i][y] > w.rx2[i][y] ? 1 : 0;
+            }
+        }
+    }
+}
+
+/* Is column x inside window i's horizontal extent on line y? */
+inline bool win_h_inside(const Windows &w, int i, int x, int y) {
+    if (!w.rows_on) return x >= w.x1[i] && x < w.x2[i];
+    const int x1 = w.rx1[i][y], x2 = w.rx2[i][y];
+    if (x1 < x2) return x < x1 ? w.rs[i][y] != 0 : x < x2;
+    if (x1 > x2) return x < x2 ? w.rs[i][y] != 0 : x >= x1;
+    return x < x2 ? w.rs[i][y] != 0 : false;
 }
 
 /* Hardware precedence is fixed: window 0 beats window 1, window 1 beats the OBJ
@@ -593,7 +633,7 @@ void read_windows(uint32_t dispcnt, Windows &w) {
 inline unsigned window_mask(const Windows &w, int x, int y) {
     if (!w.any) return 0x3F;
     for (int i = 0; i < 2; ++i)
-        if (w.on[i] && x >= w.x1[i] && x < w.x2[i] && y >= w.y1[i] && y < w.y2[i])
+        if (w.on[i] && win_h_inside(w, i, x, y) && y >= w.y1[i] && y < w.y2[i])
             return w.in[i];
     if (w.obj_on && g_objwin[y][x]) return w.obj_in;
     return w.out;
@@ -1865,7 +1905,202 @@ void raster_obj(uint32_t dispcnt, const Blend &bl, const Windows &win,
     }
 }
 
+// ---- ENGINE A'S BRIGHTNESS TARGETS (BLDCNT mode 2/3 with BLDY) ------------
+//
+// WHAT THE DS DOES. The colour special-effects unit's brightness modes lighten
+// (mode 2) or darken (mode 3) a pixel only when two things hold AT THAT PIXEL:
+// the layer on top there is one of BLDCNT's first targets (bits 0-5: BG0..BG3,
+// OBJ, the backdrop), and the window the pixel falls in has its colour-effect
+// bit (bit 5 of WININ / WINOUT) set. This is the rule engine B's scan-out
+// already applies (ntr/ppu_sub.cpp, blend_apply).
+//
+// WHAT THE PORT DID. walk_window's engine-A fade composite read BLDCNT/BLDY
+// and lightened or darkened EVERY pixel of the top screen. For a whole-screen
+// fade (first targets 0x3f, no window) that is the same answer. For the
+// dialogue box it is not: func_0201f32c (src/func_0201f32c.c:232-243) opens
+// the box with the first targets data_0209d45c & ~0x38 (the 3D layer and the
+// tile BGs under the text, never BG3, OBJ or the backdrop), WIN0 around the
+// box with WININ's effect bit set and WINOUT = 0x17 (effect bit clear), then
+// BLDY 7 up or 8 down. On the cartridge only the scene inside the box
+// rectangle lightens or darkens and the text (BG3) and the HUD sprites stay as
+// drawn; the port washed out the whole top screen, HUD, text and inset map.
+//
+// THE MASK. Built only on a frame that needs it (a brightness mode with a
+// nonzero coefficient whose target set or window set leaves some pixel out);
+// every other frame leaves it off and the fade composite keeps its old
+// whole-panel loop, so a plain fade is untouched. One byte per HOST pixel,
+// SCREEN_W stride like the framebuffer and gx_coverage: 1 = this pixel takes
+// the brightness. The default pass gives every host pixel the layer the 2D
+// unit sees where no 2D layer is on top -- the 3D layer where the 3D engine
+// drew or the clear plane is opaque, else the backdrop -- and the window it
+// falls in; the final blit then overwrites every pixel a 2D layer put on
+// screen with that layer's own answer. Engine A's semi-transparent sprites
+// take their alpha in raster_obj already; here they are judged by the OBJ
+// target bit like any sprite.
+//
+// SM64DS_BRIGHT_MASK_OFF=1 keeps the old whole-panel loop on this binary, so a
+// before/after is one exe.
+unsigned char *g_bm;
+bool g_bm_live;
+
+inline bool bm_off_env() {
+    static int v = -1;
+    if (v < 0) {
+        const char *e = std::getenv("SM64DS_BRIGHT_MASK_OFF");
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v != 0;
+}
+
+// Does this frame's brightness leave any pixel out? A window region whose
+// effect bit is clear, or a first-target set short of all six layers.
+bool bm_needed(const Windows &w) {
+    if (bm_off_env()) return false;
+    const uint16_t cnt = rd16(kRegBase + 0x50);
+    const int mode = (cnt >> 6) & 3;
+    if (mode != 2 && mode != 3) return false;
+    if ((rd16(kRegBase + 0x54) & 0x1F) == 0) return false;
+    if ((cnt & 0x3F) != 0x3F) return true;
+    if (!w.any) return false;
+    for (int i = 0; i < 2; ++i)
+        if (w.on[i] && !(w.in[i] & 0x20)) return true;
+    if (w.obj_on && !(w.obj_in & 0x20)) return true;
+    return !(w.out & 0x20);
+}
+
+inline unsigned char bm_verdict(unsigned layer, unsigned wmask) {
+    const unsigned first = rd16(kRegBase + 0x50) & 0x3F;
+    return ((wmask & 0x20) && (first & (1u << layer))) ? 1 : 0;
+}
+
+// The default pass: every host pixel, as if no 2D layer covered it. The host
+// column maps to its DS column the way the message layer is placed (x * scale
+// at 4:3; centred at the uniform scale in 16:9), so the box's window lines up
+// with the box's text; a host column outside the DS panel is outside every
+// window and takes WINOUT.
+void bm_fill_default(uint32_t dispcnt, const Windows &w) {
+    if (!g_bm) {
+        g_bm = static_cast<unsigned char *>(
+            std::malloc((size_t)ntr::SCREEN_W * ntr::SCREEN_H));
+        if (!g_bm) return;
+    }
+    const int sx = ntr::active_w / 256, sy = ntr::active_h / 192;
+    const int uni = sy, margin = ntr::active_w - 256 * uni;
+    const bool shown3d = bg0_3d_shown(dispcnt);
+    const uint8_t *cover = shown3d ? ntr::gx_coverage() : nullptr;
+    /* CLEAR_COLOR bits 16-20: an opaque clear plane is still the 3D layer */
+    const bool clear_opaque =
+        shown3d && ((rd32(0x04000350) >> 16) & 0x1F) != 0;
+    const unsigned out_mask = w.any ? w.out : 0x3F;
+    for (int hy = 0; hy < ntr::active_h; ++hy) {
+        const int y = hy / sy;
+        unsigned char *row = g_bm + (size_t)hy * ntr::SCREEN_W;
+        for (int hx = 0; hx < ntr::active_w; ++hx) {
+            int x;
+            if (ntr::widescreen) {
+                const int d = hx - margin / 2;
+                x = d < 0 ? -1 : d / uni;
+            } else {
+                x = hx / sx;
+            }
+            const unsigned wm = (x >= 0 && x < 256 && y < 192)
+                                    ? window_mask(w, x, y) : out_mask;
+            const bool is3d = shown3d
+                && (clear_opaque || cover[(size_t)hy * ntr::SCREEN_W + hx]);
+            row[hx] = bm_verdict(is3d ? 0u : 5u, wm);
+        }
+    }
+    g_bm_live = true;
+}
+
 }  // namespace
+
+/* The fade composite's question (tests/walk_window.cpp): null = lighten or
+   darken the whole panel (no brightness this frame, or one that reaches every
+   pixel); otherwise one byte per host pixel, SCREEN_W stride, 1 = apply. */
+extern "C" const unsigned char *port_engine_a_bright_mask(void)
+{
+    return g_bm_live ? g_bm : nullptr;
+}
+
+/* ONE VERDICT FOR A HOST RECTANGLE (hal/sub_screen.cpp, the corner-inset
+   panel). The inset is engine B's picture pasted into engine A's framebuffer,
+   a host layout and not a DS layer, so the per-pixel rule above has nothing to
+   say about it: judged by the engine-A layer that happens to lie under it, a
+   partial-target blend (the course-info and pause screens' BLDCNT 00e1)
+   punched that layer's shape into the map. The panel keeps the whole-panel
+   behaviour it always had: every pixel of it takes the blend, whenever a mask
+   is live. Inert when no mask was built (then the whole panel is blended
+   anyway). Clipped to the live picture. */
+extern "C" void port_engine_a_bright_mask_rect(int x0, int y0, int x1, int y1)
+{
+    if (!g_bm_live || !g_bm) return;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    if (x1 > ntr::active_w) x1 = ntr::active_w;
+    if (y1 > ntr::active_h) y1 = ntr::active_h;
+    for (int y = y0; y < y1; ++y)
+        for (int x = x0; x < x1; ++x)
+            g_bm[(size_t)y * ntr::SCREEN_W + x] = 1;
+}
+
+/* THE FADE COMPOSITE, ENGINE A'S, for both frame loops.
+
+   The DS colour-special-effects unit's brightness modes (BLDCNT mode 2 or 3
+   plus BLDY) darken or brighten engine A's picture after the scene is drawn.
+   0x4000050 / 0x4000054 are engine A's and only engine A's; engine B's blend
+   is applied per pixel inside ntr/ppu_sub.cpp's scan-out. `px` is engine A's
+   framebuffer (SCREEN_W stride, w x h live), so this is engine A's blend and
+   nothing else, over the pixels the mask above says the DS blends (all of
+   them on an ordinary fade).
+
+   THIS USED TO LIVE IN tests/walk_window.cpp, WHICH ONLY THE LEVEL LOOP RUNS.
+   The scene loop (hal/scene_boot.cpp: the title, the file select, the
+   minigames) composited engine A and presented it without ever reading engine
+   A's BLDCNT / BLDY, so every engine-A fade on those screens was missing: the
+   title's opening fades engine A in from EVY 16 over its first frames and the
+   port showed it at full brightness from frame 0. Both loops call
+   hal_sub_screen_present right after this compositor, so it runs from the
+   tail of that function (hal/sub_screen.cpp) and both get it, at the point
+   the level loop always applied it: after the corner-inset panel went into
+   the framebuffer (the inset still takes engine A's blend there, unchanged),
+   before the host debug overlay and before the stacked compose reads `px`.
+
+   EVY is the 0..16 coefficient: fade-to-black is rgb*(1 - evy/16),
+   fade-to-white is rgb + (255-rgb)*evy/16, both per channel. */
+extern "C" int port_fader_blend_state(int *evy, int *toWhite);
+extern "C" void port_engine_a_fade(unsigned int *px, int w, int h)
+{
+    int evy = 0, toWhite = 0;
+    if (!px || !port_fader_blend_state(&evy, &toWhite))
+        return;
+    if (evy > 16) evy = 16;
+    /* ONLY THE PIXELS THE DS BLENDS: the layer on top there is one of
+       BLDCNT's first targets and its window's effect bit is set. Null when
+       every pixel qualifies (a plain fade). */
+    const unsigned char *bm = port_engine_a_bright_mask();
+    for (int y = 0; y < h; ++y) {
+        uint32_t *row = px + (size_t)y * ntr::SCREEN_W;
+        const unsigned char *brow =
+            bm ? bm + (size_t)y * ntr::SCREEN_W : nullptr;
+        for (int x = 0; x < w; ++x) {
+            if (brow && !brow[x]) continue;
+            uint32_t p = row[x];
+            int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
+            if (toWhite) {
+                r += ((255 - r) * evy) >> 4;
+                g += ((255 - g) * evy) >> 4;
+                b += ((255 - b) * evy) >> 4;
+            } else {
+                r -= (r * evy) >> 4;
+                g -= (g * evy) >> 4;
+                b -= (b * evy) >> 4;
+            }
+            row[x] = 0xFF000000u | ((uint32_t)r << 16) |
+                     ((uint32_t)g << 8) | (uint32_t)b;
+        }
+    }
+}
 
 /* ---- AND WHERE THE CUE GOES: JUST ABOVE THE MAP ---------------------------
  *
@@ -2020,6 +2255,8 @@ extern "C" void port_message_composite_engine_a(void *fbp)
        frame the overlay reports as empty rather than as last frame's. Off, it
        is one call that answers 0 and nothing else in this file changes. */
     lc_overlay_begin();
+    /* and the brightness mask's: off until this frame builds one */
+    g_bm_live = false;
 
     /* ---- func_02019144 LINE 46, THE ENGINE-A LAYER-MASK PUBLISH -----------
      *
@@ -2232,8 +2469,18 @@ extern "C" void port_message_composite_engine_a(void *fbp)
     bool any_bg = false;
     for (int i = 0; i < 4; ++i) { bgs[i] = read_bg(i, dispcnt); any_bg |= bgs[i].enabled; }
     const bool obj_on = (dispcnt >> 12) & 1;
-    if (!any_bg && !obj_on)
-        return;   // nothing 2D enabled: the box is not up, leave the 3D frame
+    if (!any_bg && !obj_on) {
+        /* nothing 2D enabled: the box is not up, leave the 3D frame. The
+           brightness still decides per pixel between the 3D layer and the
+           backdrop, and inside or outside WIN0 / WIN1 (no OBJ layer, so no
+           OBJ window). */
+        Windows w0;
+        read_windows(dispcnt, w0);
+        w0.obj_on = false;
+        w0.any = w0.on[0] || w0.on[1];
+        if (bm_needed(w0)) bm_fill_default(dispcnt, w0);
+        return;
+    }
 
     /* THE OBJ-WINDOW MASK IS BUILT BEFORE THE BG LOOP, which is the whole point
        of it being a separate pass: the BGs below are masked per pixel and the
@@ -2243,6 +2490,13 @@ extern "C" void port_message_composite_engine_a(void *fbp)
 
     Windows win;
     read_windows(dispcnt, win);
+    /* the brightness targets' default pass (see ENGINE A'S BRIGHTNESS
+       TARGETS); the final blit below fills in every 2D pixel */
+    bool bm_on = false;
+    if (bm_needed(win)) {
+        bm_fill_default(dispcnt, win);
+        bm_on = g_bm_live;
+    }
 
     // Clear the hit buffer, then BGs by priority (lower priority drawn last so
     // it wins), honouring the per-pixel window mask.
@@ -2599,6 +2853,10 @@ extern "C" void port_message_composite_engine_a(void *fbp)
             const unsigned lcow = g_a[y][x].owner;
             const int lcv = lc_overlay_verdict(lcow);
             if (lcv == 2) continue;
+            /* this 2D layer's brightness verdict, for every host pixel it
+               puts on screen (ENGINE A'S BRIGHTNESS TARGETS) */
+            const unsigned char bmv =
+                bm_on ? bm_verdict(lcow, window_mask(win, x, y)) : 0;
             if (!honour3d
                 || !layer_behind_3d(g_a[y][x].owner, g_a[y][x].prio, p3d)) {
                 /* the owning 2D layer is in FRONT of the 3D layer (or there is
@@ -2612,6 +2870,8 @@ extern "C" void port_message_composite_engine_a(void *fbp)
                             lc_ov.msk[(size_t)hy * ntr::SCREEN_W + hx] = 1;
                         } else {
                             fb.px[hy][hx] = c;
+                            if (bm_on)
+                                g_bm[(size_t)hy * ntr::SCREEN_W + hx] = bmv;
                         }
                         if (pre) pre[(size_t)hy * ntr::SCREEN_W + hx] = c;
                     }
@@ -2627,6 +2887,8 @@ extern "C" void port_message_composite_engine_a(void *fbp)
                         lc_ov.msk[(size_t)hy * ntr::SCREEN_W + hx] = 1;
                     } else {
                         fb.px[hy][hx] = c;
+                        if (bm_on)
+                            g_bm[(size_t)hy * ntr::SCREEN_W + hx] = bmv;
                     }
                     if (pre) pre[(size_t)hy * ntr::SCREEN_W + hx] = c;
                 }

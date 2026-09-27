@@ -216,6 +216,8 @@ extern void *data_0209f318;      /* the Camera actor */
    data_0209f2d4 is that function's own state word. */
 extern unsigned char data_0209f20c;
 extern unsigned char data_0209f2d4;
+/* and the button LC_Update's case 3 takes on Start: see hal_lc_menu_pad */
+extern unsigned char data_0209f2e0;
 }
 
 namespace {
@@ -1481,16 +1483,21 @@ void inset_map_selftest(int w, int h)
  * Read straight out of src/_ZN5Stage9LC_UpdateEv.cpp. Case 0 calls
  * Stage::UpdateMenuButtons(1) -- the call that recolours BG1's screen entries
  * into the three plates -- and sets data_0209f2d4 = 1 in the same statement
- * block, so the plates are on from the frame that word becomes 1. Every one
+ * block, so the compose is up from the frame that word becomes 1. Every one
  * of the three answer arms in case 3 calls Stage::UpdateMenuButtons(0) and
- * moves the state to 4 or to 6 in the same tick, so the plates are off from
+ * moves the state to 4 or to 6 in the same tick, so the compose is down from
  * the frame the answer is taken. The word is 0 before case 0 runs and is put
  * back to 0 by case 6.
  *
+ * THE PLATES ARE NOT VISIBLE FROM STATE 1, THOUGH: the ROM enables the two
+ * layers they live on only in case 2 (`data_0209d454 |= 3`, state 3), and
+ * states 1 and 2 are the coin count with the level map still on engine B. So
+ * the compose draws engine B's menu layers alone (g_sub_menu, below), which
+ * are empty until case 2 and the buttons from then on.
+ *
  * WHY THE PAIR AND NOT THE STATE ALONE: data_0209f2d4 is only a state word
  * while the level-clear machinery is running at all, and what says it is
- * running is data_0209f20c -- Stage::Behavior's own gate. The pair is true
- * over exactly the frames the plates are on the screen and over no others.
+ * running is data_0209f20c -- Stage::Behavior's own gate.
  *
  * WHERE THE RECTANGLES COME FROM: this one place, once a frame, exactly the
  * way hal_sub_panel_geometry is the one place that decides where the map
@@ -1732,18 +1739,22 @@ void swap_geom_for(int w, int h, SwapGeom *o)
 void swap_trace(int w, int h, int frame)
 {
     static int on = -1;
-    static int last[3] = { -1, -1, -1 };
+    static int last[4] = { -1, -1, -1, -1 };
     if (on < 0) on = std::getenv("SM64DS_SWAP_TRACE") ? 1 : 0;
     if (!on) return;
-    const int now[3] = { (int)data_0209f20c, (int)data_0209f2d4, g_swap };
-    if (now[0] == last[0] && now[1] == last[1] && now[2] == last[2]) return;
+    const int now[4] = { (int)data_0209f20c, (int)data_0209f2d4, g_swap,
+                         (int)data_0209f2e0 };
+    if (now[0] == last[0] && now[1] == last[1] && now[2] == last[2] &&
+        now[3] == last[3])
+        return;
     last[0] = now[0];
     last[1] = now[1];
     last[2] = now[2];
-    std::fprintf(stderr, "[compose] f%d f20c=%d f2d4=%d composed=%d picture "
+    last[3] = now[3];
+    std::fprintf(stderr, "[compose] f%d f20c=%d f2d4=%d f2e0=%d composed=%d picture "
                  "%dx%d text 0,%d %dx%d from row %d  plates %d,%d %dx%d "
                  "(%d/%d)  coins 0,%d %dx%d from row %d\n", frame, now[0],
-                 now[1], now[2], w, h, g_sw.ty_dst, w, g_sw.t_h,
+                 now[1], now[3], now[2], w, h, g_sw.ty_dst, w, g_sw.t_h,
                  g_sw.ty_src, g_sw.px, g_sw.py, g_sw.pw, g_sw.ph, g_sw.pnum,
                  g_sw.pden, g_sw.cy_dst, w, g_sw.c_h, g_sw.cy_src);
     std::fflush(stderr);
@@ -1753,6 +1764,43 @@ void swap_trace(int w, int h, int frame)
    further down this file and named here because the composed present is above
    it. Same object, same internal linkage. */
 extern ntr::SubFramebuffer g_sub;
+
+/* ENGINE B'S MENU LAYERS ALONE: the only source the plates are drawn from.
+ *
+ * THE BUTTONS ARE TWO BACKGROUNDS AND THE MAP IS THE REST, and the ROM says
+ * which is which. Stage::LC_Update's case 2 (src/_ZN5Stage9LC_UpdateEv.cpp)
+ * turns the menu on with `data_0209d454 |= 3`: sub BG0 and BG1, the layer
+ * mask this file publishes into DISPCNT_B bits 8..12. Case 0 points sub BG1
+ * at the plates' screen block (0x0400100A, base 0xd) and case 4 at the save
+ * box's (base 0xe). What a course keeps on engine B the rest of the time is
+ * the level map, BG3, and its sprites, OBJ -- the in-course mask is 0x18 --
+ * with BG2 the touch marker (see ppu_sub_set_bg_suppress's banner).
+ *
+ * The finished raster, g_sub, carries all of them, and it is what the plates
+ * used to be copied out of. Two things followed, both measured on the 0.5.0
+ * build (the star row, level 6, SM64DS_SAVE_MENU_ON_TOP=1):
+ *   - the compose is up from state 1 (the coin count, frame 368) but the ROM
+ *     enables the menu layers only in case 2 (state 3, frame 415), so for
+ *     every frame in between the three plate bands on the top screen were the
+ *     course map: three horizontal strips of it across the middle of the
+ *     picture;
+ *   - once the buttons are on, every plate-row pixel the button art leaves
+ *     uncovered is still the map, and the backdrop key below cannot reach it.
+ * So the plates come from a second scan-out of engine B with every layer but
+ * BG0 and BG1 treated as off. The ROM's registers are not written (the
+ * suppression is read-only, see ntr/ppu.h) and the game reads back exactly
+ * what it wrote. Before case 2 that scan-out is empty and no plate is drawn;
+ * after it, it is the buttons and nothing else. */
+const uint32_t kMenuLayerSuppress = (1u << 10) | (1u << 11) | (1u << 12);
+ntr::SubFramebuffer g_sub_menu;
+
+/* The same suppression hal_sub_screen_present installs for the corner-inset
+   layout every frame (the improved map's touch-marker removal), put back
+   after the menu scan-out so nothing later in the frame sees the menu's. */
+uint32_t inset_bg_suppress(void)
+{
+    return improved_map_on() ? (1u << 10) : 0u;
+}
 
 /* One band of the LIFTED LETTERING, moved up or down the picture. Both the
    overlay and the framebuffer are indexed at a stride of SCREEN_W -- the
@@ -1802,13 +1850,18 @@ void swap_present(unsigned *dst, int w, int h)
        the course map, see the banner over kPlateRows), and a source pixel
        still carrying the backdrop is not drawn either (the eight columns of
        margin either side of every plate, and the rounded corners). What
-       lands on the picture is the plate, its outline and its lettering. */
+       lands on the picture is the plate, its outline and its lettering.
+       THE SOURCE IS THE MENU LAYERS' OWN SCAN-OUT, never g_sub: see the
+       banner over g_sub_menu. */
+    ntr::ppu_sub_set_bg_suppress(kMenuLayerSuppress);
+    ntr::ppu_scanout_sub(g_sub_menu);
+    ntr::ppu_sub_set_bg_suppress(inset_bg_suppress());
     const unsigned key = menu_backdrop_px();
     for (int y = 0; y < g_sw.ph; ++y) {
         int sy = kMenuFirstRow + (int)(((long long)y * g_sw.pden) / g_sw.pnum);
         if (sy >= kMenuLastRow) sy = kMenuLastRow - 1;
         if (!menu_plate_row(sy)) continue;
-        const unsigned *srow = g_sub.px[sy];
+        const unsigned *srow = g_sub_menu.px[sy];
         for (int x = 0; x < g_sw.pw; ++x) {
             int sx = (int)(((long long)x * g_sw.pden) / g_sw.pnum);
             if (sx >= ntr::SUB_W) sx = ntr::SUB_W - 1;
@@ -3954,10 +4007,105 @@ extern "C" int hal_lc_compose_rows(int *text_r0, int *text_r1,
     return 1;
 }
 
+/* ---- THE LEVEL-CLEAR MENU FROM A CONTROLLER OR THE KEYBOARD ---------------
+ *
+ * WHAT THE CARTRIDGE DOES. Stage::LC_Update's case 3 (src/_ZN5Stage9LC_
+ * UpdateEv.cpp) answers the menu two ways: a stylus tap on one of the three
+ * touch boxes, or IsButtonInputValid() for the button that is ALREADY chosen,
+ * data_0209f2e0 (0, Save and Continue, from case 0). With the level-clear
+ * flag up, IsButtonInputValid (src/IsButtonInputValid.c) takes only Start or
+ * Select (pressed & 0xc) and answers every other key -- the D-pad and A among
+ * them -- with sound 0xe, the refusal buzz. Nothing in LC_Update ever moves
+ * data_0209f2e0 from a key. So on the DS this menu is touch, plus Start for
+ * the first button.
+ *
+ * WHAT THE PORT ADDS, for a player with a pad or a keyboard and no stylus:
+ * up and down move the choice, A presses it. It is written in the idiom the
+ * cartridge uses where it does take a D-pad cursor, the star select
+ * (src/_ZN12dScStarSel_c8BehaviorEv.cpp, its button arm): the first press
+ * only shows the cursor, later presses move it one step and stop at either
+ * end, and each of those plays sound 0x12e. The cursor is the game's own:
+ * Stage::UpdateMenuButtons(0) puts the chosen plate on BG1 palette 2 and the
+ * other two on palette 1 -- the same call, and so the same look, the
+ * cartridge gives a plate the moment it is tapped.
+ *
+ * AND THE ANSWER IS STILL THE ROM'S. A is handed to LC_Update as Start in
+ * the pressed word. The port's A is its jump binding (pad A, Space), and
+ * that reaches PadData as the DS key word's bit 1 (host_btn_to_raw_keys in
+ * tests/walk_window.cpp: jump is raw 0x0002), so bit 1 is the one turned
+ * into Start (0x0008). It is then the ROM's own `data_0209f2e0 == N &&
+ * IsButtonInputValid()` arm that takes the choice, plays that choice's own
+ * sound and moves the state on. The four direction bits are taken out of the
+ * pressed word while the menu is waiting, so the cursor keys do not also buzz.
+ *
+ * WHEN: the one state the ROM reads the answer in -- the level-clear flag up,
+ * the state word 3, and no wait (data_0209f22c) running, which is exactly when
+ * LC_Update reaches case 3. Called from the frame loop right after the ROM's
+ * own PadData build (func_0203bc7c), before the tick reads it; single player
+ * only. The mouse is untouched: a click is TouchInfo, and case 3 reads that
+ * first. */
+extern "C" {
+extern unsigned char data_0209f2b4;   /* how many buttons the menu has */
+extern unsigned char data_0209f22c;   /* LC_Update's own wait */
+extern unsigned char data_0209f244;   /* the chosen plate's blink */
+extern unsigned char data_020a0e40;   /* the local player's slot */
+extern int data_020a0e58[];           /* PadData[i]: {u16 held, u16 pressed} */
+extern int data_020a0e5a[];           /* the split spelling of .pressed */
+void _ZN5Stage17UpdateMenuButtonsEb(int b);
+void func_02012790(int id);
+}
+
+extern "C" void hal_lc_menu_pad(void)
+{
+    static int cursor_shown;
+    if (data_0209f20c == 0 || data_0209f2d4 != 3) {
+        cursor_shown = 0;
+        return;
+    }
+    if (data_0209f22c != 0 || data_0209f244 != 0) return;
+    const int slot = data_020a0e40;
+    unsigned short *pressed =
+        (unsigned short *)((char *)data_020a0e58 + slot * 4 + 2);
+    unsigned short *split =
+        (unsigned short *)((char *)data_020a0e5a + slot * 4);
+    unsigned short keys = *pressed;
+    if (keys & 0xc0) {
+        const int last = data_0209f2b4 ? data_0209f2b4 - 1 : 0;
+        int sel = data_0209f2e0;
+        int moved = 0;
+        if (!cursor_shown) {
+            cursor_shown = 1;
+            moved = 1;
+        } else if ((keys & 0x40) && sel > 0) {
+            --sel;
+            moved = 1;
+        } else if ((keys & 0x80) && sel < last) {
+            ++sel;
+            moved = 1;
+        }
+        if (moved) {
+            data_0209f2e0 = (unsigned char)sel;
+            _ZN5Stage17UpdateMenuButtonsEb(0);
+            func_02012790(0x12e);
+        }
+    }
+    keys &= (unsigned short)~0xf0u;
+    if (keys & 2) keys = (unsigned short)((keys & ~2u) | 8u);
+    *pressed = keys;
+    *split = keys;
+}
+
 /* Bottom of the frame: upload the shadows the game filled, rasterise engine B,
    drop it into the corner. With the panel off nothing here writes a pixel. */
-void hal_sub_screen_present(unsigned int *dst, int w, int h)
+/* The corner-inset rectangle this frame's present drew, for engine A's fade
+   (hal_sub_screen_present below); g_inset_live is 0 on a frame that drew no
+   inset (stacked layout, panel off, the level-clear compose). */
+static int g_inset_rect[4];
+static int g_inset_live;
+
+static void sub_screen_present_body(unsigned int *dst, int w, int h)
 {
+    g_inset_live = 0;
     hal_screens_probe();
     hal_obj_parity_probe();
     /* SM64DS_SUB_SCALE is a divisor: 1 = full DS size (a quarter of the 2x
@@ -4184,6 +4332,18 @@ void hal_sub_screen_present(unsigned int *dst, int w, int h)
            on; with it off not a pixel of this runs. */
         if (improved_map_on()) hal_sub_panel_decor(dst, w, h);
         ntr::ppu_compose_sub(g_sub, dst, w, h, g_x0, g_y0, g_pan_num, g_pan_den);
+        /* the rectangle engine A's fade treats as one piece (the wrapper
+           below): the map, its one-pixel frame and, with the improved map,
+           the decoration round it */
+        {
+            int el = 0, et = 0, er = 0, eb = 0;
+            if (improved_map_on()) panel_extents(&el, &et, &er, &eb);
+            g_inset_rect[0] = g_x0 - (el > 1 ? el : 1);
+            g_inset_rect[1] = g_y0 - (et > 1 ? et : 1);
+            g_inset_rect[2] = g_x0 + g_pan_w + (er > 1 ? er : 1);
+            g_inset_rect[3] = g_y0 + g_pan_h + (eb > 1 ? eb : 1);
+            g_inset_live = 1;
+        }
         /* AND THE PANEL'S SECOND PASS, the MAP plaque, which the owner asked
            to sit ABOVE the map rather than behind it. Three layers in his own
            order: the plate, the map, the banner. */
@@ -4268,6 +4428,27 @@ void hal_sub_screen_present(unsigned int *dst, int w, int h)
                         *(volatile unsigned short *)0x0400100e);
         }
     }
+}
+
+/* THE PRESENT, and then ENGINE A'S FADE COMPOSITE over the framebuffer it was
+   handed (hal/message_compositor.cpp, port_engine_a_fade). Both frame loops
+   call this right after the engine-A compositor; the level loop used to run
+   the fade itself, here, after this call, and the scene loop never ran it.
+   The body above has an early return (the panel switched off), so the fade
+   hangs off this wrapper and not off the body's last line. */
+extern "C" void port_engine_a_fade(unsigned int *px, int w, int h);
+extern "C" void port_engine_a_bright_mask_rect(int x0, int y0, int x1,
+                                               int y1);
+void hal_sub_screen_present(unsigned int *dst, int w, int h)
+{
+    sub_screen_present_body(dst, w, h);
+    /* THE INSET TAKES ONE VERDICT: the whole panel is blended, as it always
+       was, instead of each of its pixels being judged by the engine-A layer
+       under it (see port_engine_a_bright_mask_rect) */
+    if (g_inset_live)
+        port_engine_a_bright_mask_rect(g_inset_rect[0], g_inset_rect[1],
+                                       g_inset_rect[2], g_inset_rect[3]);
+    port_engine_a_fade(dst, w, h);
 }
 
 /* ---- the stacked layout ----------------------------------------------------

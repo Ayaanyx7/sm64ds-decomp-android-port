@@ -150,6 +150,19 @@ static Fix12i hal_fade_speed(unsigned frames, int backward)
     return _ZN4cstd4fdivEii(one, (Fix12i)(frames << 12));
 }
 
+/* the wipe picture's ROM callees and tables (THE WIPE'S PICTURE, below) */
+extern "C" {
+void _ZN5ModelC1Ev(void *thiz);
+void Matrix4x3_FromTranslation(void *m, int x, int y, int z);
+void Matrix4x3_ApplyInPlaceToScale(void *m, int x, int y, int z);
+void Matrix4x3_ApplyInPlaceToRotationX(void *m, short ang);
+void _ZN15ModelComponents6RenderEP9Matrix4x3P7Vector3(void *thiz, void *mtx,
+                                                      void *vec);
+void _ZN9FaderWipe14LoadAndSetFileEt(void *thiz, unsigned short fileID);
+extern unsigned short data_020755e0[], data_020755f0[], data_02075600[];
+extern signed char data_0209f2f8;       /* the level being built */
+}
+
 namespace {
 
 /* Snap vs step: the historical stub snapped the interpolator to its target so
@@ -165,6 +178,13 @@ int hal_wipe_index(const void *self);
    caller left behind? Both defined beside hal_wipe_index, under the array. */
 int hal_wipe_receiver_ok(const void *self);
 void hal_wipe_shape_trap(const char *slot, const void *self);
+
+/* THE WIPE'S PICTURE (see the block under the array): does this object carry
+   a loaded wipe mesh, loading it on first use, and the ROM's own
+   FaderWipe::AdvanceFade statements with the mesh draw handed to the render
+   phase. */
+int hal_wipe_mesh_ready(void *self);
+int hal_wipe_advance_rom(void *self);
 
 /* Loud, but not per-frame: the first few calls say what the host is
    skipping, then it goes quiet. */
@@ -306,6 +326,13 @@ struct HalFaderWipe {
             currInterp = speed >= 0 ? 0x1000 : 0;
             return 1;
         }
+        /* ONE OF THE SEVEN WIPES WITH ITS MESH: FaderWipe::AdvanceFade's own
+           statements, the iris the cartridge draws (the block under the array).
+           The colour fader placement-new'd at data_0209f5e8 shares this class
+           and keeps the FaderColor arm below, as does a wipe whose mesh could
+           not be loaded. */
+        if (hal_wipe_mesh_ready(this))
+            return hal_wipe_advance_rom(this);
         Fix12i old = currInterp;
         Fix12i target = speed >= 0 ? 0x1000 : 0;
         /* the step itself is the matched body: it picks target and |step| from
@@ -449,6 +476,141 @@ void hal_wipe_shape_trap(const char *slot, const void *self)
                  "__cdecl slot; see the block above SetBackwardTime.\n",
                  slot, self);
     std::fflush(stderr);
+}
+
+/* ---- THE WIPE'S PICTURE -----------------------------------------------------
+ *
+ * WHAT THE CARTRIDGE DRAWS. A level exit, a death and a level entrance run one
+ * of these seven wipes for 0x1e frames (dScene_c::BeforeBehavior's
+ * SetForwardTime(0x1e) / SetBackwardTime(0x1e)), and FaderWipe::AdvanceFade
+ * (src/engine/fader/_ZN9FaderWipe11AdvanceFadeEv.cpp) draws the wipe's MESH
+ * over the scene: a flat model with a shaped hole (data/wipe/wipe_mario.bmd,
+ * _luigi, _wario, _yoshi, _star, _koopa), placed at (0, 0, -1) in camera space,
+ * turned 0x4000 about X and scaled by (0x1000 - interp) * 0x20, so the hole
+ * closes on the player as interp runs to 0x1000. The top screen's colour
+ * effects are switched off while it moves and set to EVY 16 black once it is
+ * closed; the bottom screen darkens with interp (BLDY on engine B).
+ *
+ * WHAT THE PORT DREW. Nothing: the meshes were never loaded (Stage::
+ * InitResources loads them with FaderWipe::LoadAndSetFile from data_020755e0 /
+ * _5f0 / _600, and the port boots levels without that loop), and this class's
+ * AdvanceFade was FaderColor's whole-screen EVY fade on both engines.
+ *
+ * WHAT RUNS NOW, per wipe, in two halves:
+ *   LOAD. On a wipe's first driven advance (and again after every level
+ *   change, because port_fader_wipes_reset clears the model words the way a
+ *   fresh Stage's pool would start them), Model's constructor and then
+ *   FaderWipe::LoadAndSetFile run on the wipe's own +0x10 Model with the file
+ *   id Stage::InitResources would pass for this level: data_02075600 in VS
+ *   off archive 0xbf, data_020755f0 on level 5, data_020755e0 otherwise.
+ *   STEP. FaderWipe::AdvanceFade's statements in its order (the step is the
+ *   matched Fader::AdvanceInterp, the brightness writes are the matched
+ *   SetBlendBrightness), except that the mesh's ModelComponents::Render is
+ *   HANDED TO THE RENDER PHASE: the DS submits it into the geometry FIFO at
+ *   phase 2 and it is drawn with the frame, while the port opens its geometry
+ *   frame after phase 2 (tests/walk_window.cpp, the phase-4 gx_reset), which
+ *   would drop it. port_fader_wipe_render submits the same call with the same
+ *   matrix just before the frame is rasterised.
+ *
+ * SM64DS_WIPE_MESH_OFF=1 keeps the old whole-screen fade on the same exe. */
+
+void *g_wipe_draw;                      /* the wipe whose mesh draws this frame */
+int g_wipe_draw_scale;
+
+int hal_wipe_mesh_off(void)
+{
+    static int v = -1;
+    if (v < 0) {
+        const char *e = std::getenv("SM64DS_WIPE_MESH_OFF");
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v;
+}
+
+int hal_wipe_mesh_ready(void *self)
+{
+    const int i = hal_wipe_index(self);
+    if (i < 0 || i >= 7 || self != (void *)&hal_wipes[i] ||
+        hal_wipe_mesh_off())
+        return 0;
+    unsigned char *model = (unsigned char *)self + 0x10;
+    if (*(void **)(model + 4))              /* Model::modelFile */
+        return 1;
+    /* Stage::InitResources' table choice, src/_ZN5Stage13InitResourcesEv.cpp
+       :360-368. Its first arm is VS only (data_0209f2d8 == 1), which this port
+       does not run. */
+    const unsigned short id = (data_0209f2f8 == 5) ? data_020755f0[i]
+                                                   : data_020755e0[i];
+    /* ONE LOAD PER FILE, KEPT. The cartridge loads the seven meshes into each
+       Stage's own heap and loses them with it. Here the load lands on the
+       heap that is current at phase 2, which outlives the level, and
+       port_fader_wipes_reset clears the wipe's Model words at every level
+       change the way a fresh pool starts them. Loading again after every
+       change would leave a mesh behind on every change, and the root heap
+       would stop being flat across repeated entries of one level (the
+       no-leak shape hal/level_change.cpp's [lvl] line watches). So each file
+       is loaded once, the loaded Model's 0x50 bytes are kept, and a wipe
+       that needs that file again gets those bytes back: at most six files,
+       once each. */
+    static struct { unsigned short id; unsigned char failed;
+                    unsigned char bytes[0x50]; } cache[8];
+    static int ncache;
+    for (int k = 0; k < ncache; ++k)
+        if (cache[k].id == id) {
+            if (cache[k].failed) return 0;
+            for (int b = 0; b < 0x50; ++b) model[b] = cache[k].bytes[b];
+            return 1;
+        }
+    if (ncache >= 8)
+        return 0;
+    if (!*(void **)model)                   /* no Model vptr: construct it */
+        _ZN5ModelC1Ev(model);
+    _ZN9FaderWipe14LoadAndSetFileEt(self, id);
+    const int ok = *(void **)(model + 4) != 0;
+    cache[ncache].id = id;
+    cache[ncache].failed = ok ? 0 : 1;
+    for (int b = 0; b < 0x50; ++b) cache[ncache].bytes[b] = model[b];
+    ++ncache;
+    std::fprintf(stderr, "  [wipe] mesh for wipe %d (ov0 file 0x%04x, level "
+                 "%d): %s\n", i, id, (int)data_0209f2f8,
+                 ok ? "loaded" : "NOT loaded, the whole-screen fade stays");
+    return ok;
+}
+
+int hal_wipe_advance_rom(void *self)
+{
+    Fix12i &cur = *(Fix12i *)((char *)self + 4);
+    Fix12i &spd = *(Fix12i *)((char *)self + 8);
+    const unsigned short color = *(unsigned short *)((char *)self + 0xc);
+    const Fix12i target = spd >= 0 ? 0x1000 : 0;
+    const Fix12i old = cur;
+    ((Fader *)self)->Fader::AdvanceInterp();
+    if (cur == 0 && cur == old)
+        return cur == target;
+    if (cur == 0x1000) {
+        _ZN3G2x18SetBlendBrightnessEPVtts((volatile unsigned short *)0x4000050,
+                                          0x3f, -0x10);
+    } else {
+        if (spd != 0 && old != 0x1000)
+            *(volatile unsigned short *)0x4000050 = 0;
+        if (cur != 0) {
+            g_wipe_draw = self;
+            g_wipe_draw_scale = (Fix12i)(((long long)(0x1000 - cur) * 0x20000
+                                          + 0x800) >> 12);
+        }
+    }
+    if (cur == old)
+        return cur == target;
+    const int m = color ? 0x10 : -0x10;
+    const int r = (cur * m) >> 12;
+    if (r != 0) {
+        _ZN3G2x18SetBlendBrightnessEPVtts((volatile unsigned short *)0x4001050,
+                                          0x3f, (short)r);
+    } else {
+        *(volatile unsigned short *)0x4000050 = 0;
+        *(volatile unsigned short *)0x4001050 = 0;
+    }
+    return cur == target;
 }
 
 }  /* anonymous namespace */
@@ -720,6 +882,7 @@ void port_frame_phase2(void)
  * Every other word the constructor writes is written here. */
 void port_fader_wipes_reset(void)
 {
+    g_wipe_draw = 0;        /* a mesh queued by the outgoing level's last advance */
     for (int i = 0; i < 7; ++i) {
         hal_wipes[i].currInterp = 0x1000;
         hal_wipes[i].speed = 0;
@@ -728,6 +891,25 @@ void port_fader_wipes_reset(void)
         for (int b = 0; b < 0x50; ++b)
             hal_wipes[i].model[b] = 0;
     }
+}
+
+/* THE WIPE MESH'S DRAW, for the render phase (THE WIPE'S PICTURE, above):
+   FaderWipe::AdvanceFade's own ModelComponents::Render with its own matrix --
+   (0, 0, -1) in camera space, scaled by the queued (0x1000 - interp) * 0x20,
+   turned 0x4000 about X -- submitted into this frame's geometry just before it
+   is rasterised (tests/walk_window.cpp). Nothing queued, nothing drawn. */
+extern "C" void port_fader_wipe_render(void)
+{
+    if (!g_wipe_draw)
+        return;
+    static int mtx[12];
+    const int sc = g_wipe_draw_scale;
+    Matrix4x3_FromTranslation(mtx, 0, 0, -0x1000);
+    Matrix4x3_ApplyInPlaceToScale(mtx, sc, sc, sc);
+    Matrix4x3_ApplyInPlaceToRotationX(mtx, 0x4000);
+    _ZN15ModelComponents6RenderEP9Matrix4x3P7Vector3(
+        (char *)g_wipe_draw + 0x18, mtx, 0);
+    g_wipe_draw = 0;
 }
 
 /* Start a COLOR fade on the installed color fader (data_0209f5e8) and put it in

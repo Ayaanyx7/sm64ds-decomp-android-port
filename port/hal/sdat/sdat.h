@@ -142,6 +142,19 @@ void sd_mix_set(int ch, int volume_db10, int pan, double rate);
 void sd_mix_set_pan(int ch, int pan);   // retune a voice already sounding
 void sd_mix_set_vol(int ch, int volume_db10);   // ditto, volume only
 void sd_mix_set_rate(int ch, double rate);      // ditto, playback rate only
+// The channel's own pitch, composed every frame the way SM64DS's ARM7 channel
+// update does: (key - root) as baseStep, the track's bend + ext pitch as
+// userPitch, plus the channel's sweep (portamento / 0xE3), all in 1/64
+// semitones. See the Channel fields in mixer.cpp.
+void sd_mix_set_pitch_base(int ch, double baseStep, int userPitch);
+void sd_mix_set_user_pitch(int ch, int units);
+void sd_mix_set_sweep(int ch, int sweepPitch, int sweepLength);
+// The track's envelope override at a note-on: -1 keeps the instrument's.
+void sd_mix_set_env(int ch, int attack, int decay, int sustain, int release);
+// The channel's LFO parameters (target 0 pitch / 1 volume / 2 pan, speed,
+// depth, range, delay), copied from the owning track every frame.
+void sd_mix_set_lfo(int ch, int target, int speed, int depth, int range,
+                    int delay);
 void sd_mix_frame(void);              // advance every envelope one 192Hz frame
 void sd_mix_render(sd_s16 *dst, int frames);   // stereo interleaved
 // Lane VOICE: an extra fill run over the finished stereo block, AFTER the host
@@ -157,7 +170,8 @@ void sd_mix_reset(void);
 void sd_consumer_reset(void);
 
 // dB conversion shared by the sequencer and the mixer: 0..127 -> tenths of
-// a dB in -723..0, the DS's own volume range.
+// a dB in -723..0, the DS's own volume range, through the ARM7's square-law
+// table (0x03805860).
 int sd_cnv_vol(int v);
 
 // ---- sequencer ----------------------------------------------------------
@@ -173,6 +187,8 @@ int sd_seq_start(int player, const sd_u8 *seqBase, sd_u32 startOff,
                  const sd_u8 *sbnk);
 void sd_seq_stop(int player);
 void sd_seq_set_volume(int player, int vol);      // 0..127
+// PLAYER_PARAM 4: the player's channel priority (player +4 in the ARM7).
+void sd_seq_set_priority(int player, int prio);
 // The OTHER player volume: tenths of a dB in -723..0, straight out of the
 // ROM's own 0..127 table at data_02086384. func_0204fafc recomputes it every
 // frame for every sounding voice (distance attenuation plus whatever fade
@@ -189,6 +205,8 @@ void sd_seq_set_pan(int player, int pan);         // 0..127, 64 centre
 // definitions in sseq.cpp.
 void sd_seq_set_track_volume_db10(int player, unsigned trackMask, int db10);
 void sd_seq_set_track_pitch(int player, unsigned trackMask, int pitch);
+// TRACK_PARAM 0x19 (modulation speed) and 0x1a (modulation depth).
+void sd_seq_set_track_mod(int player, unsigned trackMask, int param, int value);
 void sd_seq_frame(void);                          // one 192Hz sequencer frame
 void sd_seq_reset(void);
 int  sd_seq_active(int player);

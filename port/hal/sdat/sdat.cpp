@@ -546,10 +546,24 @@ int sdat_link_bank_waves(sd_u8 *sbnk)
 
 // ---- volume curve -------------------------------------------------------
 
-// 0..127 -> tenths of a dB in [-723, 0]. The DS carries a 128-entry table in
-// its ARM7 binary, which is not ours; this is the log curve that table
-// approximates (20*log10(v/127), in 0.1dB units, floored at the DS's own
-// -72.3dB bottom). Audibly equivalent, and honestly not the ROM's bytes.
+// 0..127 -> tenths of a dB in [-723, 0], the ARM7's own table.
+//
+// SM64DS's ARM7 carries exactly one such table, at 0x03805860 (arm7.bin file
+// offset 0xd9c8), and it is the SQUARE-law one: round(400 * log10(v / 127))
+// tenths of a dB, with entry 0 at -723 and entry 1 at -722. Every 0..127
+// level the sound driver turns into decibels goes through it: the note's
+// velocity in the channel update (0x037FC5E0), the track's volume and
+// expression and the player's volume in the track update (0x037FD694..
+// 0x037FD6B0), and the sustain level in the envelope (0x037FBCF0). The
+// formula below reproduces the cartridge's 128 entries exactly (checked
+// entry for entry against arm7.bin), so no ROM bytes are carried here.
+//
+// This used to be 200 * log10 -- the LINEAR curve, which is the ARM9's
+// table data_02086384 and the right one for the fader values the game
+// computes on the ARM9 side, but only half the attenuation the ARM7 applies
+// to a 0..127 level. A velocity-64 note came out at -6 dB instead of -12, a
+// track at volume 40 at -10 dB instead of -20, and a sustain of 60 held at
+// -6.5 dB instead of -13: every soft part of every sequence played too loud.
 int sd_cnv_vol(int v)
 {
     static sd_s16 lut[128];
@@ -557,11 +571,9 @@ int sd_cnv_vol(int v)
     if (!built) {
         built = 1;
         lut[0] = -723;
-        for (int i = 1; i < 128; i++) {
-            double db10 = 200.0 * log10((double)i / 127.0);
-            if (db10 < -723.0) db10 = -723.0;
-            lut[i] = (sd_s16)(db10 < 0 ? db10 - 0.5 : db10 + 0.5);
-        }
+        lut[1] = -722;
+        for (int i = 2; i < 128; i++)
+            lut[i] = (sd_s16)floor(400.0 * log10((double)i / 127.0) + 0.5);
     }
     if (v < 0) v = 0;
     if (v > 127) v = 127;

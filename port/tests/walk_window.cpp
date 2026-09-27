@@ -1516,6 +1516,11 @@ int  port_vs_match_end_frozen(void);
    builds the text and the loop below draws it */
 int  port_vs_match_end_banner(char *out, int n);
 void port_message_composite_engine_a(void *fb);
+void port_fader_wipe_render(void);   /* hal/fader_wipes.cpp */
+/* engine A's brightness targets for the fade composite below: null = the whole
+   panel, else one byte per host pixel (SCREEN_W stride), 1 = apply BLDY there
+   (hal/message_compositor.cpp, ENGINE A'S BRIGHTNESS TARGETS) */
+extern "C" const unsigned char *port_engine_a_bright_mask(void);
 int port_probe_message_id(void);
 int port_probe_message_fire(void *player, int id);
 /* frame-scripted headless pad press (hal/input_probe.cpp): apply ORs the
@@ -1674,6 +1679,8 @@ int hal_window_focused(void);
 void hal_sub_screen_frame_begin(void);
 void hal_sub_screen_present(unsigned int *dst, int w, int h);
 void hal_sub_screen_probe(void);
+/* the level-clear save menu's pad step: up / down / A on the pressed word */
+void hal_lc_menu_pad(void);
 /* the camera buttons drawn on the bottom screen, hit-tested against the touch
    record the panel fills (hal/sub_screen.cpp wraps Stage::CheckCameraInput
    with the split-symbol bridge the host Ctrl block needs) */
@@ -2604,6 +2611,29 @@ static int port_frame_divider(void)
 
 static void present(void);   /* the blit, defined with the window code below */
 
+/* SMOOTH MOTION's clock and latch (run interp1); the mechanism is the block
+   after present() below. g_ip_on is -1 until the level loop arms it, then 0
+   for every run without the SmoothMotion key. g_ip_t0 is when the pacer's
+   current turn began (QPC), kept by frame_pace; a turn is one VBLANK when the
+   ROM loop's halt pumps it and a whole tick otherwise, so the TICK's start and
+   length are latched apart at each commit (g_ip_tick_t0 / g_ip_tick_len):
+   the turn that was running when the tick's work ran is the tick's first. */
+static int g_ip_on = -1;
+static int g_ip_tick_ok;
+static unsigned g_ip_serial;   /* commits so far: a tick's identity in traces */
+static long long g_ip_t0;
+static long long g_ip_tick_t0, g_ip_tick_len;
+/* The tick's own picture handed to the presentation clock rather than drawn
+   at the foot of the tick (a blended picture costs a whole raster, and drawn
+   there it would push every picture after it late); g_ip_pace_seen is when
+   frame_pace last ran, which is what says a clock exists to hand it to. */
+static int g_ip_deferred;
+static long long g_ip_pace_seen;
+static double g_ip_cost_ms = 4.0;   /* running average blended-picture cost */
+static int g_ip_tick_shown;         /* this tick has put a picture up */
+static int ip_present_slot(long long t, long long deadline);
+static void ip_flush_deferred(void);
+
 /* THE PICTURE COUNT. Every picture this program hands to the window goes
    through present(), including the repeats port_present_clock makes, so
    this one counter is the only honest answer to "how many pictures a
@@ -2623,7 +2653,12 @@ static int port_frame_rate_target(void)
     static int rate = -1;
     if (rate < 0) {
         rate = host_setting_frame_rate();
-        if (rate)
+        if (rate && host_setting_smooth_motion())
+            fprintf(stderr, "[frame-pace] FrameRate %d: pictures are handed to "
+                    "the display %d times a second. The game tick is untouched; "
+                    "SmoothMotion draws the ones between two course ticks.\n",
+                    rate, rate);
+        else if (rate)
             fprintf(stderr, "[frame-pace] FrameRate %d: the finished picture "
                     "is handed to the display %d times a second. The game tick "
                     "is untouched and nothing is interpolated at this rung, so "
@@ -2740,19 +2775,28 @@ extern "C" double port_present_clock(long long now, long long deadline,
     const int f = port_rom_frame();
     if (f != g_pic_frame) {
         g_pic_frame = f;
-        ++g_pic_tick;
-        port_pic_note(now, qpf, trace, rate);
-        g_pic_due += step;
+        if (g_ip_deferred) {
+            /* SmoothMotion: the tick drew no picture of its own and consumed
+               no slot; the loop below presents from the next slot on. */
+            g_ip_deferred = 0;
+        } else {
+            ++g_pic_tick;
+            port_pic_note(now, qpf, trace, rate);
+            g_pic_due += step;
+        }
     }
 
     while (g_pic_due < deadline) {
         LARGE_INTEGER at;
         port_sleep_until(g_pic_due, qpf);
-        present();
-        ++g_pic_extra;
-        g_pic_clock_ran = 1;
-        QueryPerformanceCounter(&at);
-        port_pic_note(at.QuadPart, qpf, trace, rate);
+        /* 0 back only with SmoothMotion on, for a slot it had no time to
+           draw: nothing was presented, so nothing is counted */
+        if (ip_present_slot(g_pic_due, deadline)) {
+            ++g_pic_extra;
+            g_pic_clock_ran = 1;
+            QueryPerformanceCounter(&at);
+            port_pic_note(at.QuadPart, qpf, trace, rate);
+        }
         g_pic_due += step;
     }
 
@@ -2773,6 +2817,7 @@ static void frame_pace(void)
     }
     if (!qpf.QuadPart) QueryPerformanceFrequency(&qpf);
     QueryPerformanceCounter(&now);
+    g_ip_pace_seen = now.QuadPart;
 
     /* RUNG E1 (lane R3E). port_frame_divider() is VBLANKS PER GAME TICK, so
        this budget is a whole game frame -- right while this loop calls the pump
@@ -2823,6 +2868,12 @@ static void frame_pace(void)
         }
     }
 
+    /* run interp1: a tick picture handed to the clock that the clock did not
+       take (no slack this turn: an overrun, or under a millisecond left) is
+       drawn now rather than lost. Then: the turn that starts now begins at
+       `next`; a tick's alpha is measured from the turn it began in. */
+    if (g_ip_deferred) ip_flush_deferred();
+    g_ip_t0 = next.QuadPart;
     if (!trace) return;
     /* SM64DS_TRACE_PACE=2 is the per-frame line, which costs an unbuffered
        write every frame and therefore distorts the very thing it measures.
@@ -7089,6 +7140,390 @@ static void present(void)
     hal_present_set_rect(dx, dy, dw, dh, sw, sh);
 }
 
+/* ---- SMOOTH MOTION: THE PICTURES BETWEEN TWO TICKS (run interp1) ---------
+ *
+ * With the SmoothMotion key on and FrameRate above the tick rate, every
+ * picture on a 3D level is drawn from the tick's recorded geometry stream
+ * with the moving things blended between the previous tick and this one
+ * (ntr/gx.cpp, the block after gx_render). This is the host half: when a
+ * picture is due, which blend it shows, and how the 2D is put back over it.
+ *
+ * THE 2D IS NEVER RE-RUN. The engine A composite runs the ROM's own
+ * graphics-block beat and OAM upload, which may happen once a tick and no
+ * more. So the tick keeps four snapshots of its own framebuffer -- after the
+ * 3D (p3), after the 2D and the bottom-screen inset (p2), after the fade
+ * (p4), after the host overlays (p5) -- and a blended picture is the
+ * replayed 3D, then p2 wherever p2 differs from p3, then tick N's fade by
+ * the same arithmetic, then p5 wherever p5 differs from p4. The HUD, the
+ * text, the inset panel, the fade and the F3 overlay are therefore tick N's
+ * exactly.
+ *
+ * WHICH BLEND. alpha = (when the picture is shown - when tick N began) /
+ * the tick's length, clamped to 0..1: the tick's own picture right after its
+ * work is a small alpha, the last extra picture before the next tick is 1,
+ * which is tick N itself. The world on screen therefore trails the newest
+ * tick by up to one tick. Nothing else waits: input is sampled once a tick,
+ * as before.
+ *
+ * OFF, none of this runs: g_ip_on is 0, the render block takes no snapshot,
+ * the tick's present and the pacer's extra presents call present() exactly
+ * as before. */
+static ntr::Framebuffer *g_ip_fb, *g_ip_p3, *g_ip_p2, *g_ip_p4, *g_ip_p5;
+static const ntr::Framebuffer *g_ip_level_fb;
+static int g_ip_fade_on, g_ip_fade_evy, g_ip_fade_white;
+static int g_ip_rate_ok;
+
+/* The blended pictures' own cost, for SM64DS_INTERP_TRACE's line and the
+   gate's frame-time rows: build (replay + raster + 2D) and present apart. */
+enum { IP_WIN = 240 };
+static double g_ip_build_ms[IP_WIN], g_ip_pres_ms[IP_WIN];
+static int g_ip_win_n;
+static unsigned long long g_ip_pictures, g_ip_blended, g_ip_plain;
+/* inside a build: the replay, the raster, the 2D put back, summed per window */
+static double g_ip_sum_replay, g_ip_sum_raster, g_ip_sum_compose;
+
+static long long ip_qpc(void)
+{
+    LARGE_INTEGER q;
+    QueryPerformanceCounter(&q);
+    return q.QuadPart;
+}
+static double ip_ms_since(long long t0)
+{
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    return (ip_qpc() - t0) * 1000.0 / (double)f.QuadPart;
+}
+
+static int ip_trace(void)
+{
+    static int t = -1;
+    if (t < 0) {
+        const char *e = getenv("SM64DS_INTERP_TRACE");
+        t = e ? atoi(e) : 0;
+    }
+    return t;
+}
+
+static void ip_snap(ntr::Framebuffer *dst, const ntr::Framebuffer &src)
+{
+    if (!dst) return;
+    for (int y = 0; y < ntr::active_h; ++y)
+        memcpy(dst->px[y], src.px[y], ntr::active_w * sizeof(uint32_t));
+}
+
+/* Arm once, at the level loop's first turn. Needs FrameRate on (a rate the
+   pacer presents at) and the key; the per-tick test against the tick rate
+   is g_ip_rate_ok, set at each commit. */
+static void ip_arm(const ntr::Framebuffer *level_fb)
+{
+    if (g_ip_on >= 0) return;
+    const int rate = port_frame_rate_target();
+    g_ip_on = (host_setting_smooth_motion() && rate > 0) ? 1 : 0;
+    if (!g_ip_on) return;
+    g_ip_level_fb = level_fb;
+    g_ip_fb = new ntr::Framebuffer;
+    g_ip_p3 = new ntr::Framebuffer;
+    g_ip_p2 = new ntr::Framebuffer;
+    g_ip_p4 = new ntr::Framebuffer;
+    g_ip_p5 = new ntr::Framebuffer;
+    ntr::gx_interp_arm(1);
+    fprintf(stderr, "[interp] SmoothMotion on at FrameRate %d: pictures between "
+            "two ticks on a 3D level are blended from the recorded geometry; "
+            "2D, menus and scenes are the tick's own\n", rate);
+}
+
+/* Build the blended picture for `alpha` into g_ip_fb. 0 when the tick has no
+   blend to offer (a snap), and then nothing was drawn. */
+static int ip_build(double alpha)
+{
+    const long long t0 = ip_qpc();
+    if (!ntr::gx_interp_begin((float)alpha)) return 0;
+    g_ip_sum_replay += ip_ms_since(t0);
+    const long long t1 = ip_qpc();
+    ntr::Framebuffer &o = *g_ip_fb;
+    for (int x = 0; x < ntr::active_w; ++x) o.px[0][x] = 0xFF101820u;
+    for (int y = 1; y < ntr::active_h; ++y)
+        memcpy(o.px[y], o.px[0], ntr::active_w * sizeof(o.px[0][0]));
+    ntr::gx_render(o);
+    ntr::gx_interp_end();
+    g_ip_sum_raster += ip_ms_since(t1);
+    const long long t2 = ip_qpc();
+    for (int y = 0; y < ntr::active_h; ++y) {
+        uint32_t *row = o.px[y];
+        const uint32_t *a = g_ip_p3->px[y], *b = g_ip_p2->px[y];
+        for (int x = 0; x < ntr::active_w; ++x)
+            if (a[x] != b[x]) row[x] = b[x];
+    }
+    if (g_ip_fade_on) {
+        const int evy = g_ip_fade_evy, toWhite = g_ip_fade_white;
+        for (int y = 0; y < ntr::active_h; ++y) {
+            uint32_t *row = o.px[y];
+            for (int x = 0; x < ntr::active_w; ++x) {
+                uint32_t p = row[x];
+                int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
+                if (toWhite) {
+                    r += ((255 - r) * evy) >> 4;
+                    g += ((255 - g) * evy) >> 4;
+                    b += ((255 - b) * evy) >> 4;
+                } else {
+                    r -= (r * evy) >> 4;
+                    g -= (g * evy) >> 4;
+                    b -= (b * evy) >> 4;
+                }
+                row[x] = 0xFF000000u | ((uint32_t)r << 16) |
+                         ((uint32_t)g << 8) | (uint32_t)b;
+            }
+        }
+    }
+    for (int y = 0; y < ntr::active_h; ++y) {
+        uint32_t *row = o.px[y];
+        const uint32_t *a = g_ip_p4->px[y], *b = g_ip_p5->px[y];
+        for (int x = 0; x < ntr::active_w; ++x)
+            if (a[x] != b[x]) row[x] = b[x];
+    }
+    g_ip_sum_compose += ip_ms_since(t2);
+    return 1;
+}
+
+static void ip_note(double build_ms, double pres_ms)
+{
+    g_ip_build_ms[g_ip_win_n] = build_ms;
+    g_ip_pres_ms[g_ip_win_n] = pres_ms;
+    if (++g_ip_win_n < IP_WIN) return;
+    g_ip_win_n = 0;
+    if (!ip_trace()) return;
+    double sb[IP_WIN], sp[IP_WIN], ab = 0, ap = 0;
+    for (int i = 0; i < IP_WIN; ++i) {
+        sb[i] = g_ip_build_ms[i];
+        sp[i] = g_ip_pres_ms[i];
+        ab += sb[i];
+        ap += sp[i];
+    }
+    qsort(sb, IP_WIN, sizeof sb[0], port_pic_cmp);
+    qsort(sp, IP_WIN, sizeof sp[0], port_pic_cmp);
+    fprintf(stderr, "[interp] %d blended pictures: build ms avg %.2f p50 %.2f "
+            "p95 %.2f max %.2f (replay %.2f raster %.2f 2D %.2f) | present ms "
+            "avg %.2f p95 %.2f max %.2f | total pictures %llu blended %llu "
+            "plain %llu\n",
+            IP_WIN, ab / IP_WIN, sb[IP_WIN / 2], sb[(IP_WIN * 95) / 100],
+            sb[IP_WIN - 1], g_ip_sum_replay / IP_WIN, g_ip_sum_raster / IP_WIN,
+            g_ip_sum_compose / IP_WIN, ap / IP_WIN, sp[(IP_WIN * 95) / 100],
+            sp[IP_WIN - 1], g_ip_pictures, g_ip_blended, g_ip_plain);
+    g_ip_sum_replay = g_ip_sum_raster = g_ip_sum_compose = 0;
+}
+
+/* One picture: blended when this tick can, the tick's own frame otherwise. */
+static void ip_present_alpha(double alpha)
+{
+    ++g_ip_pictures;
+    if (ip_trace() >= 3) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        fprintf(stderr, "[interp] picture t%u alpha %.4f at %.3f ms into the "
+                "tick\n", g_ip_serial, alpha,
+                (ip_qpc() - g_ip_tick_t0) * 1000.0 / (double)f.QuadPart);
+    }
+    LARGE_INTEGER q0, q1, q2, qf;
+    QueryPerformanceFrequency(&qf);
+    QueryPerformanceCounter(&q0);
+    if (!ip_build(alpha)) {
+        ++g_ip_plain;
+        present();
+        return;
+    }
+    QueryPerformanceCounter(&q1);
+    const ntr::Framebuffer *was = g_present_fb;
+    g_present_fb = g_ip_fb;
+    present();
+    g_present_fb = was;
+    QueryPerformanceCounter(&q2);
+    ++g_ip_blended;
+    const double cost = (q2.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
+    g_ip_cost_ms = g_ip_cost_ms * 0.8 + cost * 0.2;
+    ip_note((q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart,
+            (q2.QuadPart - q1.QuadPart) * 1000.0 / (double)qf.QuadPart);
+}
+
+static int ip_owns_picture(void)
+{
+    return g_ip_on > 0 && g_ip_tick_ok && g_ip_rate_ok &&
+           g_present_fb == g_ip_level_fb && g_ip_tick_t0 > 0 &&
+           g_ip_tick_len > 0;
+}
+
+/* A BLENDED PICTURE NEVER MAKES THE GAME LATE. It costs a whole raster, and
+   a picture started a millisecond before the pacer's deadline would push the
+   next tick back by the rest of it, so the game itself would slow down on a
+   machine (or a RenderScale) where the raster is slow. So a blended picture
+   is only started when the time left before the deadline covers what the
+   recent ones cost (an average kept here, plus a quarter millisecond). Otherwise the slot
+   gets the tick's own finished picture -- free, and never behind what is on
+   screen -- if the tick has not been shown at all yet, and nothing at all if
+   it has: the picture already up simply stays one slot longer. */
+static void ip_present_plain_or_skip(int *presented)
+{
+    if (!g_ip_tick_shown) {
+        ++g_ip_pictures;
+        ++g_ip_plain;
+        present();
+        g_ip_tick_shown = 1;
+        *presented = 1;
+    } else {
+        *presented = 0;
+    }
+}
+
+/* THE DEADLINE THAT MATTERS IS THE TICK'S END, not the pacer turn's. While
+   the ROM loop's halt pumps the pacer once per VBLANK, a course tick is two
+   turns, and a picture that runs a few milliseconds into the second turn
+   costs the game nothing: that turn simply sleeps less. What it may not do is
+   run past the start of the next tick. (`deadline`, the turn's own, is the
+   later of the two only when the pacer paces whole ticks.) */
+static int ip_fits(long long deadline)
+{
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    const long long tick_end = g_ip_tick_t0 + g_ip_tick_len;
+    const long long end = tick_end > deadline ? tick_end : deadline;
+    const double left = (end - ip_qpc()) * 1000.0 / (double)f.QuadPart;
+    return left >= g_ip_cost_ms + 0.25;
+}
+
+/* The pacer's extra picture, due at slot time t (QPC), to be finished before
+   `deadline`. Returns 1 when a picture went to the screen. The blend is taken
+   at the moment the picture is actually drawn, not at the slot it was due in:
+   a slot drawn late (the first one after a tick's work, usually) then shows
+   the world as it is when it is drawn, so what is on screen keeps pace with
+   the clock even when the grid does not. */
+static int ip_present_slot(long long t, long long deadline)
+{
+    (void)t;
+    if (!ip_owns_picture()) { present(); return 1; }
+    if (!ip_fits(deadline)) {
+        int shown = 0;
+        ip_present_plain_or_skip(&shown);
+        return shown;
+    }
+    ip_present_alpha((double)(ip_qpc() - g_ip_tick_t0) / (double)g_ip_tick_len);
+    g_ip_tick_shown = 1;
+    return 1;
+}
+
+/* The tick's own picture, right after its work. While the pacer is running
+   it is handed to the presentation clock, which draws it at its next slot
+   (port_present_clock takes the hand-off and consumes no slot for the tick),
+   so every blended picture lands on the even grid; unpaced, it is drawn here. */
+static void ip_present_tick(void)
+{
+    if (!ip_owns_picture()) { present(); return; }
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (g_ip_pace_seen && now.QuadPart - g_ip_pace_seen < 2 * g_ip_tick_len) {
+        g_ip_deferred = 1;
+        return;
+    }
+    ip_present_alpha((double)(now.QuadPart - g_ip_tick_t0) /
+                     (double)g_ip_tick_len);
+    g_ip_tick_shown = 1;
+}
+
+/* The clock had no slack this turn (an overrun, or under a millisecond left):
+   the tick is already late, so it gets its own finished picture, which costs
+   nothing, rather than a blend that would make it later still. */
+static void ip_flush_deferred(void)
+{
+    g_ip_deferred = 0;
+    if (!ip_owns_picture()) { present(); return; }
+    int shown = 0;
+    ip_present_plain_or_skip(&shown);
+}
+
+/* SM64DS_INTERP_PROBE=<k> (with SM64DS_INTERP_PROBE_FROM / _TO, ROM frames):
+   the proof instrument. After each committed tick in the window, build k
+   blended pictures at alpha j/k (j = 1..k) off the pacer, write each as
+   interp_f<frame>_<j>.bmp and print the blended camera's eye and the screen
+   box centre of one draw group (SM64DS_INTERP_PROBE_GROUP; by default the
+   group with the most triangles, the course itself) and of the last group
+   with triangles (the player). Nothing is presented by it. */
+static void ip_probe(int frame, int rom_frame)
+{
+    static int k = -1, from = 0, to = 0, grp = 0, bmps = 1;
+    if (k < 0) {
+        const char *e = getenv("SM64DS_INTERP_PROBE");
+        k = e ? atoi(e) : 0;
+        e = getenv("SM64DS_INTERP_PROBE_FROM");
+        from = e ? atoi(e) : 0;
+        e = getenv("SM64DS_INTERP_PROBE_TO");
+        to = e ? atoi(e) : 0x7fffffff;
+        e = getenv("SM64DS_INTERP_PROBE_GROUP");
+        grp = e ? atoi(e) : -1;
+        e = getenv("SM64DS_INTERP_PROBE_BMP");
+        bmps = e ? atoi(e) : 1;
+    }
+    if (k <= 0 || rom_frame < from || rom_frame > to) return;
+    if (!g_ip_tick_ok) {
+        /* a SNAP tick: there is no blend, every picture of it is the tick's
+           own frame (the pacer presents fb unchanged) */
+        fprintf(stderr, "[interp] probe f%d SNAP: all %d pictures of this tick "
+                "are the tick's own picture\n", rom_frame, k);
+        return;
+    }
+    if (ip_trace() >= 2) ntr::gx_interp_dump_groups(stderr, rom_frame);
+    for (int j = 1; j <= k; ++j) {
+        const double alpha = (double)j / k;
+        float eye[3];
+        ntr::gx_interp_view((float)alpha, eye);
+        if (!ntr::gx_interp_begin((float)alpha)) {
+            fprintf(stderr, "[interp] probe f%d j%d/%d SNAP (the tick's own "
+                    "picture)\n", rom_frame, j, k);
+            continue;
+        }
+        float box[4] = {0, 0, 0, 0}, pbox[4] = {0, 0, 0, 0};
+        /* default: the group with the most triangles (the course), and the
+           last group with any (the player draws last on a level) */
+        int g_use = grp, g_last = -1, best = -1;
+        for (int gi = 0; gi < ntr::gx_interp_group_count(); ++gi) {
+            float b4[4];
+            const int n = ntr::gx_interp_group_box(gi, b4);
+            if (n > 0) g_last = gi;
+            if (grp < 0 && n > best) { best = n; g_use = gi; }
+        }
+        const int nt = ntr::gx_interp_group_box(g_use, box);
+        const int np = g_last >= 0 ? ntr::gx_interp_group_box(g_last, pbox) : 0;
+        size_t tn = 0;
+        ntr::gx_polygons(tn);
+        ntr::gx_interp_end();
+        ip_build(alpha);
+        unsigned h = 2166136261u;
+        for (int y = 0; y < ntr::active_h; ++y)
+            for (int x = 0; x < ntr::active_w; ++x)
+                h = (h ^ g_ip_fb->px[y][x]) * 16777619u;
+        fprintf(stderr, "[interp] probe f%d j%d/%d alpha %.4f eye %.3f %.3f "
+                "%.3f group%d tris %d center %.3f %.3f | last group%d tris %d "
+                "center %.3f %.3f | alltris %zu pic %08x\n", rom_frame, j, k,
+                alpha, eye[0], eye[1], eye[2], g_use, nt,
+                (box[0] + box[2]) * 0.5f, (box[1] + box[3]) * 0.5f, g_last, np,
+                (pbox[0] + pbox[2]) * 0.5f, (pbox[1] + pbox[3]) * 0.5f, tn, h);
+        if (j == k) {
+            /* alpha 1 IS tick N: the replay must reproduce the tick's own
+               picture pixel for pixel, or the replay is not faithful. */
+            long diff = 0;
+            for (int y = 0; y < ntr::active_h; ++y)
+                for (int x = 0; x < ntr::active_w; ++x)
+                    if (g_ip_fb->px[y][x] != g_ip_p5->px[y][x]) ++diff;
+            fprintf(stderr, "[interp] probe f%d alpha 1 vs the tick's own "
+                    "picture: %ld pixel(s) differ\n", rom_frame, diff);
+        }
+        if (bmps) {
+            char nm[64];
+            snprintf(nm, sizeof nm, "interp_f%05d_%02d.bmp", rom_frame, j);
+            ntr::ppu_write_bmp(nm, *g_ip_fb);
+        }
+    }
+    (void)frame;
+}
+
 /* ---- THE PERFORMANCE REPORT'S FRAME HOOK (run perf1) ------------------
  *
  * Everything on a sample line is already being measured for the F3 overlay,
@@ -11283,6 +11718,7 @@ int main(void)
     g_present_hdc = hdc;
     g_present_bi = &g_bi;
     g_present_fb = &fb;
+    ip_arm(&fb);   /* run interp1: SmoothMotion, inert without the key */
     /* THE STAR-SELECT INTERLUDE'S FRAME, handed to hal/level_change.cpp here
        and not linked to it directly: level_change.cpp is on the smoke targets
        too and this file is not, so the interlude asks through a pointer and
@@ -12659,6 +13095,11 @@ int main(void)
                 for (int b5_i = 0; b5_i < 4; ++b5_i)
                     *(unsigned short *)((char *)data_020a0e5a + b5_i * 4) =
                         *(unsigned short *)((char *)data_020a0e58 + b5_i * 4 + 2);
+            /* the level-clear save menu's pad step (hal/sub_screen.cpp's
+               banner over hal_lc_menu_pad): on the pressed word the ROM just
+               built, before the tick reads it; inert outside that menu */
+            if (!b5_transport)
+                hal_lc_menu_pad();
             if (b5_transport && !b5_fan) {
                 /* THE LOCAL SLOT, not always slot 0. PadData strides 4 bytes per
                    player ({u16 held, u16 pressed}); on the child data_0209f250 is
@@ -16358,6 +16799,11 @@ int main(void)
         if (selftest && frame == 0)
             fprintf(stderr, "[w] rendered\n");
 
+        /* THE FADER WIPE'S MESH (hal/fader_wipes.cpp, THE WIPE'S PICTURE): the
+           iris FaderWipe::AdvanceFade queued at phase 2, submitted into this
+           frame's geometry now that the frame is open and before it is
+           rasterised. Nothing queued on a frame with no wipe moving. */
+        port_fader_wipe_render();
         ph_begin(&t_phase);
         /* clear: build one row, memcpy the rest (0xFF101820 is not a
            repeating byte pattern, so memset cannot do it directly) */
@@ -16373,6 +16819,46 @@ int main(void)
         /* the rollback probe's re-run skips the rasteriser (SM64DS_ROLLBACK_DET_SKIP) */
         if (!rb_resim_skip_render() && !rb_skip_render())
         ntr::gx_render(fb);
+        /* run interp1: the tick's 3D is final; key its recorded stream and
+           pair it with the previous tick's. A frame that went down the host
+           split path, under the F5 menu, in the stacked layout or through
+           the rollback skip is a SNAP: its extra pictures are this one. */
+        if (g_ip_on > 0) {
+            /* TOO SLOW TO HELP: when a blended picture costs more than a
+               third of a tick (measured: a software raster at RenderScale 4,
+               13 to 15 ms), almost no blend fits beside the tick's own work,
+               and the snapshots would only make the tick itself late. Such ticks snap without them; one tick in
+               128 still blends, so the cost is measured again and the pictures
+               come back when the machine or the setting allows. */
+            static unsigned ip_retry;
+            const double tick_ms = PORT_VBLANK_MS * port_frame_divider();
+            const int ip_slow = g_ip_cost_ms > 0.3 * tick_ms &&
+                                (++ip_retry & 127u) != 0;
+            if (!ip_slow) ip_snap(g_ip_p3, fb);
+            const int ip_snapit = (menu_on || !k1_rom || stacked || ip_slow ||
+                                   rb_skip_render() || rb_resim_skip_render())
+                                      ? 1 : 0;
+            ntr::GxInterpStats ist;
+            g_ip_tick_ok = ntr::gx_interp_commit(data_0209b3ec, ip_snapit, &ist);
+            ++g_ip_serial;
+            g_ip_tick_shown = 0;
+            g_ip_rate_ok = port_frame_rate_target() * port_frame_divider() > 60;
+            {
+                LARGE_INTEGER qf;
+                QueryPerformanceFrequency(&qf);
+                g_ip_tick_t0 = g_ip_t0;
+                g_ip_tick_len = (long long)(PORT_VBLANK_MS * port_frame_divider() *
+                                            (double)qf.QuadPart / 1000.0 + 0.5);
+            }
+            g_ip_fade_on = 0;
+            if (ip_trace())
+                fprintf(stderr, "[interp] tick f%d groups %d matched %d "
+                        "unmatched %d teleport %d shape %d snap %d eye_step "
+                        "%.3f turn %.2f moved %.3f\n", port_rom_frame(),
+                        ist.groups, ist.matched, ist.unmatched, ist.teleport,
+                        ist.shape, ist.snap, ist.eye_step, ist.turn_deg,
+                        ist.max_moved);
+        }
         /* ENGINE-A 2D OVER 3D. The top screen is engine A: its 2D BGs and OBJ
            layer composite over the 3D frame in hardware. The dialogue box lives
            there (BG3 + the cursor OBJ), so raster engine A's 2D and write only
@@ -16387,57 +16873,27 @@ int main(void)
            so F3 text stays readable over the panel. */
         if (!rb_skip_render())
         hal_sub_screen_present(&fb.px[0][0], ntr::active_w, ntr::active_h);
+        if (g_ip_on > 0 && g_ip_tick_ok) ip_snap(g_ip_p2, fb);
 
-        /* THE FADE COMPOSITE, ENGINE A'S. The DS colour-special-effects unit's
-           brightness modes (BLDCNT mode 2 or 3 plus BLDY) darken or brighten
-           the whole of an engine's 2D panel after the scene is drawn. IT IS PER
-           ENGINE: 0x4000050/0x4000054 is engine A's and only engine A's, and
-           0x4001050/0x4001054 is engine B's. `fb` is engine A's framebuffer, so
-           this loop is engine A's blend and nothing else; engine B's is applied
-           where engine B's picture is composed (hal/sub_screen.cpp passes
-           port_fader_blend_state_sub into ppu_compose_stacked). This used to
-           claim it covered both screens, which was true only because every fade
-           the fader drives writes both engines the same values -- ov007's
-           opening writes them differently and that is where it showed.
-           Composited after the sub-screen present but before the host debug
-           overlay, because the overlay is not game content and must stay
-           readable through a fade. Phase 2 (port_frame_phase2) wrote those
-           registers this frame; read them back and do the same fade over the finished
-           framebuffer. EVY is the 0..16 coefficient: fade-to-black is
-           rgb*(1 - evy/16), fade-to-white is rgb + (255-rgb)*evy/16, both per
-           channel, which is exactly the DS blend math (16/16 = full).
-
-           THE CORNER-INSET PANEL IS INSIDE `fb` WHEN THIS RUNS and therefore
-           takes engine A's blend. That is unchanged and deliberate: the inset is
-           a host convenience, not an LCD, and reproducing it exactly keeps a
-           layout change a layout change. The STACKED layout is the one where
-           both halves are real DS screens, and there each half now carries its
-           own engine's blend. */
-        {
-            int evy = 0, toWhite = 0;
-            if (!rb_skip_render() && port_fader_blend_state(&evy, &toWhite)) {
-                if (evy > 16) evy = 16;
-                for (int y = 0; y < ntr::active_h; ++y) {
-                    uint32_t *row = fb.px[y];
-                    for (int x = 0; x < ntr::active_w; ++x) {
-                        uint32_t p = row[x];
-                        int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff,
-                            b = p & 0xff;
-                        if (toWhite) {
-                            r += ((255 - r) * evy) >> 4;
-                            g += ((255 - g) * evy) >> 4;
-                            b += ((255 - b) * evy) >> 4;
-                        } else {
-                            r -= (r * evy) >> 4;
-                            g -= (g * evy) >> 4;
-                            b -= (b * evy) >> 4;
-                        }
-                        row[x] = 0xFF000000u | ((uint32_t)r << 16) |
-                                 ((uint32_t)g << 8) | (uint32_t)b;
-                    }
-                }
-            }
+        /* THE FADE COMPOSITE, ENGINE A'S, now runs from the tail of
+           hal_sub_screen_present just above (hal/message_compositor.cpp,
+           port_engine_a_fade), at the same point in this frame: after the
+           corner-inset panel went into `fb`, before the host debug overlay.
+           It moved so the scene loop (hal/scene_boot.cpp), which calls the same
+           present and never ran this block, applies engine A's BLDCNT / BLDY
+           too. */
+        /* run interp1 (resolved at the fold): the engine-A fade above is now
+           applied per pixel inside hal_sub_screen_present, so tick N's picture
+           already carries it and a blended picture cannot replay it as one
+           coefficient. A tick with an engine-A brightness fade in motion is
+           a SNAP: every picture of it is the tick's own, already faded. */
+        if (g_ip_on > 0 && g_ip_tick_ok) {
+            int ip_evy = 0, ip_white = 0;
+            if (port_fader_blend_state(&ip_evy, &ip_white))
+                g_ip_tick_ok = 0;
         }
+
+        if (g_ip_on > 0 && g_ip_tick_ok) ip_snap(g_ip_p4, fb);   /* run interp1 */
 
         /* SM64DS_FADE_WATCH=<from>[-<to>] (ROM frames): one line per frame of
            the picture a player would be looking at, beside every register that
@@ -16589,12 +17045,16 @@ int main(void)
         if (!rb_skip_render())
             toast_draw(surf);
 
+        /* run interp1: the tick's finished picture, the last of the four
+           snapshots, and the proof probe (inert unless asked for) */
+        if (g_ip_on > 0 && g_ip_tick_ok) ip_snap(g_ip_p5, fb);
+        if (g_ip_on > 0) ip_probe(frame, port_rom_frame());
         if (stacked && !rb_skip_render())
             stack_present_arm(stack_img, hwnd);
 
         ph_begin(&t_phase);
         if (!rb_resim_skip_render() && !rb_skip_render())
-        present();
+        ip_present_tick();
         ph_end(PH_BLIT, t_phase);
         ph_end(PH_FRAME, t_frame);
         rb_frame_body_end();
