@@ -524,6 +524,7 @@ void obj_decide(uint32_t dispcnt, uint8_t *skip) {
     }
 }
 
+// obj_spans / bg_spans copy this and sample_bg's addressing for the skip cache: change them too (SM64DS_TWOD_VERIFY=1).
 void raster_obj(uint32_t dispcnt, const uint8_t *skip, ObjPixel (*obj)[256],
                 uint8_t (*objwin)[256]) {
     static const int kSizes[3][4][2] = {
