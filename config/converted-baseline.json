@@ -2437,7 +2437,7 @@
     "src/actors/daObjKb1Billboard_c.cpp#_ZN19daObjKb1Billboard_c6RenderEv",
     "src/actors/daObjKb1Billboard_c.cpp#_ZN19daObjKb1Billboard_cD0Ev",
     "src/actors/daObjKb1Billboard_c.cpp#_ZN19daObjKb1Billboard_cD1Ev",
-    "src/actors/daObjKb1Billboard_c.cpp#__sinit_d_a_obj_kb1_billboard.cpp",
+    "src/actors/daObjKb1Billboard_c.cpp#__sinit_daObjKb1Billboard_c.cpp",
     "src/actors/daObjKb1Billboard_c.cpp#daObjKb1Billboard_c_classInit",
     "src/actors/daObjKi_Fune_c.cpp#_ZN14daObjKi_Fune_c16CleanupResourcesEv",
     "src/actors/daObjKi_Fune_c.cpp#_ZN14daObjKi_Fune_c6RenderEv",
