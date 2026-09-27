@@ -11,6 +11,7 @@
 #include "ntr/smooth.h"
 #include "ntr/texture.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -4769,6 +4770,10 @@ struct IpGroup {
     int mtx0;            // first index into IpRec::mtx
     int has_pos;
     double px, py, pz;   // world position of its first absolute LOAD
+    int has_rel;
+    double rx, ry, rz;   // else the translation its first matrix command
+                         // carries, in that command's own space: a signature
+                         // that tells two instances of one model apart
     int match;           // group index in the previous record, or -1
     uint32_t ev0, ev1;   // event range [ev0, ev1)
 };
@@ -4794,6 +4799,8 @@ struct IpRec {
 
 IpRec g_ipr[3];
 int g_ip_w = 0, g_ip_c = -1, g_ip_p = -1;   // writing, current (N), previous (N-1)
+double g_ip_prev_step = 0, g_ip_prev_turn = 0;   // the camera's previous tick
+double g_ip_prev_disp[3] = {0, 0, 0};
 
 /* The replay's own buffers, kept so a picture does not reallocate them. */
 std::vector<GxTriangle> g_ip_tris;
@@ -4848,18 +4855,23 @@ void ip_world(const uint32_t *p, int np, const int32_t v[12], double out[3]) {
                  d[2] * v[j * 3 + 2] / 4096.0;
 }
 
-/* THE TWO THRESHOLDS, in the view matrix's own units (fx / 4096). Calibrated on
-   moving-sweep play, see the lane report; a normal tick moves the camera a few
-   units and turns it a few degrees. SM64DS_INTERP_CUT / SM64DS_INTERP_TELE
-   override them for a measurement. */
+/* THE THRESHOLDS, in the view matrix's own units (fx / 4096). Measured over
+   every mounted level, 600 moving frames each (51 x 600 ticks): a camera that
+   is following play moved at most 17.9 units and turned at most 12.0 degrees
+   in one tick, and the jumps that are cuts were 92.6 units / 22.3 degrees
+   and more. So a tick past 40 units or 18 degrees that also jumped more than
+   twice as far as the tick before is a cut (gx_interp_commit). A paired object
+   whose world position jumps past 64 units in one tick is a teleport (every
+   object that was following play moved under that). SM64DS_INTERP_CUT,
+   SM64DS_INTERP_TURN and SM64DS_INTERP_TELE override them for a measurement. */
 double ip_cut_units() {
     static double v = -1;
-    if (v < 0) { const char *e = getenv("SM64DS_INTERP_CUT"); v = e ? atof(e) : 96.0; }
+    if (v < 0) { const char *e = getenv("SM64DS_INTERP_CUT"); v = e ? atof(e) : 40.0; }
     return v;
 }
 double ip_cut_degrees() {
     static double v = -1;
-    if (v < 0) { const char *e = getenv("SM64DS_INTERP_TURN"); v = e ? atof(e) : 35.0; }
+    if (v < 0) { const char *e = getenv("SM64DS_INTERP_TURN"); v = e ? atof(e) : 18.0; }
     return v;
 }
 double ip_tele_units() {
@@ -4936,8 +4948,12 @@ void ip_build_groups(IpRec &r) {
     auto close = [&]() {
         if (cur < 0) return;
         IpGroup &G = r.groups[cur];
-        G.key = key_src ? ((uint64_t)1 << 40) | key_src
-                        : ((uint64_t)2 << 40) | ghash;
+        /* the matrix shape rides in the key's top bits: two kinds of draw
+           that happen to stream the same display list or the same geometry
+           opcodes with different matrix setups are different things */
+        const uint64_t sh = (uint64_t)((shape ^ (shape >> 16)) & 0xFFFFu) << 44;
+        G.key = sh | (key_src ? ((uint64_t)1 << 40) | key_src
+                              : ((uint64_t)2 << 40) | ghash);
         G.shape = shape;
     };
     for (uint32_t i = 0; i < r.sealed; ++i) {
@@ -4948,6 +4964,7 @@ void ip_build_groups(IpRec &r) {
             G.key = 0; G.shape = 0; G.nmtx = 0;
             G.mtx0 = static_cast<int>(r.mtx.size());
             G.has_pos = 0; G.px = G.py = G.pz = 0;
+            G.has_rel = 0; G.rx = G.ry = G.rz = 0;
             G.match = -1;
             G.ev0 = i; G.ev1 = i;
             r.groups.push_back(G);
@@ -4973,6 +4990,21 @@ void ip_build_groups(IpRec &r) {
                 G.has_pos = 1;
                 G.px = w[0]; G.py = w[1]; G.pz = w[2];
             }
+            /* the placement: the first MULT / TRANS translation, which is
+               where an instance differs from its siblings when they all
+               LOAD the same view first; a LOAD's own when there is none */
+            if ((!G.has_rel || (G.has_rel == 2 && e.cmd != 0x16 && e.cmd != 0x17)) &&
+                e.mode != MTX_TEX &&
+                (e.cmd == 0x16 || e.cmd == 0x17 || e.cmd == 0x18 ||
+                 e.cmd == 0x19 || e.cmd == 0x1C)) {
+                const int o = (e.cmd == 0x1C) ? 0
+                            : (e.np == 16 ? 12 : 9);
+                const uint32_t *q = &r.par[e.off];
+                G.has_rel = (e.cmd == 0x16 || e.cmd == 0x17) ? 2 : 1;
+                G.rx = (int32_t)q[o] / 4096.0;
+                G.ry = (int32_t)q[o + 1] / 4096.0;
+                G.rz = (int32_t)q[o + 2] / 4096.0;
+            }
         } else if (ip_is_geom(e.cmd)) {
             if (!geom) key_src = e.src;
             geom = true;
@@ -4987,6 +5019,28 @@ double ip_dist2(const IpGroup &a, const IpGroup &b) {
     return dx * dx + dy * dy + dz * dz;
 }
 
+double ip_rel2(const IpGroup &a, const IpGroup &b) {
+    const double dx = a.rx - b.rx, dy = a.ry - b.ry, dz = a.rz - b.rz;
+    return dx * dx + dy * dy + dz * dz;
+}
+
+/* How unlike two instances of one key are: their world positions when both
+   have one, else the translations their first matrix commands carry, else how
+   far apart they sit in the key's draw order. */
+double ip_unlike(const IpGroup &a, const IpGroup &b, int ia, int ib) {
+    const bool p = a.has_pos && b.has_pos, r = a.has_rel && b.has_rel;
+    if (p || r) return (p ? ip_dist2(a, b) : 0.0) + (r ? ip_rel2(a, b) : 0.0);
+    const double d = (double)(ia - ib);
+    return 1e12 + d * d;
+}
+
+struct IpCand { double d; int i, j; };
+bool ip_cand_less(const IpCand &x, const IpCand &y) {
+    if (x.d != y.d) return x.d < y.d;
+    if (x.i != y.i) return x.i < y.i;
+    return x.j < y.j;
+}
+
 /* Pair C's groups with P's, then fill C.blend. Returns counts through st. */
 void ip_match(IpRec &C, const IpRec &P, GxInterpStats *st) {
     std::map<uint64_t, std::vector<int>> kc, kp;
@@ -4994,27 +5048,40 @@ void ip_match(IpRec &C, const IpRec &P, GxInterpStats *st) {
     for (size_t i = 0; i < P.groups.size(); ++i) kp[P.groups[i].key].push_back((int)i);
     const double tele2 = ip_tele_units() * ip_tele_units();
     int matched = 0, tele = 0, shapebad = 0;
+    double max_moved = 0;
     for (auto &kv : kc) {
         auto it = kp.find(kv.first);
         if (it == kp.end()) continue;
         const std::vector<int> &lc = kv.second, &lp = it->second;
         std::vector<int> pair(lc.size(), -1);
-        if (lc.size() == lp.size()) {
-            for (size_t i = 0; i < lc.size(); ++i) pair[i] = lp[i];
+        /* ONE INSTANCE EACH SIDE pairs directly. SEVERAL (the same model part
+           drawn for many objects: coins, goombas, a particle kind) pair by
+           likeness, closest first, whatever order they were drawn in: the
+           actor lists re-sort and a spawn or a death shifts every later
+           instance, so draw order alone would cross-pair them. A key with a
+           very long list on both sides falls back to draw order, which is
+           right whenever nothing was born or died. */
+        if (lc.size() == 1 && lp.size() == 1) {
+            pair[0] = lp[0];
+        } else if (lc.size() * lp.size() > 20000) {
+            for (size_t i = 0; i < lc.size() && i < lp.size(); ++i) pair[i] = lp[i];
         } else {
-            std::vector<char> used(lp.size(), 0);
-            for (size_t i = 0; i < lc.size(); ++i) {
-                const IpGroup &gc = C.groups[lc[i]];
-                int best = -1;
-                double bd = 0;
+            std::vector<IpCand> cand;
+            cand.reserve(lc.size() * lp.size());
+            for (size_t i = 0; i < lc.size(); ++i)
                 for (size_t j = 0; j < lp.size(); ++j) {
-                    if (used[j]) continue;
-                    const IpGroup &gp = P.groups[lp[j]];
-                    double d = (gc.has_pos && gp.has_pos) ? ip_dist2(gc, gp)
-                                                          : (double)j;
-                    if (best < 0 || d < bd) { best = (int)j; bd = d; }
+                    IpCand c;
+                    c.d = ip_unlike(C.groups[lc[i]], P.groups[lp[j]], (int)i, (int)j);
+                    c.i = (int)i;
+                    c.j = (int)j;
+                    cand.push_back(c);
                 }
-                if (best >= 0) { used[best] = 1; pair[i] = lp[best]; }
+            std::sort(cand.begin(), cand.end(), ip_cand_less);
+            std::vector<char> usedc(lc.size(), 0), usedp(lp.size(), 0);
+            for (const IpCand &c : cand) {
+                if (usedc[c.i] || usedp[c.j]) continue;
+                usedc[c.i] = usedp[c.j] = 1;
+                pair[c.i] = lp[c.j];
             }
         }
         for (size_t i = 0; i < lc.size(); ++i) {
@@ -5023,8 +5090,14 @@ void ip_match(IpRec &C, const IpRec &P, GxInterpStats *st) {
             const IpGroup &gp = P.groups[pair[i]];
             if (gc.nmtx != gp.nmtx || gc.shape != gp.shape) { ++shapebad; continue; }
             if (gc.has_pos && gp.has_pos && ip_dist2(gc, gp) > tele2) { ++tele; continue; }
+            if (!(gc.has_pos && gp.has_pos) && gc.has_rel && gp.has_rel &&
+                ip_rel2(gc, gp) > 16.0 * tele2) { ++tele; continue; }
             gc.match = pair[i];
             ++matched;
+            if (gc.has_pos && gp.has_pos) {
+                const double d = std::sqrt(ip_dist2(gc, gp));
+                if (d > max_moved) max_moved = d;
+            }
         }
     }
     C.blend.assign(C.sealed, -1);
@@ -5050,6 +5123,7 @@ void ip_match(IpRec &C, const IpRec &P, GxInterpStats *st) {
         st->unmatched = (int)C.groups.size() - matched;
         st->teleport = tele;
         st->shape = shapebad;
+        st->max_moved = (float)max_moved;
     }
 }
 
@@ -5165,7 +5239,38 @@ int gx_interp_commit(const int32_t view[12], int snap, GxInterpStats *st) {
         if (dot < -1) dot = -1;
         const double turn = std::acos(dot) * 57.29577951308232;
         if (st) { st->eye_step = (float)step; st->turn_deg = (float)turn; }
-        if (step > ip_cut_units() || turn > ip_cut_degrees()) why |= 16;
+        /* A CUT IS A JUMP, NOT A SPEED. A scripted camera can sweep fast and
+           smoothly (the star-get swoop moves 40 to 55 units a tick for
+           several ticks, decelerating), and that motion should blend like
+           any other. What a cut does is move far MORE than the tick before
+           did: past the threshold AND more than twice the previous tick's
+           step (or turn), or off in another direction than the tick before
+           went (a sweep keeps its heading; one cut after another does not).
+           Past ten times the threshold it is a cut whatever came before. A
+           snap for any other reason leaves no "before", so the next tick is
+           judged against standing still. */
+        double hd = 1.0;
+        const double pl = std::sqrt(g_ip_prev_disp[0] * g_ip_prev_disp[0] +
+                                    g_ip_prev_disp[1] * g_ip_prev_disp[1] +
+                                    g_ip_prev_disp[2] * g_ip_prev_disp[2]);
+        if (pl > 1e-9 && step > 1e-9)
+            hd = (dx * g_ip_prev_disp[0] + dy * g_ip_prev_disp[1] +
+                  dz * g_ip_prev_disp[2]) / (pl * step);
+        const bool jump = step > ip_cut_units() &&
+                          (step > 2.0 * g_ip_prev_step || hd < 0.5 ||
+                           step > 10.0 * ip_cut_units());
+        const bool spin = turn > ip_cut_degrees() &&
+                          (turn > 2.0 * g_ip_prev_turn || turn > 60.0);
+        if (jump || spin) why |= 16;
+        g_ip_prev_step = step;
+        g_ip_prev_turn = turn;
+        g_ip_prev_disp[0] = dx;
+        g_ip_prev_disp[1] = dy;
+        g_ip_prev_disp[2] = dz;
+    }
+    if (why & ~16) {
+        g_ip_prev_step = g_ip_prev_turn = 0.0;
+        g_ip_prev_disp[0] = g_ip_prev_disp[1] = g_ip_prev_disp[2] = 0.0;
     }
     r.snap = why;
     if (P && !why) ip_match(r, *P, st);
@@ -5262,7 +5367,10 @@ int gx_interp_begin(float alpha) {
                         tmp[k] = k < n ? (uint32_t)ip_lerp(P.par[pe.off + k], pp[k], alpha)
                                        : pp[k];
                     pp = tmp;
-                } else if (b == -2 && ip_proj_perspective()) {
+                } else if (b == -2 && alpha < 1.0f && ip_proj_perspective()) {
+                    /* at alpha 1 the blended camera IS tick N's and the
+                       re-view is the identity: skip it, so the last picture
+                       of a tick is the tick's own to the bit */
                     ip_recamera(pp, e.np, tmp);
                     pp = tmp;
                 }
@@ -5368,9 +5476,11 @@ void gx_interp_dump_groups(void *fp, int frame) {
             const IpGroup &Q = g_ipr[g_ip_p].groups[G.match];
             if (G.has_pos && Q.has_pos) d = std::sqrt(ip_dist2(G, Q));
         }
-        std::fprintf(f, "[interpg] f%d g%zu key %010llx nmtx %d match %d pos %.1f %.1f %.1f moved %.2f\n",
+        const IpEv &e0 = C.ev[C.mtx[G.mtx0]];
+        std::fprintf(f, "[interpg] f%d g%zu key %010llx nmtx %d match %d pos %.1f %.1f %.1f moved %.2f first %02x/m%d rel %d %.2f %.2f %.2f\n",
                      frame, i, (unsigned long long)G.key, G.nmtx, G.match,
-                     G.px, G.py, G.pz, d);
+                     G.px, G.py, G.pz, d, e0.cmd, e0.mode, G.has_rel, G.rx,
+                     G.ry, G.rz);
     }
 }
 

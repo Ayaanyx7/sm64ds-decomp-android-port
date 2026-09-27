@@ -7396,6 +7396,13 @@ static void ip_probe(int frame, int rom_frame)
         bmps = e ? atoi(e) : 1;
     }
     if (k <= 0 || rom_frame < from || rom_frame > to) return;
+    if (!g_ip_tick_ok) {
+        /* a SNAP tick: there is no blend, every picture of it is the tick's
+           own frame (the pacer presents fb unchanged) */
+        fprintf(stderr, "[interp] probe f%d SNAP: all %d pictures of this tick "
+                "are the tick's own picture\n", rom_frame, k);
+        return;
+    }
     if (ip_trace() >= 2) ntr::gx_interp_dump_groups(stderr, rom_frame);
     for (int j = 1; j <= k; ++j) {
         const double alpha = (double)j / k;
@@ -16761,9 +16768,10 @@ int main(void)
             if (ip_trace())
                 fprintf(stderr, "[interp] tick f%d groups %d matched %d "
                         "unmatched %d teleport %d shape %d snap %d eye_step "
-                        "%.3f turn %.2f\n", port_rom_frame(), ist.groups,
-                        ist.matched, ist.unmatched, ist.teleport, ist.shape,
-                        ist.snap, ist.eye_step, ist.turn_deg);
+                        "%.3f turn %.2f moved %.3f\n", port_rom_frame(),
+                        ist.groups, ist.matched, ist.unmatched, ist.teleport,
+                        ist.shape, ist.snap, ist.eye_step, ist.turn_deg,
+                        ist.max_moved);
         }
         /* ENGINE-A 2D OVER 3D. The top screen is engine A: its 2D BGs and OBJ
            layer composite over the 3D frame in hardware. The dialogue box lives
@@ -16989,10 +16997,8 @@ int main(void)
 
         /* run interp1: the tick's finished picture, the last of the four
            snapshots, and the proof probe (inert unless asked for) */
-        if (g_ip_on > 0 && g_ip_tick_ok) {
-            ip_snap(g_ip_p5, fb);
-            ip_probe(frame, port_rom_frame());
-        }
+        if (g_ip_on > 0 && g_ip_tick_ok) ip_snap(g_ip_p5, fb);
+        if (g_ip_on > 0) ip_probe(frame, port_rom_frame());
         if (stacked && !rb_skip_render())
             stack_present_arm(stack_img, hwnd);
 

@@ -338,6 +338,7 @@ struct GxInterpStats {
                           // dropped, 8 no sealed record, 16 camera cut
     float eye_step;       // camera eye movement since the previous tick
     float turn_deg;       // camera view-axis turn since the previous tick
+    float max_moved;      // largest world move among the paired groups
 };
 void gx_interp_arm(int on);
 int gx_interp_armed();
