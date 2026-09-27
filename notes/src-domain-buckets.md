@@ -21,7 +21,7 @@ policy is withdrawn:
   every promotion after #2270 had landed in `src/actors/<Class>.cpp`, that
   `tools/tubuild.py` already defaults `promoted_source` there, and that running two
   conventions side by side was the actual defect. #2426 made `src/actors/` the live
-  convention; the follow-up move PR (#PRNUM) moved the 114 promoted TUs that were still under
+  convention; the follow-up move PR ([#3278](https://github.com/tangosdev/sm64ds-decomp/pull/3278)) moved the 114 promoted TUs that were still under
   `game/actors/` into it and retired the `d_a_<snake>` stems.
 - **Minigame scenes are unchanged:** `src/minigames/` keeps its `d_s_mg_<snake>.cpp` files.
 - The `game/actors/<Class>/` directories left behind hold unpromoted ov063 one-function
