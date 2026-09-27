@@ -116,6 +116,9 @@ Extra keys:
     F8   save a state (not during cutscenes)
     F9   load the saved state (it is not loaded automatically at startup)
 
+Smooth motion is off by default. To turn it on, pick a Frame rate above 30
+in the launcher's settings and add "SmoothMotion": 1 to settings.json.
+
 
 WHAT YOU CAN DO IN IT
 ---------------------
