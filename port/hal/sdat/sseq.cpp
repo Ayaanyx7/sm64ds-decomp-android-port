@@ -118,6 +118,12 @@ struct Track {
      * channel a sweep made of them and the channel plays it out on its own;
      * see note_sweep. */
     int portaKey, portaOn, portaTime, sweepPitch;
+    /* MODULATION, the track's LFO parameters (track +0x18 target, +0x19
+     * speed, +0x1a depth, +0x1b range, +0x1c delay; TrackInit's 0x037FBFBC:
+     * target 0, speed 16, depth 0, range 1, delay 0). Written by 0xCA-0xCD /
+     * 0xE0 and by TRACK_PARAM 0x19 / 0x1a from the game, copied onto the
+     * track's sounding channels every frame; the channel runs the LFO. */
+    int modTarget, modSpeed, modDepth, modRange, modDelay;
     int noteWait;           // C7: notes block the track for their duration
     // A note played with duration 0 under noteWait blocks the track until the
     // CHANNELS it owns have ended, rather than for a tick count. That is what
@@ -819,6 +825,7 @@ int run_track(Player &pl, int pi, int ti)
                 /* Same TrackInit default as track 0; 0xC6 overrides it. */
                 t2.bendRange = 2; t2.priority = 64; t2.noteWait = 1;
                 t2.portaKey = 60;       /* TrackInit, 0x037FDB28 */
+                t2.modSpeed = 16; t2.modRange = 1;      /* 0x037FBFBC */
                 t2.prog = 0;
             }
             break;
@@ -914,16 +921,23 @@ int run_track(Player &pl, int pi, int ti)
             break; }
         case 0xcf: { int v = argU8(); if (condition) tk.portaTime = v; break; }
 
-        // Accepted and parsed, but not rendered: modulation and the per-track
-        // ADSR override. Argument lengths are correct so the stream stays in
+        /* MODULATION, the same table: 0xCA depth (+0x1a), 0xCB speed
+           (+0x19), 0xCC target (+0x18), 0xCD range (+0x1b), 0xE0 delay
+           (+0x1c). */
+        case 0xca: { int v = argU8(); if (condition) tk.modDepth = v & 0xff; break; }
+        case 0xcb: { int v = argU8(); if (condition) tk.modSpeed = v & 0xff; break; }
+        case 0xcc: { int v = argU8(); if (condition) tk.modTarget = v & 0xff; break; }
+        case 0xcd: { int v = argU8(); if (condition) tk.modRange = v & 0xff; break; }
+        case 0xe0:                              // modulation delay
+            { int v = argS16(); if (condition) tk.modDelay = v & 0xffff; }
+            break;
+
+        // Accepted and parsed, but not rendered: the per-track ADSR
+        // override. Argument lengths are correct so the stream stays in
         // sync; the effect is simply not applied yet.
-        case 0xca: case 0xcb: case 0xcc: case 0xcd:
         case 0xd0: case 0xd1: case 0xd2:
         case 0xd3: case 0xd6:
             argU8();
-            break;
-        case 0xe0:                              // modulation delay
-            argS16();
             break;
         case 0xe3:                              // sweep pitch, track +0x16
             { int v = argS16(); if (condition) tk.sweepPitch = (sd_s16)v; }
@@ -1108,6 +1122,7 @@ int sd_seq_start(int p, const sd_u8 *seqBase, sd_u32 startOff,
        player's cpr is NOT folded in here; see the sum at the note-on. */
     t0.bendRange = 2; t0.priority = 64; t0.noteWait = 1;
     t0.portaKey = 60;           /* TrackInit, 0x037FDB28 */
+    t0.modSpeed = 16; t0.modRange = 1;          /* 0x037FBFBC */
 
     // A multi-track sequence opens with 0xFE <u16 mask>; track 0's own code
     // follows the 0x93 open-track commands, so nothing special is needed
@@ -1175,6 +1190,13 @@ static void player_update_channels(int p)
     for (int i = 0; i < SD_CHANNELS; i++) {
         if (!g_note[i].active || g_note[i].player != p) continue;
         retune_note_pitch(i);
+        /* The track's modulation fields onto the channel (0x037FD710..
+           0x037FD724), on the same channels the pitch reaches. */
+        if (!g_note[i].released) {
+            const Track &tk = g_pl[p].tr[g_note[i].track];
+            sd_mix_set_lfo(i, tk.modTarget, tk.modSpeed, tk.modDepth,
+                           tk.modRange, tk.modDelay);
+        }
     }
 }
 
@@ -1279,6 +1301,22 @@ void sd_seq_set_track_pitch(int p, unsigned trackMask, int pitch)
         if (!g_note[i].active || g_note[i].player != p) continue;
         if (!(trackMask & (1u << g_note[i].track))) continue;
         retune_note_pitch(i);
+    }
+}
+
+/* TRACK_PARAM 0x19 and 0x1a: the track's modulation SPEED and DEPTH (track
+ * +0x19 / +0x1a in SM64DS's ARM7, byte-wide: func_0205ac5c and func_0205ac84
+ * send them with size 1). Their caller is func_ov007_020bda8c, which ramps the
+ * depth 0..0x7f and the speed 5..0x28 on tracks 0xf of one voice every frame.
+ * Storing is the whole command; the next track update copies them onto the
+ * sounding channels. */
+void sd_seq_set_track_mod(int p, unsigned trackMask, int param, int value)
+{
+    if (p < 0 || p >= SD_PLAYERS || !g_pl[p].active) return;
+    for (int t = 0; t < SD_TRACKS; t++) {
+        if (!(trackMask & (1u << t))) continue;
+        if (param == 0x19) g_pl[p].tr[t].modSpeed = value & 0xff;
+        else if (param == 0x1a) g_pl[p].tr[t].modDepth = value & 0xff;
     }
 }
 

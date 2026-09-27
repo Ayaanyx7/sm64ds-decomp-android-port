@@ -149,6 +149,10 @@ void sd_mix_set_rate(int ch, double rate);      // ditto, playback rate only
 void sd_mix_set_pitch_base(int ch, double baseStep, int userPitch);
 void sd_mix_set_user_pitch(int ch, int units);
 void sd_mix_set_sweep(int ch, int sweepPitch, int sweepLength);
+// The channel's LFO parameters (target 0 pitch / 1 volume / 2 pan, speed,
+// depth, range, delay), copied from the owning track every frame.
+void sd_mix_set_lfo(int ch, int target, int speed, int depth, int range,
+                    int delay);
 void sd_mix_frame(void);              // advance every envelope one 192Hz frame
 void sd_mix_render(sd_s16 *dst, int frames);   // stereo interleaved
 // Lane VOICE: an extra fill run over the finished stereo block, AFTER the host
@@ -196,6 +200,8 @@ void sd_seq_set_pan(int player, int pan);         // 0..127, 64 centre
 // definitions in sseq.cpp.
 void sd_seq_set_track_volume_db10(int player, unsigned trackMask, int db10);
 void sd_seq_set_track_pitch(int player, unsigned trackMask, int pitch);
+// TRACK_PARAM 0x19 (modulation speed) and 0x1a (modulation depth).
+void sd_seq_set_track_mod(int player, unsigned trackMask, int param, int value);
 void sd_seq_frame(void);                          // one 192Hz sequencer frame
 void sd_seq_reset(void);
 int  sd_seq_active(int player);

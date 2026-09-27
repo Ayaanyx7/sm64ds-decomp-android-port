@@ -100,6 +100,18 @@ struct Channel {
     int sweepPitch, sweepLength, sweepCounter;
     int modPitch;       // the sweep (and modulation) share of pitchUnits
     int pitchUnits;
+
+    /* THE CHANNEL'S LFO (ch+0x28: target, speed, depth, range, u16 delay;
+       +0x2e delay counter, +0x30 phase counter), copied from the owning
+       track's modulation fields every frame by the track update
+       (0x037FD710..0x037FD724) and run by the channel update: value
+       0x037FBEEC, step 0x037FBF3C, scaling 0x037FBB98. Target 0 bends the
+       pitch, 1 the volume, 2 the pan; depth 0 is off, which is every voice
+       that never asked for modulation. lfoDb10 / lfoPan are this frame's
+       volume and pan terms, added at the render. */
+    int lfoTarget, lfoSpeed, lfoDepth, lfoRange, lfoDelay;
+    int lfoDelayCounter, lfoCounter;
+    int lfoDb10, lfoPan;
 };
 
 Channel g_ch[SD_CHANNELS];
@@ -302,6 +314,11 @@ void sd_mix_start(int ch, const SdatWave *w, const SdatNote *n,
     c.volDb10 = volume_db10;
     c.pan = pan < 0 ? 0 : (pan > 127 ? 127 : pan);
     c.priority = priority;
+    /* The LFO defaults the channel setup gives every new voice (0x037FBFBC:
+       target pitch, speed 16, depth 0, range 1, delay 0) and the counters the
+       start clears (0x037FBFAC). */
+    c.lfoSpeed = 16;
+    c.lfoRange = 1;
 
     c.ampl = AMPL_MIN;
     c.state = ENV_ATTACK;
@@ -402,6 +419,64 @@ void sd_mix_set_sweep(int ch, int sweepPitch, int sweepLength)
     c.sweepLength = sweepLength;
     c.sweepCounter = 0;
 }
+
+/* The track's modulation fields, as the track update copies them onto every
+   channel it owns each frame. The counters are the channel's and are left
+   alone. */
+void sd_mix_set_lfo(int ch, int target, int speed, int depth, int range,
+                    int delay)
+{
+    if (ch < 0 || ch >= SD_CHANNELS || !g_ch[ch].active) return;
+    Channel &c = g_ch[ch];
+    c.lfoTarget = target & 0xff;
+    c.lfoSpeed = speed & 0xff;
+    c.lfoDepth = depth & 0xff;
+    c.lfoRange = range & 0xff;
+    c.lfoDelay = delay & 0xffff;
+}
+
+namespace {
+
+/* The ARM7's LFO sine, a 33-entry quarter wave: round(127 * sin(pi/2 * i/32)).
+   The formula reproduces the cartridge's table (arm7.bin, just below the
+   decibel table at 0x03805860) entry for entry. 0x037FB6F4 folds the 0..0x7f
+   phase onto it. */
+int lfo_sin(int x)
+{
+    static signed char t[33];
+    static int built;
+    if (!built) {
+        built = 1;
+        for (int i = 0; i <= 32; i++)
+            t[i] = (signed char)floor(127.0 * sin(1.5707963267948966 * i / 32.0)
+                                      + 0.5);
+    }
+    if (x < 0x20) return t[x];
+    if (x < 0x40) return t[0x40 - x];
+    if (x < 0x60) return -t[x - 0x40];
+    return -t[0x20 - (x - 0x60)];
+}
+
+/* One frame of the channel's LFO: the value at the current phase, THEN the
+   step (0x037FBB98 reads before it advances). Returns the raw
+   sin * depth * range product; the caller scales it by target. */
+int lfo_frame(Channel &c)
+{
+    int v = 0;
+    if (c.lfoDepth != 0 && c.lfoDelayCounter >= c.lfoDelay)
+        v = lfo_sin(c.lfoCounter >> 8) * c.lfoDepth * c.lfoRange;
+    if (c.lfoDelayCounter < c.lfoDelay) {
+        c.lfoDelayCounter++;
+    } else {
+        const int inc = c.lfoSpeed << 6;
+        int hi = (c.lfoCounter + inc) >> 8;
+        while (hi >= 0x80) hi -= 0x80;
+        c.lfoCounter = ((c.lfoCounter + inc) & 0xff) | (hi << 8);
+    }
+    return v;
+}
+
+}  // namespace
 
 /* The release rate this channel fades at, in the envelope's own units per
    192 Hz tick, and how many ticks it needs to reach the -72.3 dB floor from
@@ -520,16 +595,18 @@ void ct_frame(void)
             l.on = 0;
             continue;
         }
-        int vol = c.ampl / 128 + c.volDb10;
+        int vol = c.ampl / 128 + c.volDb10 + c.lfoDb10;
         if (vol < -723) vol = -723;
-        if (l.on && l.rate == c.step && l.vol == vol && l.pan == c.pan
+        int pan = c.pan + c.lfoPan;
+        pan = pan < 0 ? 0 : (pan > 127 ? 127 : pan);
+        if (l.on && l.rate == c.step && l.vol == vol && l.pan == pan
             && l.state == c.state && c.seq == (unsigned)l.on)
             continue;
         fprintf(g_ctFile, "[ct] f=%u ch=%d %s rate=%.6f vol=%d pan=%d%s\n",
                 g_ctFrame, i, st[c.state >= 0 && c.state <= 4 ? c.state : 0],
-                c.step, vol, c.pan,
+                c.step, vol, pan,
                 (!l.on || c.seq != (unsigned)l.on) ? " start" : "");
-        l.rate = c.step; l.vol = vol; l.pan = c.pan; l.state = c.state;
+        l.rate = c.step; l.vol = vol; l.pan = pan; l.state = c.state;
         l.on = (int)c.seq;
     }
 }
@@ -548,7 +625,22 @@ void sd_mix_frame(void)
                           * (c.sweepLength - c.sweepCounter) / c.sweepLength);
             c.sweepCounter++;
         }
-        c.modPitch = sweep;
+        /* The LFO term, scaled by its target the ARM7's way (0x037FBBC4..:
+           pitch and pan << 6, volume * 60, then >> 14 on the 64-bit value)
+           and routed where the channel update routes it (0x037FC630..). */
+        int lfoPitch = 0;
+        c.lfoDb10 = 0;
+        c.lfoPan = 0;
+        const int lv = lfo_frame(c);
+        if (lv != 0) {
+            switch (c.lfoTarget) {
+            case 0: lfoPitch = (int)(((long long)lv * 64) >> 14); break;
+            case 1: c.lfoDb10 = (int)(((long long)lv * 60) >> 14); break;
+            case 2: c.lfoPan = (int)(((long long)lv * 64) >> 14); break;
+            default: break;
+            }
+        }
+        c.modPitch = sweep + lfoPitch;
         apply_pitch(c);
         switch (c.state) {
         case ENV_ATTACK:
@@ -599,12 +691,15 @@ void sd_mix_render(sd_s16 *dst, int frames)
             Channel &c = g_ch[i];
             if (!c.active || !c.pcm) continue;
             int envDb10 = c.ampl / 128;
-            int total = envDb10 + c.volDb10;
+            int total = envDb10 + c.volDb10 + c.lfoDb10;
             if (total < -723) total = -723;
             double g = db10_to_gain(total);
             if (g <= 0.0) continue;
-            double gl = g * (127 - c.pan) / 127.0;
-            double gr = g * c.pan / 127.0;
+            int pan = c.pan + c.lfoPan;
+            if (pan < 0) pan = 0;
+            if (pan > 127) pan = 127;
+            double gl = g * (127 - pan) / 127.0;
+            double gr = g * pan / 127.0;
 
             sd_s16 *o = dst + (done * 2);
             for (int k = 0; k < n; k++, o += 2) {

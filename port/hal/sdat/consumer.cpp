@@ -479,6 +479,10 @@ void exec(const Node *n)
         if (n->c == 9) sd_seq_set_pan(slot, 64 + (int)(signed char)n->d);
         else if (n->c == 0x0a) sd_seq_set_track_volume_db10(slot, mask, n->d);
         else if (n->c == 0x0c) sd_seq_set_track_pitch(slot, mask, n->d);
+        // 0x19 / 0x1a: the track's modulation speed and depth (track +0x19 /
+        // +0x1a in the ARM7), from func_0205ac5c / func_0205ac84.
+        else if (n->c == 0x19 || n->c == 0x1a)
+            sd_seq_set_track_mod(slot, mask, n->c, n->d);
         else note_param(4, n->c);
         break;
     }
