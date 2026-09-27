@@ -12,6 +12,7 @@
 #include "ntr/texture.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -3045,9 +3046,10 @@ struct Inv255 {
 static const Inv255 inv255;
 
 /* --- parallel raster -------------------------------------------------------
-   The screen is split BY ROW: worker k takes rows k, k+T, k+2T and so on.
-   Every row is written by exactly one worker, and every worker walks the whole
-   triangle list in submission order, so the depth resolution and the
+   The screen is split BY ROW into tiles of whole rows (see the bins beside
+   gx_render; before run perf2 worker k took rows k, k+T, k+2T and so on).
+   Every row is written by exactly one worker, and every worker walks its
+   triangles in submission order, so the depth resolution and the
    translucent blend over the framebuffer happen in the same order, against the
    same pixels, as they did on one thread. The frame that comes out is
    bit-for-bit the frame one thread produced: this partitions the work, it does
@@ -3122,6 +3124,18 @@ int raster_threads() {
             unsigned hc = std::thread::hardware_concurrency();
             n = hc ? (int)hc : 1;
             if (n > 8) n = 8;   /* past this the row bands stop paying */
+            /* SMALL MACHINES GET TWO WORKERS A CORE, AT LEAST FOUR (run perf2,
+               lane RASTER). Measured on a 6-core box pinned to two cores
+               with the old interleaved bands: two bands 12.2 ms of raster a
+               frame, four 7.4, eight 7.5. One worker a core leaves a core
+               idle whenever the other is descheduled or its rows run long,
+               and hardware_concurrency is exactly what a two-core laptop
+               reports. The rows a worker draws do not depend on how many
+               workers there are, so this moves time and never a pixel. */
+            if (n < 4) {
+                n = hc ? 2 * (int)hc : 4;
+                if (n < 4 && hc >= 2) n = 4;
+            }
         }
         if (n < 1) n = 1;
     }
@@ -3189,9 +3203,9 @@ MaskRow *g_tlattr;
  * it has already written: a filter fed on its own output smears instead of
  * smoothing. One scratch copy of the frame solves it -- read from the copy,
  * write to the framebuffer -- and it is the reason this is a buffer and not a
- * three-row window: the raster's row bands are INTERLEAVED (a thread owns
- * rows tid, tid+nt, ...), so a thread's neighbours are always another
- * thread's rows.
+ * three-row window: the raster's rows are split between threads (tiles of
+ * whole rows since run perf2, interleaved rows before it), so a row's
+ * neighbours can always be another thread's rows.
  * ON THE HEAP for the raster buffers' reason one block down, and allocated
  * only on the first frame the setting is actually on, so a run with the key
  * absent holds nothing. */
@@ -3941,6 +3955,51 @@ inline bool row_span(const SpanTri &st, float r0, float r1, float r2,
 
 }  // namespace
 
+namespace {
+
+/* ---- THE FRAME'S TRIANGLES BINNED BY ROW TILE (run perf2, lane RASTER) ----
+   The raster used to give each worker every nt-th row of the screen, so every
+   worker walked every triangle and set each one up again for itself: about a
+   fifth of the raster's CPU on eight threads. Now the screen is cut into
+   tiles of whole rows, each triangle is listed once, in submission order,
+   under every tile its clamped rows reach, and a worker takes the next tile
+   off a counter and draws only that tile's list. One worker owns each row
+   for the whole frame and walks its triangles in submission order, opaque
+   pass then translucent pass, so every pixel sees the same operations in the
+   same order as before: this partitions the work, it does not reorder it.
+   Built on the calling thread before any worker starts; read-only after.
+
+   THE STENCIL CLEARS ARE THE ONE PIECE OF STATE THAT IS NOT PER TRIANGLE. A
+   new shadow mask group clears the whole stencil, and whether a triangle
+   starts one depends on the triangle before it in the list, not on where
+   either of them is on the screen. So the clear points are found once, here,
+   as a running count per triangle (g_clr_cum), and a tile clears its own rows
+   when the count has moved since the last triangle it drew, and once more at
+   the end of the pass if it moved after that. Between two triangles a tile
+   draws, nothing else writes its rows, so a clear taken late is the same
+   clear. A tile clears its rows across the whole allocation width and every
+   tile runs, drawn on or not, which is the old per-band clear exactly. */
+std::vector<int> g_bin_off[2], g_bin_idx[2];
+std::vector<int> g_clr_cum;
+int g_clr_total;
+struct BinTri {
+    int i, pass, k0, k1;
+};
+std::vector<BinTri> g_bin_tmp;
+
+/* Rows a tile holds, SM64DS_RASTER_TILE to override for measurement. */
+int raster_tile_rows() {
+    static int n = -1;
+    if (n < 0) {
+        const char *e = getenv("SM64DS_RASTER_TILE");
+        n = e ? atoi(e) : 16;
+        if (n < 1) n = 1;
+    }
+    return n;
+}
+
+}  // namespace
+
 /* ---- SM64DS_RASTER_AB=1: THE OLD RASTER AGAINST THE NEW, ON EVERY FRAME ----
    (run perf2, lane RASTER)
 
@@ -4565,9 +4624,9 @@ void gx_render(Framebuffer &fb) {
        lets the 2D compositor tell a pixel this engine drew from a pixel the
        frame's clear left, which is the whole of "a BG at priority 3 sits
        BEHIND the 3D layer at priority 1".
-       It is written from the raster bands, and that is safe for the reason
-       the framebuffer itself is: a band owns the rows y == tid (mod nt) and
-       no other band touches them. */
+       It is written from the raster tiles, and that is safe for the reason
+       the framebuffer itself is: a tile owns its rows and no other tile
+       touches them. */
     for (int y = 0; y < ch; ++y) std::memset(g_cover[y], 0, (size_t)cw);
 
     /* --- shadow-polygon (POLYGON_ATTR mode 3) machinery -------------------
@@ -4708,7 +4767,7 @@ void gx_render(Framebuffer &fb) {
         }
     }
 
-    /* One row band. tid picks the rows: tid, tid+nt, tid+2nt...
+    /* One row tile: rows tile * tile_h up to the next tile's first.
        TWO PASSES, the hardware's own order: every opaque polygon first,
        then the translucent ones, submission order kept within each pass.
        The game leans on this -- the castle moat's water submits before
@@ -4722,7 +4781,9 @@ void gx_render(Framebuffer &fb) {
        drew sets the low bound to 1, so the band runs the translucent and
        shadow pass alone over the buffers the card filled. */
     int pass_lo = 0, pass_hi = 1;
-    auto band_impl = [&](int tid, int nt, auto ftag) {
+    /* the tile shape, set below once the frame's work is known */
+    int tile_h = SCREEN_H, ntiles = 1, nt = 1;
+    auto band_impl = [&](int tile, auto ftag) {
     /* THE SAMPLER'S MODE IS A COMPILE-TIME CONSTANT IN HERE, which is the
        whole point of the shape (run hd2). The body below is instantiated once
        per mode and the mode is chosen once per band, so the nearest body --
@@ -4730,23 +4791,28 @@ void gx_render(Framebuffer &fb) {
        filter, no branch per pixel and no call through a pointer: it is the
        instruction stream it was before filtering existed. */
     constexpr int FILTER = decltype(ftag)::value;
-    bool prev_mask = false;
-    for (int pass = pass_lo; pass <= pass_hi; ++pass)
-    for (const GxTriangle &t : g.tris) {
-        if (static_cast<int>(t.translucent) != pass) continue;
-        if (only && t.dbg_tex != only) continue;
-        if (have_shadow && pass == 1) {
-            /* The stencil clears when a NEW mask group begins -- a mask
-               polygon arriving after any non-mask polygon -- so one
-               volume's leftover bits cannot leak into the next volume's
-               draw. Every band walks the same list in the same order and
-               clears only its own rows, so this is the single-thread
-               semantics exactly. */
-            const bool is_mask = t.mode == 3 && t.polyid == 0;
-            if (is_mask && !prev_mask)
-                for (int y = tid; y < SCREEN_H; y += nt)
-                    std::memset(stencil[y], 0, SCREEN_W);
-            prev_mask = is_mask;
+    /* This tile's rows. */
+    const int ty0 = tile * tile_h;
+    const int ty1 = (ty0 + tile_h < SCREEN_H ? ty0 + tile_h : SCREEN_H) - 1;
+    auto clear_stencil = [&] {
+        for (int y = ty0; y <= ty1; ++y) std::memset(stencil[y], 0, SCREEN_W);
+    };
+    for (int pass = pass_lo; pass <= pass_hi; ++pass) {
+    /* The stencil clears when a NEW mask group begins -- a mask polygon
+       arriving after any non-mask polygon -- so one volume's leftover bits
+       cannot leak into the next volume's draw. Where those points fall in
+       the list is worked out once, beside the bins; this tile replays them
+       over its own rows. */
+    const bool clr_pass = have_shadow && pass == 1;
+    int clr_done = 0;
+    const int *bi = g_bin_idx[pass].data() + g_bin_off[pass][(size_t)tile];
+    const int *const be =
+        g_bin_idx[pass].data() + g_bin_off[pass][(size_t)tile + 1];
+    for (; bi != be; ++bi) {
+        const GxTriangle &t = g.tris[(size_t)*bi];
+        if (clr_pass && g_clr_cum[(size_t)*bi] != clr_done) {
+            clear_stencil();
+            clr_done = g_clr_cum[(size_t)*bi];
         }
         const GxVertex &a = t.v[0], &b = t.v[1], &c = t.v[2];
         const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
@@ -4836,7 +4902,9 @@ void gx_render(Framebuffer &fb) {
         const uint32_t poly_a = (t.alpha >= 31 || t.alpha == 0) ? 31u : t.alpha;
 
         /* first row of this band at or after miny */
-        const int y_first = miny + (((tid - miny) % nt) + nt) % nt;
+        /* this tile's rows of the triangle */
+        const int y_lo = miny > ty0 ? miny : ty0;
+        const int y_hi = maxy < ty1 ? maxy : ty1;
 
         if (t.mode == 3) {
             /* Shadow polygons, the two-step protocol from the block comment
@@ -4846,7 +4914,7 @@ void gx_render(Framebuffer &fb) {
             if (t.polyid == 0) {
                 /* the mask: set stencil where the depth test FAILS; no
                    colour, no depth, no texture */
-                for (int y = y_first; y <= maxy; y += nt) {
+                for (int y = y_lo; y <= y_hi; ++y) {
                     const float py = y + 0.5f;
                     const float r0 = eax * (py - a.y);
                     const float r1 = ebx * (py - b.y);
@@ -4875,7 +4943,7 @@ void gx_render(Framebuffer &fb) {
                 /* the drawn shadow: examine stencilled pixels, clear the
                    bit whether it draws or not, blend where the depth test
                    passes and the recorded polygon ID differs */
-                for (int y = y_first; y <= maxy; y += nt) {
+                for (int y = y_lo; y <= y_hi; ++y) {
                     const float py = y + 0.5f;
                     const float r0 = eax * (py - a.y);
                     const float r1 = ebx * (py - b.y);
@@ -4945,7 +5013,7 @@ void gx_render(Framebuffer &fb) {
             }
             continue;
         }
-        for (int y = y_first; y <= maxy; y += nt) {
+        for (int y = y_lo; y <= y_hi; ++y) {
             const float py = y + 0.5f;
             /* the half of each edge function that only moves with the row */
             const float r0 = eax * (py - a.y);
@@ -5065,41 +5133,129 @@ void gx_render(Framebuffer &fb) {
             }
         }
     }
+    if (clr_pass && clr_done != g_clr_total) clear_stencil();
+    }
     };  // band_impl
 
     /* ONE BAND ENTRY, THREE BODIES BEHIND IT. The switch runs once per band
        per frame -- at most eight times a frame -- and hands the raster a body
        with the filter mode already resolved. The pool below still sees a
        plain two-argument callable, so nothing about the threading changed. */
-    auto band = [&](int tid, int nt) {
+    auto band = [&](int tile) {
         switch (filt) {
         case 1:
-            band_impl(tid, nt, std::integral_constant<int, 1>{});
+            band_impl(tile, std::integral_constant<int, 1>{});
             break;
         case 2:
-            band_impl(tid, nt, std::integral_constant<int, 2>{});
+            band_impl(tile, std::integral_constant<int, 2>{});
             break;
         default:
-            band_impl(tid, nt, std::integral_constant<int, 0>{});
+            band_impl(tile, std::integral_constant<int, 0>{});
             break;
         }
     };
 
-    /* Small scenes (the smokes, a single model) are not worth waking anyone
-       up for; the handover costs more than the fill. */
-    const int nt = (g.tris.size() < 256) ? 1 : raster_threads();
-    /* the band's own type, named out here rather than inside the lambda below:
-       decltype of a captured name inside a lambda body is a reference type and
-       there is no pointer to a reference */
-    typedef decltype(band) B;
+    /* ---- THE BINS, AND HOW MANY THREADS THE FRAME IS WORTH (run perf2) ----
+       One walk of the list on this thread: each triangle's pass and clamped
+       rows, by the same expressions and the same early outs the tile body
+       uses (a triangle left out here is one the body would have skipped
+       anyway), and the frame's work as the sum of the clamped boxes. The
+       thread decision is that work, not the triangle count: the title is a
+       handful of screen-sized triangles and ran on one thread under the old
+       "fewer than 256 triangles" rule, at about 17 ms a frame. Below the
+       threshold the handover costs more than the fill, and the frame runs
+       as ONE tile the height of the allocation, which is the old
+       single-thread walk. */
+    {
+        const int px0 = present_x(), py0 = present_y();
+        const int px1 = px0 + present_w() - 1, py1 = py0 + present_h() - 1;
+        g_bin_tmp.clear();
+        long long work = 0;
+        for (size_t i = 0; i < g.tris.size(); ++i) {
+            const GxTriangle &t = g.tris[i];
+            const int pass = static_cast<int>(t.translucent);
+            if (pass != 0 && pass != 1) continue;
+            if (only && t.dbg_tex != only) continue;
+            const GxVertex &a = t.v[0], &b = t.v[1], &c = t.v[2];
+            const float area =
+                (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            if (std::fabs(area) < 1e-6f) continue;
+            const bool backface = area > 0.0f;
+            if (backface && !(t.cull & 1)) continue;
+            if (!backface && !(t.cull & 2)) continue;
+            int minx = static_cast<int>(std::floor(std::fmin(a.x, std::fmin(b.x, c.x))));
+            int maxx = static_cast<int>(std::ceil(std::fmax(a.x, std::fmax(b.x, c.x))));
+            int miny = static_cast<int>(std::floor(std::fmin(a.y, std::fmin(b.y, c.y))));
+            int maxy = static_cast<int>(std::ceil(std::fmax(a.y, std::fmax(b.y, c.y))));
+            if (minx < px0) minx = px0;
+            if (miny < py0) miny = py0;
+            if (maxx > px1) maxx = px1;
+            if (maxy > py1) maxy = py1;
+            if (maxx < minx || maxy < miny) continue;
+            work += (long long)(maxx - minx + 1) * (long long)(maxy - miny + 1);
+            g_bin_tmp.push_back(BinTri{(int)i, pass, miny, maxy});
+        }
+        const int pool_n = raster_threads();
+        nt = (pool_n > 1 && work >= 16384) ? pool_n : 1;
+        tile_h = nt > 1 ? raster_tile_rows() : SCREEN_H;
+        ntiles = (SCREEN_H + tile_h - 1) / tile_h;
+        for (int ps = 0; ps < 2; ++ps) g_bin_off[ps].assign((size_t)ntiles + 1, 0);
+        for (BinTri &bt : g_bin_tmp) {
+            bt.k0 /= tile_h;
+            bt.k1 /= tile_h;
+            for (int k = bt.k0; k <= bt.k1; ++k) ++g_bin_off[bt.pass][(size_t)k + 1];
+        }
+        for (int ps = 0; ps < 2; ++ps) {
+            for (int k = 0; k < ntiles; ++k)
+                g_bin_off[ps][(size_t)k + 1] += g_bin_off[ps][(size_t)k];
+            g_bin_idx[ps].resize((size_t)g_bin_off[ps][(size_t)ntiles]);
+        }
+        /* filled in list order, so each tile's list is in submission order */
+        static std::vector<int> fill[2];
+        for (int ps = 0; ps < 2; ++ps)
+            fill[ps].assign(g_bin_off[ps].begin(), g_bin_off[ps].end() - 1);
+        for (const BinTri &bt : g_bin_tmp)
+            for (int k = bt.k0; k <= bt.k1; ++k)
+                g_bin_idx[bt.pass][(size_t)fill[bt.pass][(size_t)k]++] = bt.i;
+        /* the stencil clear points, replayed per tile in band_impl */
+        g_clr_total = 0;
+        if (have_shadow) {
+            g_clr_cum.assign(g.tris.size(), 0);
+            bool prev_mask = false;
+            for (size_t i = 0; i < g.tris.size(); ++i) {
+                const GxTriangle &t = g.tris[i];
+                if (static_cast<int>(t.translucent) == 1 &&
+                    !(only && t.dbg_tex != only)) {
+                    const bool is_mask = t.mode == 3 && t.polyid == 0;
+                    if (is_mask && !prev_mask) ++g_clr_total;
+                    prev_mask = is_mask;
+                }
+                g_clr_cum[i] = g_clr_total;
+            }
+        }
+    }
+    /* Each worker takes the next tile off the counter until none are left. */
+    std::atomic<int> next_tile(0);
+    auto worker = [&](int, int) {
+        for (;;) {
+            const int k = next_tile.fetch_add(1);
+            if (k >= ntiles) break;
+            band(k);
+        }
+    };
+    /* the worker's own type, named out here rather than inside the lambda
+       below: decltype of a captured name inside a lambda body is a reference
+       type and there is no pointer to a reference */
+    typedef decltype(worker) W;
     auto run_passes = [&](int lo, int hi) {
         pass_lo = lo;
         pass_hi = hi;
         if (nt <= 1) {
-            band(0, 1);
+            for (int k = 0; k < ntiles; ++k) band(k);
         } else {
-            pool(nt).run([](void *p, int tid, int n) { (*static_cast<B *>(p))(tid, n); },
-                         &band);
+            next_tile.store(0);
+            pool(nt).run([](void *p, int tid, int n) { (*static_cast<W *>(p))(tid, n); },
+                         &worker);
         }
     };
     /* THE SAME PASSES UNDER SM64DS_RASTER_AB, see the block above gx_render:
