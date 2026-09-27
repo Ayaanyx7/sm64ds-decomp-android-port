@@ -1051,11 +1051,54 @@ static void snd_break_probe(void)
     }
 }
 
+/* ---- SM64DS_SND_SYSPROBE=<frame>:<id>[,<frame>:<id>...]: A SYSTEM SOUND, ON
+ * DEMAND ---------------------------------------------------------------------
+ *
+ * Calls the ROM's own func_02012790(id) at the given hosted sound frame: the
+ * 2D system-sound entry the red coin uses for its numbered jingle
+ * (src/func_ov002_020b16c4.c: func_02012790(NumRedCoins() + 0x2f)), the game
+ * over screen for 0x9a / 0x9b, the minigames for their chimes. id is the
+ * SEQARC 2 entry. It exists because the jingle only plays for a red coin
+ * placed by the level with its own index, so a scripted run cannot collect
+ * one on demand; this issues the same call the coin would and everything
+ * after it is the game's. Off unless set. */
+extern "C" unsigned int func_02012790(unsigned int id);
+
+static void snd_sys_probe(void)
+{
+    static int n = -1, frame;
+    static int at[16], id[16];
+    if (n < 0) {
+        n = 0;
+        const char *e = getenv("SM64DS_SND_SYSPROBE");
+        while (e && *e && n < 16) {
+            char *end;
+            long f = strtol(e, &end, 0);
+            if (end == e || *end != ':') break;
+            long v = strtol(end + 1, &end, 0);
+            at[n] = (int)f; id[n] = (int)v; n++;
+            e = end;
+            while (*e == ',' || *e == ' ') ++e;
+        }
+        if (n) fprintf(stderr, "[sysprobe] armed: %d call(s) of the ROM's own "
+                       "func_02012790\n", n);
+    }
+    if (!n) return;
+    ++frame;
+    for (int i = 0; i < n; i++)
+        if (at[i] == frame) {
+            fprintf(stderr, "[sysprobe] frame %d: func_02012790(0x%x)\n",
+                    frame, (unsigned)id[i]);
+            func_02012790((unsigned int)id[i]);
+        }
+}
+
 extern "C" void sdat_host_tick(void)
 {
     sd_consumer_init();
     snd_coin_probe();
     snd_break_probe();
+    snd_sys_probe();
     // The ARM9's sound frame first, then the ARM7's: that is the order on
     // hardware (func_020132d8 -> func_0204f03c runs in the game's update, the
     // other core consumes after), and it matters here because the recycle and
