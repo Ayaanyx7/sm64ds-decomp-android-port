@@ -112,6 +112,8 @@ double db10_to_gain(int db10)
 
 }  // namespace
 
+namespace { void ct_open(void); }   // SM64DS_CHAN_TRACE, below sd_mix_frame
+
 // port/rollback: the output stage muted while a rewound window is re-run.
 // Voices still start and envelopes still advance, so a sound that began
 // inside the window is heard from where the replay leaves it; only the bytes
@@ -125,6 +127,7 @@ void sd_mix_reset(void)
     if (!latched) {
         latched = 1;
         g_voice_trace = getenv("SM64DS_VOICE_TRACE") != 0;
+        ct_open();
     }
     memset(g_ch, 0, sizeof g_ch);
     g_tickAcc = 0;
@@ -385,6 +388,67 @@ int sd_mix_active(int ch)
     return (ch >= 0 && ch < SD_CHANNELS) ? g_ch[ch].active : 0;
 }
 
+/* ---- SM64DS_CHAN_TRACE=<path> (or =1 for stderr): the per-frame channel trace --
+ *
+ * One line per sounding channel per 192 Hz frame IN WHICH ITS OUTPUT MOVED:
+ * the playback rate, the total attenuation the render applies (envelope plus
+ * external volume, tenths of a dB, floored at -723) and the pan. It is the
+ * port's side of the question "does this voice bend / fade / move the way the
+ * sequence data says", answered per frame rather than per note-on, which is
+ * the one thing SM64DS_PITCH_DUMP cannot show: a voice whose pitch never moves
+ * prints ONE line there whether or not the data asked it to move.
+ *
+ * Latched once, off by default, one predictable branch per frame when off. It
+ * reads the channel state and writes nothing back. */
+namespace {
+FILE *g_ctFile;
+int g_ctOn;
+unsigned g_ctFrame;
+struct CtLast { double rate; int vol, pan, state, on; };
+CtLast g_ctLast[SD_CHANNELS];
+
+void ct_open(void)
+{
+    static int latched;
+    if (latched) return;
+    latched = 1;
+    const char *p = getenv("SM64DS_CHAN_TRACE");
+    if (!p || !*p) return;
+    g_ctFile = (!strcmp(p, "1") || !strcmp(p, "-")) ? stderr : fopen(p, "w");
+    if (!g_ctFile) return;
+    g_ctOn = 1;
+    fprintf(g_ctFile, "[ct] f = 192 Hz frame; rate = sample frames per output "
+            "frame at %d Hz; vol = envelope + external volume in tenths of a "
+            "dB (-723 = silent); pan 0..127\n", (int)SD_MIX_RATE);
+}
+
+void ct_frame(void)
+{
+    g_ctFrame++;
+    static const char *st[] = { "off", "atk", "dec", "sus", "rel" };
+    for (int i = 0; i < SD_CHANNELS; i++) {
+        const Channel &c = g_ch[i];
+        CtLast &l = g_ctLast[i];
+        if (!c.active) {
+            if (l.on) fprintf(g_ctFile, "[ct] f=%u ch=%d end\n", g_ctFrame, i);
+            l.on = 0;
+            continue;
+        }
+        int vol = c.ampl / 128 + c.volDb10;
+        if (vol < -723) vol = -723;
+        if (l.on && l.rate == c.step && l.vol == vol && l.pan == c.pan
+            && l.state == c.state && c.seq == (unsigned)l.on)
+            continue;
+        fprintf(g_ctFile, "[ct] f=%u ch=%d %s rate=%.6f vol=%d pan=%d%s\n",
+                g_ctFrame, i, st[c.state >= 0 && c.state <= 4 ? c.state : 0],
+                c.step, vol, c.pan,
+                (!l.on || c.seq != (unsigned)l.on) ? " start" : "");
+        l.rate = c.step; l.vol = vol; l.pan = c.pan; l.state = c.state;
+        l.on = (int)c.seq;
+    }
+}
+}  // namespace
+
 void sd_mix_frame(void)
 {
     for (int i = 0; i < SD_CHANNELS; i++) {
@@ -419,6 +483,7 @@ void sd_mix_frame(void)
             break;
         }
     }
+    if (g_ctOn) ct_frame();
 }
 
 void sd_seq_frame(void);   // forward: the sequencer shares this clock
