@@ -1674,6 +1674,8 @@ int hal_window_focused(void);
 void hal_sub_screen_frame_begin(void);
 void hal_sub_screen_present(unsigned int *dst, int w, int h);
 void hal_sub_screen_probe(void);
+/* the level-clear save menu's pad step: up / down / A on the pressed word */
+void hal_lc_menu_pad(void);
 /* the camera buttons drawn on the bottom screen, hit-tested against the touch
    record the panel fills (hal/sub_screen.cpp wraps Stage::CheckCameraInput
    with the split-symbol bridge the host Ctrl block needs) */
@@ -12659,6 +12661,11 @@ int main(void)
                 for (int b5_i = 0; b5_i < 4; ++b5_i)
                     *(unsigned short *)((char *)data_020a0e5a + b5_i * 4) =
                         *(unsigned short *)((char *)data_020a0e58 + b5_i * 4 + 2);
+            /* the level-clear save menu's pad step (hal/sub_screen.cpp's
+               banner over hal_lc_menu_pad): on the pressed word the ROM just
+               built, before the tick reads it; inert outside that menu */
+            if (!b5_transport)
+                hal_lc_menu_pad();
             if (b5_transport && !b5_fan) {
                 /* THE LOCAL SLOT, not always slot 0. PadData strides 4 bytes per
                    player ({u16 held, u16 pressed}); on the child data_0209f250 is
