@@ -4,10 +4,9 @@
 // 1/128 of a tenth of a decibel, running from -92544 (= -723 * 128, i.e.
 // -72.3 dB, the DS's silence floor) up to 0. Attack is multiplicative in
 // that log domain, decay and release are linear in it, and the rate
-// conversion Cnv_Fall below is the ARM7's. The one place this departs from
-// hardware is the 0..127 -> decibel table (see sd_cnv_vol in sdat.cpp): the
-// ROM's table is in an ARM7 binary nobody has decompiled, so a log curve
-// stands in for it.
+// conversion Cnv_Fall below is the ARM7's. The 0..127 -> decibel table is the
+// ARM7's square-law one (sd_cnv_vol in sdat.cpp has the address and the
+// check against the cartridge).
 //
 // Resampling is linear interpolation. The DS does the same thing in
 // hardware, so this is not a shortcut.

@@ -170,7 +170,8 @@ void sd_mix_reset(void);
 void sd_consumer_reset(void);
 
 // dB conversion shared by the sequencer and the mixer: 0..127 -> tenths of
-// a dB in -723..0, the DS's own volume range.
+// a dB in -723..0, the DS's own volume range, through the ARM7's square-law
+// table (0x03805860).
 int sd_cnv_vol(int v);
 
 // ---- sequencer ----------------------------------------------------------
