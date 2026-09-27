@@ -28,7 +28,7 @@ extern CLPS_Block    data_ov009_02112bf8;
    places across the tree, always to mean "not the ordinary single-player run". */
 extern unsigned char data_0209f2d8;
 /* The one global SaveData instance (include/SaveData.h). Indexed as int[] here,
-   the way d_a_set_se.cpp does it; [2] is the 0x008 unlock word. */
+   the way daSetSE_c.cpp does it; [2] is the 0x008 unlock word. */
 extern int data_0209caa0[];
 
 unsigned char NumStars(void);

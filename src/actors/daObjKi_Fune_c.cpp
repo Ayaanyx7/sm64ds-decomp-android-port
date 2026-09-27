@@ -46,7 +46,7 @@
  * daObjKi_Fune_c_classInit_KI_FUNE_UP at 0x021129a0 and
  * daObjKi_Fune_c_classInit_KI_FUNE at 0x021129d0, sit directly above this run
  * and are left outside it; build/tu_map.json does not join them, and the
- * sibling that did join its factory (src/game/actors/d_a_obj_ki_ita.cpp) had
+ * sibling that did join its factory (src/actors/daObjKi_Ita_c.cpp) had
  * one, not two, to argue for.
  *
  * Known limits:

@@ -19,7 +19,7 @@
  * the collision-callback pair (0x0211d270..0x0211d2a0) between InitResources
  * and the factories. One delinks entry licenses one contiguous range, so the
  * class ships as three files -- the destructor pair beside this one, the four
- * factories in d_a_trs_trap_classinits.cpp -- with a manifest entry each. The
+ * factories in daTrsTrap_c_classInit.cpp -- with a manifest entry each. The
  * state bodies belong to a later TU of their own; they are called, never
  * defined, here.
  *

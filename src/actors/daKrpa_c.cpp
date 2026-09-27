@@ -5,7 +5,7 @@
  * and pulses in size from a frame table. With a player tracked, and while
  * it stands above data_0209f32c, it counts 115 frames and then spits: on
  * frame 30 of that animation it spawns KERONPA_FIRE (actor 0x10f, see
- * d_a_kp_fr.cpp) 80.0 in front of itself and plays sound 0x105. A collider
+ * daKpFr_c.cpp) 80.0 in front of itself and plays sound 0x105. A collider
  * hit with flag 0x10 knocks it away tumbling (a mega kill, state 3). A
  * touch while it is being eaten (flag 0x20000) sends it to state 2, which
  * poofs it once neither 0x20000 nor 0x40000 is set.

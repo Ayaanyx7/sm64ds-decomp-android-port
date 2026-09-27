@@ -24,7 +24,7 @@
  * deslop
  * Leftover: Sound::PlaySub stays mangled -- Fix12<int> by value (wall
  *   6az); the namespace spelling homes an 8-byte stack slot (measured
- *   in d_a_sld_mng.cpp). loop stays int: the row byte passes through
+ *   in daSldMng_c.cpp). loop stays int: the row byte passes through
  *   unconverted.
  * Leftover: SoundObjectCallbackOwner stays a shadow: entries 0-2 of
  *   the callback table are arm9 Sound:: starters, not daSoundObj_c

@@ -8,7 +8,7 @@
  * synthesized ctor from `return new` reproduces that sequence exactly, so the
  * hand-rolled operator-new/C2/vtable-store spelling is gone.
  *
- * SPLIT from d_a_trs_trap.cpp (see its header): the collision-callback pair
+ * SPLIT from daTrsTrap_c.cpp (see its header): the collision-callback pair
  * at 0x0211d270..0x0211d2a0 sits between InitResources and these factories,
  * and one delinks entry licenses one contiguous range. Reverse ROM order, as
  * there. C LINKAGE IS LOAD-BEARING -- the ROM symbols are the bare names.
