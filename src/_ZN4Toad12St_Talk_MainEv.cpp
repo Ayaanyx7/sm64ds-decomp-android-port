@@ -10,7 +10,19 @@ extern int _Z14ApproachLinearRsss(s16 *, s16, s16);
 extern int _ZN5Sound7PlaySubEjjj5Fix12IiEb(u32, u32, u32, int, int);
 extern void _ZN6Player11ShowMessageER7fBase_cjPK7Vector3hh(
     char *, char *, u32, const Vector3 *, u32, u32);
+#ifdef _MSC_VER
+/* THE STAR ID IS PASSED, AS THE ROM PASSES IT. IsStarCollectedInCurLevel
+   (src/IsStarCollectedInCurLevel.c) takes the star id. The ROM reaches it with
+   ldrb r0,[r6,#0x20c] (mStarID) still in r0 from the 0xff test at 0x021292e4,
+   so the call below needs no argument setup on ARM and byte-matches written
+   with none. On x86 an empty argument list pushes nothing and the callee read
+   whatever sat above the return address (this Toad's own address, 0x30031094,
+   on a spawned Toad), so the "already collected" test looked at a random bit.
+   Declared and called with the id, the host passes what r0 held. */
+extern int IsStarCollectedInCurLevel(int starID);
+#else
 extern int IsStarCollectedInCurLevel();
+#endif
 extern u8 NumStars();
 extern char *_ZN8dActor_c5SpawnEjjRK7Vector3PK10Vector3_16as(
     u32, u32, const void *, const void *, int, int);
@@ -80,7 +92,11 @@ void Toad::St_Talk_Main()
 
     if (mTalkFinished == 0) {
         mTalkFinished = 1;
+#ifdef _MSC_VER
+        if (mStarID != 0xff && IsStarCollectedInCurLevel(mStarID) == 0) {
+#else
         if (mStarID != 0xff && IsStarCollectedInCurLevel() == 0) {
+#endif
             if (NumStars() >= data_ov085_0212f27c[mStarReqIndex]) {
                 starPos.x = mPosX;
                 starPos.y = mPosY;
