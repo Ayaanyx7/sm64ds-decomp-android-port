@@ -2431,6 +2431,8 @@ extern "C" void port_ss_rollguard_hook(void (*)(void), void (*)(void));
 extern "C" void port_rollguard_stash(void);
 extern "C" void port_rollguard_unstash(void);
 
+#include "perf_trace.inc"   /* run perf2: SM64DS_PERF_TRACE, inert unset */
+
 /* ---- THE FRAME PACER'S CLOCK ------------------------------------------
    frame_pace below sleeps out the remainder of a frame budget that is 16.65ms
    or 33.3ms depending on what the running scene put in the ROM's own divider
@@ -2815,6 +2817,7 @@ static void frame_pace(void)
         const char *e = getenv("SM64DS_TRACE_PACE");
         trace = e ? atoi(e) : 0;
     }
+    pt_mark(PS_PACE);
     if (!qpf.QuadPart) QueryPerformanceFrequency(&qpf);
     QueryPerformanceCounter(&now);
     g_ip_pace_seen = now.QuadPart;
@@ -6986,7 +6989,27 @@ static const BITMAPINFO *g_present_stack_bi;
    the framebuffer's, which is the DS panel at whatever tier this binary was
    built for, so this is 4:3 at every tier -- and STACK_W/STACK_H are the same
    panel twice, stacked, so the stacked fit is 2:3. */
+static void present_body(void);
 static void present(void)
+{
+    /* run perf2: charge the blit to present, or to present_x when the
+       pacer is the caller (FrameRate's repeated pictures) */
+    if (g_pt_on > 0) {
+        static int first[2];
+        const int k = g_pt_kind > 0 ? 1 : 0;
+        pt_push(g_pt_stage == PS_PACE ? PS_PRESENT_X : PS_PRESENT);
+        present_body();
+        pt_pop();
+        if (!first[k] && g_pt_kind >= 0) {
+            first[k] = 1;
+            pt_milestone(k ? "first scene picture" : "first level picture");
+        }
+        return;
+    }
+    present_body();
+}
+
+static void present_body(void)
 {
     /* THE PICTURE BOUNDARY the card's clock is measured over. Closing the
        previous picture's measurement here rather than at the foot of this
@@ -7327,7 +7350,10 @@ static void ip_present_alpha(double alpha)
     LARGE_INTEGER q0, q1, q2, qf;
     QueryPerformanceFrequency(&qf);
     QueryPerformanceCounter(&q0);
-    if (!ip_build(alpha)) {
+    pt_push(PS_SMOOTH);
+    const int ip_built = ip_build(alpha);
+    pt_pop();
+    if (!ip_built) {
         ++g_ip_plain;
         present();
         return;
@@ -9689,6 +9715,8 @@ static int scene_window_run(void)
            QueryPerformanceCounter reads a frame, the same two the level loop
            has always paid. */
         double t_frame_scene;
+        pt_frame_begin(1, -1 - port_scene_env_want());
+        pt_mark(PS_SCENE_IN);
         ph_begin(&t_frame_scene);
         if (scene_menu_at >= 0 &&
             port_rom_frame_checked(frame, "scene-menu-at") == scene_menu_at)
@@ -9702,9 +9730,12 @@ static int scene_window_run(void)
 
         /* the scene's own frame; the menu's pause is its second argument, the
            same switch the level loop's game_ticked is */
+        pt_mark(PS_SCENE_TICK);
         port_scene_tick(port_rom_frame_checked(frame, "scene-tick"), !menu_on);
 
+        pt_mark(PS_SCENE_PRESENT);
         scene_host_present_frame(hwnd, stacked, fb);
+        pt_mark(PS_POST);
         /* THE HOSTED ARM7, EXACTLY ONCE A FRAME -- and port_scene_tick above
            has already done it on every frame that ticked the game, so this
            call is only for the frames that did not.
@@ -10044,6 +10075,7 @@ extern "C" void port_frame_ctrl_publish(void)
 
 int main(void)
 {
+    pt_arm();   /* run perf2: SM64DS_PERF_TRACE, inert unset */
     /* THE ASPECT IS CHOSEN HERE, ONCE, BEFORE ANYTHING TOUCHES THE FRAMEBUFFER.
        host_setting_aspect() reads the Aspect key from settings.json (or
        SM64DS_ASPECT, or the legacy SM64DS_WIDESCREEN) as a RATIO -- width over
@@ -10306,7 +10338,9 @@ int main(void)
        manifest sha. The pointer-rebase passes below (port_ov002_patch,
        port_cross_patch, the overlay syms patches) then run over the loaded
        bytes exactly as they would over baked-in ones. */
+    pt_milestone("io + winapi + pacer ready");
     port_romdata_load();
+    pt_milestone("romdata loaded");
 #endif
     /* SM64DS_DUMP_LEVEL_NAMES=1: print the debug level-select rows exactly as
        the menu's MENU_LEVEL row renders them -- row, id, name, entrance,
@@ -10366,6 +10400,7 @@ int main(void)
        span and names the four PXI arms it cannot run. */
     port_boot_rom_pre_main();
     _ZN4Heap18InitializeRootHeapEv();
+    pt_milestone("rom pre-main + root heap");
     if (!data_020a0ea0) return 2;
     /* and main()'s own first three calls, which the ROM makes after Entry has
        returned from func_02019780: the OS tick, the alarm system and the main
@@ -10580,6 +10615,7 @@ int main(void)
                         "by the port's starvation wake instead of by the ROM's "
                         "own VBlank\n");
     }
+    pt_milestone("sinits + patches done");
     if (port_scene_env_want() >= 0) {
         const int scene_rc =
             port_scene_want_window()
@@ -10695,6 +10731,7 @@ int main(void)
     /* everything func_0201a054 does BEFORE that line, in its order: the tick
        veneer and the boot timestamp, the VBlank handler install, the owner
        record and the debug name. hal/boot_os.cpp lists the arms it skips. */
+    pt_milestone("level boot begins");
     port_boot_rom_game_init_head();
     _ZN4Heap18InitializeGameHeapEjPS_(0x3b000, 0);
     if (!data_020a0eac_c) {
@@ -11797,6 +11834,8 @@ int main(void)
             mo_capture_opt = host_setting_mouse_capture();
         }
         ph_begin(&t_frame);
+        pt_frame_begin(0, port_level_id());
+        pt_mark(PS_HOST_IN);
         rb_frame_begin();
         ph_begin(&t_phase);
         /* the focus edge, read once a frame BEFORE any key is. Coming back,
@@ -15084,6 +15123,7 @@ int main(void)
             port_vs_match_end_hold();
             {
                 const double rb_t = rb_probe_mode() ? rb_now_ms() : 0.0;
+                pt_mark(PS_ROM_FRAME);
                 if (k1_rom) {
                     /* src/func_020197b8.c phase 4: `func_02044120();`, all five
                        walks. Its render walk (list 5) submits this frame's
@@ -15105,6 +15145,7 @@ int main(void)
                     port_actor_tick();
                 }
                 if (rb_probe_mode()) rb_note(RB_ACTOR_TICK, rb_now_ms() - rb_t);
+                pt_mark(PS_HOST_POST);
             }
             port_vs_stars_probe(frame);        /* TEMPORARY: SM64DS_VS_STARS */
             /* SM64DS_DOOR_PROBE's per-frame line, HERE rather than beside the
@@ -15477,6 +15518,7 @@ int main(void)
            records GetAngleToCamera reads. Without the second call the
            published angle never moves and Mario walks relative to a stale
            heading. */
+        pt_mark(PS_CAMERA);
         ph_begin(&t_phase);
         /* STAR1 fly-around, the cutscene-camera gate. While a cutscene script
            is running (data_0209fc48 != 0) the kuppa script feeds camera
@@ -16014,6 +16056,7 @@ int main(void)
            the render walk has already submitted into it (the Camera's Render
            and the rig first, then the Stage and every actor): nothing here
            may reset it. */
+        pt_mark(PS_SUBMIT);
         ph_begin(&t_phase);
         if (!k1_rom) {
             ntr::gx_reset();
@@ -16804,6 +16847,7 @@ int main(void)
            frame's geometry now that the frame is open and before it is
            rasterised. Nothing queued on a frame with no wipe moving. */
         port_fader_wipe_render();
+        pt_mark(PS_RASTER);
         ph_begin(&t_phase);
         /* clear: build one row, memcpy the rest (0xFF101820 is not a
            repeating byte pattern, so memset cannot do it directly) */
@@ -16864,6 +16908,7 @@ int main(void)
            there (BG3 + the cursor OBJ), so raster engine A's 2D and write only
            the covered pixels over the 3D framebuffer. Before the fade composite,
            so the box dims with the master-brightness blend the same as the DS. */
+        pt_mark(PS_COMP_A);
         if (!rb_skip_render())
             port_message_composite_engine_a(&fb);
         ph_end(PH_RASTER, t_phase);
@@ -16871,8 +16916,10 @@ int main(void)
            rasterise engine B, and drop it into the corner at 1:1 DS pixels.
            With the panel toggled off this writes nothing. Before the overlay,
            so F3 text stays readable over the panel. */
+        pt_mark(PS_SUB);
         if (!rb_skip_render())
         hal_sub_screen_present(&fb.px[0][0], ntr::active_w, ntr::active_h);
+        pt_mark(PS_FADE_OVL);
         if (g_ip_on > 0 && g_ip_tick_ok) ip_snap(g_ip_p2, fb);
 
         /* THE FADE COMPOSITE, ENGINE A'S, now runs from the tail of
@@ -17052,11 +17099,13 @@ int main(void)
         if (stacked && !rb_skip_render())
             stack_present_arm(stack_img, hwnd);
 
+        pt_mark(PS_PRESENT);
         ph_begin(&t_phase);
         if (!rb_resim_skip_render() && !rb_skip_render())
         ip_present_tick();
         ph_end(PH_BLIT, t_phase);
         ph_end(PH_FRAME, t_frame);
+        pt_mark(PS_POST);
         rb_frame_body_end();
         if (rb_probe_mode()) {
             rb_note(RB_PH_INPUT,  g_clk.raw[PH_INPUT]);
@@ -17378,7 +17427,9 @@ int main(void)
            shipped path moves. */
         if (!(port_rom_loop_enabled() && r3e_sound_at_phase9()))
         { const double t_snd = ovl_now_ms();
+        pt_mark(PS_SOUND);
         sdat_host_tick();   /* hosted ARM7: drain the sound queue, feed the mixer */
+        pt_mark(PS_POST);
         rb_frame_sound_ms(ovl_now_ms() - t_snd); }
         /* THE FRAME BOUNDARY. Everything this frame -- tick, render, present --
            is done, and nothing of the next frame has started, so an editor's
