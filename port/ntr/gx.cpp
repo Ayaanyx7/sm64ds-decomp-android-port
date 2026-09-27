@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <climits>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -2792,20 +2793,61 @@ static void texpx_report() {
     std::fflush(stdout);
 }
 
+/* THE FLOOR, WITHOUT THE LIBRARY CALL (run perf2, lane RASTER). The sampler
+   floors every texture coordinate, and in this 32-bit build std::floor is a
+   real call into the C library that returns through the x87 stack: about a
+   sixth of the raster's time was that call. These two give the same answer
+   as the library for every float, which the reasoning below and the
+   SM64DS_RASTER_AB comparison both say:
+     floor_to_int is (int)std::floor(f). The cast truncates toward zero, and
+       for a negative f with a fraction the truncation is one above the floor,
+       which the compare catches. A float too big for an int, or a NaN, casts
+       to INT_MIN exactly as the old cast of the old floor did, and the
+       INT_MIN test keeps it there instead of stepping past it.
+     floor_exact is std::floor(f) itself, as a float, for the filtered
+       sampler, which also needs the fraction. A float at or above 2^23 has no
+       fraction and neither do infinities, so those and NaN come back as they
+       went in; an f that is already whole comes back as f itself, which is
+       what keeps -0.0 as -0.0. */
+static inline int floor_to_int(float f) {
+    const int i = static_cast<int>(f);
+    return (i != INT_MIN && static_cast<float>(i) > f) ? i - 1 : i;
+}
+
+static inline float floor_exact(float f) {
+    if (!(std::fabs(f) < 8388608.0f)) return f;
+    const float t = static_cast<float>(static_cast<int>(f));
+    if (t == f) return f;
+    return t > f ? t - 1.0f : t;
+}
+
 // One texel coordinate under the DS wrap rules (GBATEK TEXIMAGE_PARAM 16-19):
 // repeat clear = CLAMP to the edge texel; repeat set = wrap; flip on top of
 // repeat mirrors every other tile. `repeat && !flip` is the exact expression
 // the raster used before wrap modes existed, so nothing that binds through
 // gx_bind_texture moves a pixel.
+/* A POWER-OF-TWO SIZE WRAPS WITH A MASK (run perf2, lane RASTER). Every
+   texture the DS itself can bind is 8 to 1024 texels on a side in powers of
+   two, and for those `i & (size - 1)` is exactly the "i % size, then add size
+   if negative" below it: two's complement makes the low bits of a negative
+   number its non-negative remainder, INT_MIN included. The two integer divides
+   this saves were on every textured pixel. A size that is not a power of two
+   (an HD pack at 3x, say) keeps the divide. */
 static int tex_coord_i(int i, int size, bool repeat, bool flip) {
     if (!repeat) return i < 0 ? 0 : (i >= size ? size - 1 : i);
+    const bool pow2 = size > 0 && (size & (size - 1)) == 0;
     if (!flip) {
+        if (pow2) return i & (size - 1);
         i %= size;
         return i < 0 ? i + size : i;
     }
     const int period = size * 2;
-    i %= period;
-    if (i < 0) i += period;
+    if (pow2) {
+        i &= period - 1;
+    } else {
+        i %= period;
+        if (i < 0) i += period;
+    }
     return i < size ? i : period - 1 - i;
 }
 
@@ -2816,7 +2858,7 @@ static int tex_coord_i(int i, int size, bool repeat, bool flip) {
    then the identical integer arithmetic: the nearest path samples the texel
    it always sampled. */
 static int tex_coord(float f, int size, bool repeat, bool flip) {
-    return tex_coord_i(static_cast<int>(std::floor(f)), size, repeat, flip);
+    return tex_coord_i(floor_to_int(f), size, repeat, flip);
 }
 
 /* ---- THE FILTERED SAMPLER (run hd2) ---------------------------------------
@@ -2845,7 +2887,7 @@ struct TexLevel {
 static uint32_t sample_bilinear(const TexLevel &L, float u, float v,
                                 bool rs, bool rt, bool fs, bool ft) {
     const float fu = u - 0.5f, fv = v - 0.5f;
-    const float flu = std::floor(fu), flv = std::floor(fv);
+    const float flu = floor_exact(fu), flv = floor_exact(fv);
     const int iu = static_cast<int>(flu), iv = static_cast<int>(flv);
     const float du = fu - flu, dv = fv - flv;
     const int x0 = tex_coord_i(iu, L.w, rs, fs);
