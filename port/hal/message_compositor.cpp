@@ -113,6 +113,7 @@
 
 #include "ntr/gx.h"
 #include "ntr/ppu.h"
+#include "ntr/rt.h"
 
 /* THE TOP ENGINE'S OBJ DISPLAY SHIFT, in DS rows, from hal/screen_gap.cpp.
  *
@@ -408,6 +409,11 @@ struct Windows {
     bool on[2];
     bool obj_on;
     unsigned in[2], obj_in, out;
+    /* THE LINE-BY-LINE HORIZONTAL EDGES, on a frame whose mask-2 handler
+       rewrote WIN0H / WIN1H per scanline (ntr::rt_window_rows): each line's
+       X1, X2 and the in-window flag it inherits from the line above. */
+    bool rows_on;
+    uint8_t rx1[2][192], rx2[2][192], rs[2][192];
 };
 
 /* THE OBJ WINDOW'S MASK, engine A. The third window has no rectangle: its
@@ -585,6 +591,40 @@ void read_windows(uint32_t dispcnt, Windows &w) {
     w.in[0] = winin & 0x3F;
     w.in[1] = (winin >> 8) & 0x3F;
     w.out = rd16(kRegBase + 0x4A) & 0x3F;
+    /* A dWipe_c-style wipe programs the horizontal edges per scanline from
+       its HBlank handler (func_0202f2c4); read above, the rectangle is only
+       the last line's. Take every line's instead, and walk each the way the
+       DS 2D unit does (melonDS GPU2D::CalculateWindowMask, the reference
+       emulator this project's cartridge traces run on): along the line the
+       in-window flag is CLEARED at X2 and otherwise SET at X1, and it carries
+       into the next line. So X1 == X2 is an empty line, and X1 > X2 runs from
+       X1 to the right edge and on into the next line up to its X2. The flag
+       starts each frame clear. A frame with no handler keeps the rectangle
+       above unchanged. */
+    w.rows_on = false;
+    const uint32_t *rows = nullptr;
+    if (ntr::rt_window_rows(0, &rows)) {
+        w.rows_on = true;
+        for (int i = 0; i < 2; ++i) {
+            uint8_t carry = 0;
+            for (int y = 0; y < 192; ++y) {
+                const uint16_t hh = (uint16_t)(i == 0 ? rows[y] : rows[y] >> 16);
+                w.rx1[i][y] = (uint8_t)(hh >> 8);
+                w.rx2[i][y] = (uint8_t)(hh & 0xFF);
+                w.rs[i][y] = carry;
+                carry = w.rx1[i][y] > w.rx2[i][y] ? 1 : 0;
+            }
+        }
+    }
+}
+
+/* Is column x inside window i's horizontal extent on line y? */
+inline bool win_h_inside(const Windows &w, int i, int x, int y) {
+    if (!w.rows_on) return x >= w.x1[i] && x < w.x2[i];
+    const int x1 = w.rx1[i][y], x2 = w.rx2[i][y];
+    if (x1 < x2) return x < x1 ? w.rs[i][y] != 0 : x < x2;
+    if (x1 > x2) return x < x2 ? w.rs[i][y] != 0 : x >= x1;
+    return x < x2 ? w.rs[i][y] != 0 : false;
 }
 
 /* Hardware precedence is fixed: window 0 beats window 1, window 1 beats the OBJ
@@ -593,7 +633,7 @@ void read_windows(uint32_t dispcnt, Windows &w) {
 inline unsigned window_mask(const Windows &w, int x, int y) {
     if (!w.any) return 0x3F;
     for (int i = 0; i < 2; ++i)
-        if (w.on[i] && x >= w.x1[i] && x < w.x2[i] && y >= w.y1[i] && y < w.y2[i])
+        if (w.on[i] && win_h_inside(w, i, x, y) && y >= w.y1[i] && y < w.y2[i])
             return w.in[i];
     if (w.obj_on && g_objwin[y][x]) return w.obj_in;
     return w.out;
