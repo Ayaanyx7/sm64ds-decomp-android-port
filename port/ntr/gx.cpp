@@ -3828,6 +3828,119 @@ void ab_bmp(const char *path, const uint32_t *px, int stride, int x0, int y0,
 
 }  // namespace
 
+namespace {
+
+/* ---- ONE ROW'S COVERED RANGE, FROM THE EDGE FUNCTIONS (run perf2, lane RASTER)
+   The raster used to test every pixel of a triangle's bounding box, and a
+   thin or diagonal triangle covers a small part of its box: most of those
+   tests said no. This finds, per row, the range of x the three edge tests can
+   pass on, and the row loop then visits only that range. Each pixel it visits
+   still takes the EXACT test it always took, so the only question is whether
+   the range can leave out a pixel the old loop would have drawn. It cannot,
+   and the reason is monotonicity, not an estimate:
+
+   A pixel's edge value is r - ey * ((x + 0.5f) - vx) in floats, the same
+   expression, in the same order, as the row loop's. Every step of it is one
+   IEEE operation, and each is monotone in its input when the inputs are
+   finite: x + 0.5f grows with x, the subtraction keeps that order, the
+   multiply by a fixed ey keeps it or reverses it by ey's sign, and r minus
+   that reverses it again. So along a row each edge value only ever moves one
+   way, and "value >= 0" is true on a prefix of the row or on a suffix of it
+   (on all of it or none of it when ey is 0). A pixel is inside when all three
+   values are >= 0 or all three are <= 0, so the inside pixels are the union of
+   two intersections of prefixes and suffixes: two intervals. Each end is found
+   by starting from a double-precision estimate of where the edge crosses zero
+   and then stepping with the exact float test until it holds on one side and
+   fails on the other, which is the exact boundary whatever the estimate was.
+   The range visited is the span of the two intervals, one pixel wider on each
+   side for good measure, clipped to the box.
+
+   The argument needs finite values that cannot overflow, so it is used only
+   when every vertex coordinate is within 1e18 of the origin (then no product
+   in the edge value can reach FLT_MAX); anything else, and any box eight
+   pixels wide or less, takes the whole box as before. */
+struct SpanTri {
+    float ey[3], vx[3];
+    double inv[3];
+};
+
+inline float span_edge(float r, float ey, float vx, int x) {
+    const float px = x + 0.5f;
+    return r - ey * (px - vx);
+}
+
+inline bool span_ok(const GxVertex &a, const GxVertex &b, const GxVertex &c) {
+    const float lim = 1e18f;
+    return std::fabs(a.x) <= lim && std::fabs(a.y) <= lim &&
+           std::fabs(b.x) <= lim && std::fabs(b.y) <= lim &&
+           std::fabs(c.x) <= lim && std::fabs(c.y) <= lim;
+}
+
+/* Narrow [L, R] to where all three edge values are >= 0 (sgn > 0) or all
+   three are <= 0 (sgn < 0). False when nothing in the row qualifies. */
+inline bool span_side(const SpanTri &st, const float r[3], int sgn, int &L,
+                      int &R) {
+    for (int k = 0; k < 3; ++k) {
+        const float ey = st.ey[k], vx = st.vx[k], rk = r[k];
+        auto P = [&](int x) {
+            const float n = span_edge(rk, ey, vx, x);
+            return sgn > 0 ? n >= 0 : n <= 0;
+        };
+        if (ey == 0.0f) {
+            if (!P(L)) return false;
+            continue;
+        }
+        const double est = (double)vx + (double)rk * st.inv[k] - 0.5;
+        if ((ey > 0.0f) == (sgn > 0)) {
+            /* true on a prefix: find the last x that passes */
+            double e = est;
+            if (e < (double)(L - 1)) e = (double)(L - 1);
+            if (e > (double)R) e = (double)R;
+            int x0 = (int)e;
+            while (x0 < R && P(x0 + 1)) ++x0;
+            while (x0 >= L && !P(x0)) --x0;
+            R = x0;
+        } else {
+            /* true on a suffix: find the first x that passes */
+            double e = est;
+            if (e < (double)L) e = (double)L;
+            if (e > (double)(R + 1)) e = (double)(R + 1);
+            int x0 = (int)e;
+            while (x0 > L && P(x0 - 1)) --x0;
+            while (x0 <= R && !P(x0)) ++x0;
+            L = x0;
+        }
+        if (L > R) return false;
+    }
+    return true;
+}
+
+/* The row's range to visit, or false when no pixel of it can be inside. */
+inline bool row_span(const SpanTri &st, float r0, float r1, float r2,
+                     int minx, int maxx, int &xs, int &xe) {
+    const float r[3] = {r0, r1, r2};
+    int l1 = minx, h1 = maxx, l2 = minx, h2 = maxx;
+    const bool pos = span_side(st, r, 1, l1, h1);
+    const bool neg = span_side(st, r, -1, l2, h2);
+    if (!pos && !neg) return false;
+    int lo, hi;
+    if (pos && neg) {
+        lo = l1 < l2 ? l1 : l2;
+        hi = h1 > h2 ? h1 : h2;
+    } else if (pos) {
+        lo = l1;
+        hi = h1;
+    } else {
+        lo = l2;
+        hi = h2;
+    }
+    xs = lo - 1 < minx ? minx : lo - 1;
+    xe = hi + 1 > maxx ? maxx : hi + 1;
+    return true;
+}
+
+}  // namespace
+
 /* ---- SM64DS_RASTER_AB=1: THE OLD RASTER AGAINST THE NEW, ON EVERY FRAME ----
    (run perf2, lane RASTER)
 
@@ -4676,6 +4789,17 @@ void gx_render(Framebuffer &fb) {
         const float eax = b.x - a.x, eay = b.y - a.y;
         const float ebx = c.x - b.x, eby = c.y - b.y;
         const float ecx = a.x - c.x, ecy = a.y - c.y;
+        /* THE ROW RANGE SETUP, see row_span: per triangle, the three edge
+           slopes, the three vertices they are measured from and the
+           reciprocals the crossing estimates use. */
+        const bool use_span = maxx - minx >= 8 && span_ok(a, b, c);
+        SpanTri st;
+        if (use_span) {
+            st.ey[0] = eay; st.ey[1] = eby; st.ey[2] = ecy;
+            st.vx[0] = a.x; st.vx[1] = b.x; st.vx[2] = c.x;
+            for (int k = 0; k < 3; ++k)
+                st.inv[k] = st.ey[k] != 0.0f ? 1.0 / (double)st.ey[k] : 0.0;
+        }
         const float iwa = (std::fabs(a.w) > 1e-6f) ? 1.0f / a.w : 0.0f;
         const float iwb = (std::fabs(b.w) > 1e-6f) ? 1.0f / b.w : 0.0f;
         const float iwc = (std::fabs(c.w) > 1e-6f) ? 1.0f / c.w : 0.0f;
@@ -4729,7 +4853,10 @@ void gx_render(Framebuffer &fb) {
                     const float r2 = ecx * (py - c.y);
                     const float *drow = depth[y];
                     uint8_t *srow = stencil[y];
-                    for (int x = minx; x <= maxx; ++x) {
+                    int xs = minx, xe = maxx;
+                    if (use_span && !row_span(st, r0, r1, r2, minx, maxx, xs, xe))
+                        continue;
+                    for (int x = xs; x <= xe; ++x) {
                         const float px = x + 0.5f;
                         const float n0 = r0 - eay * (px - a.x);
                         const float n1 = r1 - eby * (px - b.x);
@@ -4757,7 +4884,10 @@ void gx_render(Framebuffer &fb) {
                     uint8_t *srow = stencil[y];
                     const uint8_t *irow = attrid[y];
                     uint32_t *frow = fb.px[y];
-                    for (int x = minx; x <= maxx; ++x) {
+                    int xs = minx, xe = maxx;
+                    if (use_span && !row_span(st, r0, r1, r2, minx, maxx, xs, xe))
+                        continue;
+                    for (int x = xs; x <= xe; ++x) {
                         const float px = x + 0.5f;
                         const float n0 = r0 - eay * (px - a.x);
                         const float n1 = r1 - eby * (px - b.x);
@@ -4825,7 +4955,10 @@ void gx_render(Framebuffer &fb) {
             uint32_t *frow = fb.px[y];
             uint8_t *irow = attrid[y];
             uint8_t *trow = tlattr[y];
-            for (int x = minx; x <= maxx; ++x) {
+            int xs = minx, xe = maxx;
+            if (use_span && !row_span(st, r0, r1, r2, minx, maxx, xs, xe))
+                continue;
+            for (int x = xs; x <= xe; ++x) {
                 const float px = x + 0.5f;
                 /* Coverage is decided on the undivided edge functions. The
                    test asks whether all three share a sign, and dividing all
