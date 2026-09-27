@@ -684,6 +684,19 @@ enum { kRollbackMaxPlayers = 8 };
    native. */
 int host_setting_frame_rate(void);
 
+/* ---- SmoothMotion: THE PICTURES BETWEEN TWO TICKS, BLENDED (run interp1) --
+   Default 0, and 0 is today: every extra picture FrameRate asks for is the
+   same finished frame again. 1 draws each extra picture on a 3D level from the
+   tick's own recorded geometry with the moving things (the camera, Mario, the
+   enemies, their bones) blended between the previous tick and this one
+   (ntr/gx.h, gx_interp_*). PRESENTATION ONLY: the game still ticks, reads its
+   input and draws its geometry once per tick. It acts only when FrameRate is
+   above the tick rate, so with FrameRate absent it does nothing at all. The
+   world on screen then trails the newest tick by up to one tick (33 ms on a
+   course). Boot-latched. Accepted: 1 / true on, anything else off.
+   SM64DS_SMOOTH_MOTION overrides. */
+int host_setting_smooth_motion(void);
+
 /* ---- THE THREE PICTURE-QUALITY KEYS (run hd1) ---------------------------
    One block, because they are one promise: with every one of them absent the
    game's picture, timing and behaviour are what the build without them
