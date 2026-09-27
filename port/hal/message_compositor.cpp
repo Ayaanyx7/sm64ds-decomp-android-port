@@ -1983,6 +1983,64 @@ extern "C" const unsigned char *port_engine_a_bright_mask(void)
     return g_bm_live ? g_bm : nullptr;
 }
 
+/* THE FADE COMPOSITE, ENGINE A'S, for both frame loops.
+
+   The DS colour-special-effects unit's brightness modes (BLDCNT mode 2 or 3
+   plus BLDY) darken or brighten engine A's picture after the scene is drawn.
+   0x4000050 / 0x4000054 are engine A's and only engine A's; engine B's blend
+   is applied per pixel inside ntr/ppu_sub.cpp's scan-out. `px` is engine A's
+   framebuffer (SCREEN_W stride, w x h live), so this is engine A's blend and
+   nothing else, over the pixels the mask above says the DS blends (all of
+   them on an ordinary fade).
+
+   THIS USED TO LIVE IN tests/walk_window.cpp, WHICH ONLY THE LEVEL LOOP RUNS.
+   The scene loop (hal/scene_boot.cpp: the title, the file select, the
+   minigames) composited engine A and presented it without ever reading engine
+   A's BLDCNT / BLDY, so every engine-A fade on those screens was missing: the
+   title's opening fades engine A in from EVY 16 over its first frames and the
+   port showed it at full brightness from frame 0. Both loops call
+   hal_sub_screen_present right after this compositor, so it runs from the
+   tail of that function (hal/sub_screen.cpp) and both get it, at the point
+   the level loop always applied it: after the corner-inset panel went into
+   the framebuffer (the inset still takes engine A's blend there, unchanged),
+   before the host debug overlay and before the stacked compose reads `px`.
+
+   EVY is the 0..16 coefficient: fade-to-black is rgb*(1 - evy/16),
+   fade-to-white is rgb + (255-rgb)*evy/16, both per channel. */
+extern "C" int port_fader_blend_state(int *evy, int *toWhite);
+extern "C" void port_engine_a_fade(unsigned int *px, int w, int h)
+{
+    int evy = 0, toWhite = 0;
+    if (!px || !port_fader_blend_state(&evy, &toWhite))
+        return;
+    if (evy > 16) evy = 16;
+    /* ONLY THE PIXELS THE DS BLENDS: the layer on top there is one of
+       BLDCNT's first targets and its window's effect bit is set. Null when
+       every pixel qualifies (a plain fade). */
+    const unsigned char *bm = port_engine_a_bright_mask();
+    for (int y = 0; y < h; ++y) {
+        uint32_t *row = px + (size_t)y * ntr::SCREEN_W;
+        const unsigned char *brow =
+            bm ? bm + (size_t)y * ntr::SCREEN_W : nullptr;
+        for (int x = 0; x < w; ++x) {
+            if (brow && !brow[x]) continue;
+            uint32_t p = row[x];
+            int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff, b = p & 0xff;
+            if (toWhite) {
+                r += ((255 - r) * evy) >> 4;
+                g += ((255 - g) * evy) >> 4;
+                b += ((255 - b) * evy) >> 4;
+            } else {
+                r -= (r * evy) >> 4;
+                g -= (g * evy) >> 4;
+                b -= (b * evy) >> 4;
+            }
+            row[x] = 0xFF000000u | ((uint32_t)r << 16) |
+                     ((uint32_t)g << 8) | (uint32_t)b;
+        }
+    }
+}
+
 /* ---- AND WHERE THE CUE GOES: JUST ABOVE THE MAP ---------------------------
  *
  * Called by hal/sub_screen.cpp with the rectangle the map panel was just drawn

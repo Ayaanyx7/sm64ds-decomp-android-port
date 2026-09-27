@@ -3956,7 +3956,7 @@ extern "C" int hal_lc_compose_rows(int *text_r0, int *text_r1,
 
 /* Bottom of the frame: upload the shadows the game filled, rasterise engine B,
    drop it into the corner. With the panel off nothing here writes a pixel. */
-void hal_sub_screen_present(unsigned int *dst, int w, int h)
+static void sub_screen_present_body(unsigned int *dst, int w, int h)
 {
     hal_screens_probe();
     hal_obj_parity_probe();
@@ -4268,6 +4268,19 @@ void hal_sub_screen_present(unsigned int *dst, int w, int h)
                         *(volatile unsigned short *)0x0400100e);
         }
     }
+}
+
+/* THE PRESENT, and then ENGINE A'S FADE COMPOSITE over the framebuffer it was
+   handed (hal/message_compositor.cpp, port_engine_a_fade). Both frame loops
+   call this right after the engine-A compositor; the level loop used to run
+   the fade itself, here, after this call, and the scene loop never ran it.
+   The body above has an early return (the panel switched off), so the fade
+   hangs off this wrapper and not off the body's last line. */
+extern "C" void port_engine_a_fade(unsigned int *px, int w, int h);
+void hal_sub_screen_present(unsigned int *dst, int w, int h)
+{
+    sub_screen_present_body(dst, w, h);
+    port_engine_a_fade(dst, w, h);
 }
 
 /* ---- the stacked layout ----------------------------------------------------
