@@ -162,6 +162,9 @@ long long g_frames, g_tris, g_batches, g_verts;
 double    g_ms_build, g_ms_draw, g_ms_read;
 int       g_perf_n;
 double    g_perf_build, g_perf_draw, g_perf_read;
+/* the readback split in two: the Map's wait for the card, and the copy of the
+   covered pixels into the software rasteriser's buffers */
+double    g_perf_wait, g_perf_copy;
 long long g_perf_tris, g_perf_batches;
 
 /* ---- the device and the pipeline ----------------------------------------- */
@@ -835,6 +838,7 @@ int draw_frame(const ntr::GxGpuFrame *f)
     if (f->want_depth) g_ctx->CopyResource(g_dep_stage, g_dep);
     port_gpu_timer_span_end(PORT_GPU_SPAN_OPAQUE);
 
+    const long long t2w = qpc();
     D3D11_MAPPED_SUBRESOURCE mc, mi, md;
     memset(&mc, 0, sizeof mc);
     memset(&mi, 0, sizeof mi);
@@ -856,6 +860,8 @@ int draw_frame(const ntr::GxGpuFrame *f)
             return 0;
         }
     }
+
+    const long long t2m = qpc();
 
     /* NOTHING ON THE CPU SIDE HAS BEEN TOUCHED UNTIL HERE, which is what makes
        a failure above safe: the software pass then draws the frame over
@@ -900,15 +906,20 @@ int draw_frame(const ntr::GxGpuFrame *f)
         g_perf_build += ms_between(t0, t1);
         g_perf_draw += ms_between(t1, t2);
         g_perf_read += ms_between(t2, t3);
+        g_perf_wait += ms_between(t2w, t2m);
+        g_perf_copy += ms_between(t2m, t3);
         g_perf_tris += (long long)(g_scratch.size() / 3);
         g_perf_batches += (long long)g_batch.size();
         if (++g_perf_n >= 30) {
             fprintf(stderr, "[renderer] build %6.3fms submit %6.3fms readback "
-                    "%6.3fms tris %6lld batches %4lld\n",
+                    "%6.3fms (wait %6.3fms copy %6.3fms) tris %6lld batches "
+                    "%4lld\n",
                     g_perf_build / g_perf_n, g_perf_draw / g_perf_n,
-                    g_perf_read / g_perf_n, g_perf_tris / g_perf_n,
+                    g_perf_read / g_perf_n, g_perf_wait / g_perf_n,
+                    g_perf_copy / g_perf_n, g_perf_tris / g_perf_n,
                     g_perf_batches / g_perf_n);
             g_perf_build = g_perf_draw = g_perf_read = 0.0;
+            g_perf_wait = g_perf_copy = 0.0;
             g_perf_tris = g_perf_batches = 0;
             g_perf_n = 0;
         }
