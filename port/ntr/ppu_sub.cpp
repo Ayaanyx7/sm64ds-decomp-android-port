@@ -465,14 +465,64 @@ int mm_trace_at(void)
     return g_mm_trace_frame;
 }
 
-void raster_obj(uint32_t dispcnt) {
+/* THE HOST'S PER-ENTRY QUESTIONS, asked once a frame and in the raster's own
+   order (entry 127 down to 0): the seam-snow overlay's claim, the camera-button
+   veto with its trace and count, and the OAM-age trace. They were the head of
+   raster_obj's loop; they are split out, statement for statement, so their
+   answers are one per entry per frame whatever draws afterwards -- the scan-out
+   and SM64DS_TWOD_VERIFY's reference both draw from the same skip[] -- and so
+   the answers are part of what the scan-out cache compares. skip[i] = 1 is the
+   old `continue`. Nothing here draws. */
+void obj_decide(uint32_t dispcnt, uint8_t *skip) {
+    std::memset(skip, 0, 128);
+    if (!((dispcnt >> 12) & 1))
+        return;
+    const uint32_t oam_b = g_oam_src_b ? g_oam_src_b : kOamBase;
+    for (int i = 127; i >= 0; --i) {
+        const uint16_t a0 = rd16(oam_b + i * 8u);
+        const uint16_t a1 = rd16(oam_b + i * 8u + 2);
+        const uint16_t a2 = rd16(oam_b + i * 8u + 4);
+        /* the seam-snow overlay owns these while engaged; see seam_snow */
+        if (ppu_seam_snow_owns(a2)) { skip[i] = 1; continue; }
+        /* THE FOUR MAP ARROWS, declined. See the banner over cam_button_entry. */
+        {
+            static long frame;
+            if (i == 127) ++frame;
+            const int v = g_obj_veto_b ? g_obj_veto_b(a2) : 0;
+            const int trace = mm_trace_at() >= 0 && frame == mm_trace_at();
+            if (trace && (a0 | a1 | a2))
+                std::fprintf(stderr, "[mmtrace] f%ld e%3d y%3u x%3u tile%4u "
+                             "pal%2u a0=%04x a1=%04x a2=%04x%s\n", frame, i,
+                             (unsigned)(a0 & 0xFFu), (unsigned)(a1 & 0x1FFu),
+                             (unsigned)(a2 & 0x3FFu), (unsigned)(a2 >> 12),
+                             a0, a1, a2, (v & 1) ? "  <- camera button" : "");
+            if (v & 2) { ++g_mm_skipped; skip[i] = 1; continue; }
+        }
+        /* SM64DS_OAMAGE_TRACE: engine B's half of the probe in ppu.cpp. */
+        {
+            static int bget = -1;
+            if (bget < 0) {
+                const char *e = std::getenv("SM64DS_OAMAGE_TRACE");
+                bget = e && *e && *e != '0';
+            }
+            static unsigned bf;
+            if (bget && i == 127) ++bf;
+            if (bget && a2 == 0x1010)
+                std::fprintf(stderr, "[oamage] B f%u src=%08x slot%d y=%d\n",
+                             bf, (unsigned)oam_b, i, (int)(a0 & 0xff));
+        }
+    }
+}
+
+void raster_obj(uint32_t dispcnt, const uint8_t *skip, ObjPixel (*obj)[256],
+                uint8_t (*objwin)[256]) {
     static const int kSizes[3][4][2] = {
         {{8, 8}, {16, 16}, {32, 32}, {64, 64}},
         {{16, 8}, {32, 8}, {32, 16}, {64, 32}},
         {{8, 16}, {8, 32}, {16, 32}, {32, 64}},
     };
-    std::memset(g_obj, 0, sizeof g_obj);
-    std::memset(g_objwin, 0, sizeof g_objwin);
+    std::memset(obj, 0, sizeof(ObjPixel) * 192 * 256);
+    std::memset(objwin, 0, 192 * 256);
     if (!((dispcnt >> 12) & 1))
         return;
     const uint32_t boundary = 32u << ((dispcnt >> 20) & 3);
@@ -513,38 +563,10 @@ void raster_obj(uint32_t dispcnt) {
     const uint32_t oam_b = g_oam_src_b ? g_oam_src_b : kOamBase;
 
     for (int i = 127; i >= 0; --i) {
+        if (skip[i]) continue;
         const uint16_t a0 = rd16(oam_b + i * 8u);
         const uint16_t a1 = rd16(oam_b + i * 8u + 2);
         const uint16_t a2 = rd16(oam_b + i * 8u + 4);
-        /* the seam-snow overlay owns these while engaged; see seam_snow */
-        if (ppu_seam_snow_owns(a2)) continue;
-        /* THE FOUR MAP ARROWS, declined. See the banner over cam_button_entry. */
-        {
-            static long frame;
-            if (i == 127) ++frame;
-            const int v = g_obj_veto_b ? g_obj_veto_b(a2) : 0;
-            const int trace = mm_trace_at() >= 0 && frame == mm_trace_at();
-            if (trace && (a0 | a1 | a2))
-                std::fprintf(stderr, "[mmtrace] f%ld e%3d y%3u x%3u tile%4u "
-                             "pal%2u a0=%04x a1=%04x a2=%04x%s\n", frame, i,
-                             (unsigned)(a0 & 0xFFu), (unsigned)(a1 & 0x1FFu),
-                             (unsigned)(a2 & 0x3FFu), (unsigned)(a2 >> 12),
-                             a0, a1, a2, (v & 1) ? "  <- camera button" : "");
-            if (v & 2) { ++g_mm_skipped; continue; }
-        }
-        /* SM64DS_OAMAGE_TRACE: engine B's half of the probe in ppu.cpp. */
-        {
-            static int bget = -1;
-            if (bget < 0) {
-                const char *e = std::getenv("SM64DS_OAMAGE_TRACE");
-                bget = e && *e && *e != '0';
-            }
-            static unsigned bf;
-            if (bget && i == 127) ++bf;
-            if (bget && a2 == 0x1010)
-                std::fprintf(stderr, "[oamage] B f%u src=%08x slot%d y=%d\n",
-                             bf, (unsigned)oam_b, i, (int)(a0 & 0xff));
-        }
         const bool affine = a0 & 0x100;
         if (!affine && (a0 & 0x200)) continue;          // disabled
         // OBJ MODE, attribute 0 bits 10-11: 0 normal, 1 semi-transparent,
@@ -708,12 +730,12 @@ void raster_obj(uint32_t dispcnt) {
                     }
                     const uint16_t v = rd16(kObjVram + at);
                     if (!(v & 0x8000)) continue;
-                    if (g_obj[py][px].hit && prio > g_obj[py][px].prio)
+                    if (obj[py][px].hit && prio > obj[py][px].prio)
                         continue;
-                    g_obj[py][px].color = bgr555(v);
-                    g_obj[py][px].prio = prio;
-                    g_obj[py][px].hit = 1;
-                    g_obj[py][px].semi = 0;
+                    obj[py][px].color = bgr555(v);
+                    obj[py][px].prio = prio;
+                    obj[py][px].hit = 1;
+                    obj[py][px].semi = 0;
                     continue;
                 }
                 const uint32_t slot =
@@ -741,7 +763,7 @@ void raster_obj(uint32_t dispcnt) {
                 // texel is opaque, so the pixel is inside the window, and the
                 // colour it would have had is discarded.
                 if (is_win) {
-                    g_objwin[py][px] = 1;
+                    objwin[py][px] = 1;
                     continue;
                 }
                 // Priority resolves OBJ-vs-OBJ (see the header note): overwrite
@@ -749,14 +771,14 @@ void raster_obj(uint32_t dispcnt) {
                 // least as good (lower or equal number). With the 127->0 walk
                 // that keeps the lowest-index sprite on a tie and lets a
                 // higher-priority sprite win regardless of its index.
-                if (g_obj[py][px].hit && prio > g_obj[py][px].prio)
+                if (obj[py][px].hit && prio > obj[py][px].prio)
                     continue;
-                g_obj[py][px].color = color;
-                g_obj[py][px].prio = prio;
-                g_obj[py][px].hit = 1;
+                obj[py][px].color = color;
+                obj[py][px].prio = prio;
+                obj[py][px].hit = 1;
                 // OBJ mode 1 is semi-transparent: it alpha-blends with the
                 // layer below it regardless of BLDCNT's first-target bits.
-                g_obj[py][px].semi = (objmode == 1);
+                obj[py][px].semi = (objmode == 1);
             }
         }
     }
@@ -851,12 +873,13 @@ inline bool win_h_inside(const Windows &w, int i, int x, int y) {
     return x < x2 ? w.rs[i][y] != 0 : false;
 }
 
-inline unsigned window_mask(const Windows &w, int x, int y) {
+inline unsigned window_mask(const Windows &w, int x, int y,
+                            const uint8_t (*objwin)[256]) {
     if (!w.any) return 0x3F;
     for (int i = 0; i < 2; ++i)
         if (w.on[i] && win_h_inside(w, i, x, y) && y >= w.y1[i] && y < w.y2[i])
             return w.in[i];
-    if (w.obj_on && g_objwin[y][x]) return w.obj_in;
+    if (w.obj_on && objwin[y][x]) return w.obj_in;
     return w.out;
 }
 
@@ -981,24 +1004,17 @@ inline uint32_t blend_apply(const Blend &bl, unsigned mask, uint32_t top,
     return top;
 }
 
-}  // namespace
-
-void ppu_scanout_sub(SubFramebuffer &fb)
+// ---- the scan-out -------------------------------------------------------------
+//
+// scan_ref IS THE SCAN-OUT AS IT SHIPPED (0.5.1), kept whole as the reference the
+// faster path is proved against. ppu_scanout_sub below does the frame's one-time
+// work (the audit sample, the DISPCNT_B read with the host's suppression, the
+// host's per-entry OBJ questions) and then draws; SM64DS_TWOD_VERIFY=1 draws the
+// same frame a second time through scan_ref into buffers of its own and compares
+// the two pictures byte for byte (see twod_verify_sub).
+void scan_ref(SubFramebuffer &fb, uint32_t dispcnt, const uint8_t *skip,
+              ObjPixel (*obj)[256], uint8_t (*objwin)[256])
 {
-    // The audit's per-frame seam. This is the one scan-out the live harness
-    // calls every frame, so it samples BOTH engines' register files rather than
-    // just this one's -- engine A's live compositor is hal/message_compositor.cpp
-    // and this lane does not own that file. Inert unless SM64DS_PPU_AUDIT is set.
-    ppu_audit_sample("ppu_scanout_sub");
-
-    /* THE HOST'S LAYER SUPPRESSION, applied at the ONE read of DISPCNT_B this
-       scan-out makes, so every layer decision below -- the BG rasters, the
-       window logic, the blend targets -- sees one consistent register value.
-       Zero unless something installed a mask, and then it can only CLEAR
-       enable bits: nothing here can turn a layer on that the game turned off.
-       The register itself is not written, so the ROM reads back exactly what
-       it wrote. See ppu_sub_set_bg_suppress. */
-    const uint32_t dispcnt = rd32(kRegBase) & ~g_bg_suppress;
     const unsigned disp_mode = (dispcnt >> 16) & 3;
     const bool forced_blank = (dispcnt >> 7) & 1;
 
@@ -1023,14 +1039,14 @@ void ppu_scanout_sub(SubFramebuffer &fb)
     Windows win;
     read_windows(dispcnt, win);
 
-    raster_obj(dispcnt);
+    raster_obj(dispcnt, skip, obj, objwin);
 
     const uint32_t backdrop = bgr555(rd16(kPlttBase));
     const Blend bld = read_blend();
 
     for (int y = 0; y < SUB_H; ++y) {
         for (int x = 0; x < SUB_W; ++x) {
-            const unsigned mask = window_mask(win, x, y);
+            const unsigned mask = window_mask(win, x, y, objwin);
             // Resolve the TOP visible layer and the one directly BELOW it, which
             // is all the colour-effect unit needs. Priority 0 is nearest; at
             // equal priority a sprite is above a background and among
@@ -1040,7 +1056,7 @@ void ppu_scanout_sub(SubFramebuffer &fb)
             bool semi = false;
             int found = 0;
             for (int prio = 0; prio < 4 && found < 2; ++prio) {
-                const ObjPixel &o = g_obj[y][x];
+                const ObjPixel &o = obj[y][x];
                 if (o.hit && o.prio == prio && (mask & 0x10)) {
                     if (!found) semi = o.semi;
                     col[found] = o.color; id[found] = 4; ++found;
@@ -1062,6 +1078,94 @@ void ppu_scanout_sub(SubFramebuffer &fb)
             fb.px[y][x] = apply_bright(c, br);
         }
     }
+}
+
+/* ---- SM64DS_TWOD_VERIFY=1: the old scan-out beside the new, every frame -------
+ *
+ * The reference draws into its own framebuffer and its own OBJ buffers, from the
+ * same DISPCNT_B value and the same per-entry host answers (skip[]), so the only
+ * thing that can differ is the drawing. Every frame that differs prints one line
+ * (the first 20 in full: how many pixels, the first one and both colours) and the
+ * run ends with a SUMMARY line on stderr. Off, none of this is reached and nothing
+ * is allocated. */
+struct TwodRef {
+    SubFramebuffer fb;
+    ObjPixel obj[192][256];
+    uint8_t objwin[192][256];
+};
+TwodRef *g_twod_ref;
+long g_twod_frames, g_twod_bad, g_twod_badpx;
+
+int twod_verify_on()
+{
+    static int v = -1;
+    if (v < 0) {
+        const char *e = std::getenv("SM64DS_TWOD_VERIFY");
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v;
+}
+
+void twod_verify_summary()
+{
+    std::fprintf(stderr, "[twod] SUMMARY sub verify: %ld scan-outs compared, "
+                 "%ld differ (%ld px)\n", g_twod_frames, g_twod_bad, g_twod_badpx);
+}
+
+void twod_verify_sub(const SubFramebuffer &fb, uint32_t dispcnt,
+                     const uint8_t *skip)
+{
+    if (!g_twod_ref) {
+        g_twod_ref = static_cast<TwodRef *>(std::calloc(1, sizeof(TwodRef)));
+        if (!g_twod_ref) return;
+        std::atexit(twod_verify_summary);
+    }
+    scan_ref(g_twod_ref->fb, dispcnt, skip, g_twod_ref->obj, g_twod_ref->objwin);
+    ++g_twod_frames;
+    if (std::memcmp(fb.px, g_twod_ref->fb.px, sizeof fb.px) == 0) return;
+    long n = 0;
+    int fx = -1, fy = -1;
+    for (int y = 0; y < SUB_H; ++y)
+        for (int x = 0; x < SUB_W; ++x)
+            if (fb.px[y][x] != g_twod_ref->fb.px[y][x]) {
+                if (!n) { fx = x; fy = y; }
+                ++n;
+            }
+    ++g_twod_bad;
+    g_twod_badpx += n;
+    if (g_twod_bad <= 20)
+        std::fprintf(stderr, "[twod] sub MISMATCH scan-out %ld: %ld px, first (%d,%d) "
+                     "new %08x ref %08x, DISPCNT_B %08x\n", g_twod_frames, n, fx, fy,
+                     (unsigned)fb.px[fy][fx], (unsigned)g_twod_ref->fb.px[fy][fx],
+                     (unsigned)dispcnt);
+}
+
+}  // namespace
+
+void ppu_scanout_sub(SubFramebuffer &fb)
+{
+    // The audit's per-frame seam. This is the one scan-out the live harness
+    // calls every frame, so it samples BOTH engines' register files rather than
+    // just this one's -- engine A's live compositor is hal/message_compositor.cpp
+    // and this lane does not own that file. Inert unless SM64DS_PPU_AUDIT is set.
+    ppu_audit_sample("ppu_scanout_sub");
+
+    /* THE HOST'S LAYER SUPPRESSION, applied at the ONE read of DISPCNT_B this
+       scan-out makes, so every layer decision below -- the BG rasters, the
+       window logic, the blend targets -- sees one consistent register value.
+       Zero unless something installed a mask, and then it can only CLEAR
+       enable bits: nothing here can turn a layer on that the game turned off.
+       The register itself is not written, so the ROM reads back exactly what
+       it wrote. See ppu_sub_set_bg_suppress. */
+    const uint32_t dispcnt = rd32(kRegBase) & ~g_bg_suppress;
+    uint8_t skip[128];
+    const bool shown = ((dispcnt >> 16) & 3) != 0 && !((dispcnt >> 7) & 1);
+    if (shown)
+        obj_decide(dispcnt, skip);
+    else
+        std::memset(skip, 0, sizeof skip);
+    scan_ref(fb, dispcnt, skip, g_obj, g_objwin);
+    if (twod_verify_on()) twod_verify_sub(fb, dispcnt, skip);
 }
 
 bool ppu_write_bmp_sub(const char *path, const SubFramebuffer &fb)
