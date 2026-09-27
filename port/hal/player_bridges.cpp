@@ -38,6 +38,7 @@ extern "C" unsigned g_port_unhosted_hits = 0;
 
 extern "C" unsigned int _ZNK6Player14GetBodyModelIDEjb(char *, unsigned int, char);
 extern "C" unsigned func_ov002_020becf4(char *self, unsigned j, int b);
+extern "C" int func_ov002_020d225c(char *o);   /* src/func_ov002_020d225c.c */
 extern "C" int _ZN6Player13InitResourcesEv(void *);
 
 /* C++-linkage globals some slice TUs call under Itanium-style names */
@@ -1785,6 +1786,28 @@ void hal_render_player_world(void *player)
             if (ghost) ghost_opacity(head);
             hal_render_head_group(c, head, hid, ma, scene);
             hal_player_texseq_head(c, hid);
+            /* THE LAST STATEMENT OF THE ROM'S HEAD BLOCK,
+               src/_ZN6Player6RenderEv.cpp:129-131:
+
+                   if (func_ov002_020d225c(this))
+                       ((VObj*)unk_1d8)->m14(&unk_56c);
+
+               +0x1d8 is the Model func_ov002_020e5948 news and SetFiles
+               outside VS (src/func_ov002_020e5948.c:330-336), and
+               func_ov002_020d225c is Yoshi (param1 3) with +0x721 == 2 and
+               +0x6e6 == 0: the sleep func_ov002_020d228c puts him in (ST_WAIT,
+               anim 9, +0x56c..+0x574 cleared, +0x721 = 2), which the opening
+               does to him on the castle roof (src/func_ov085_0212df84.cpp).
+               func_ov002_020e444c seats that model's matrix in front of his
+               face each frame (src/func_ov002_020e444c.c:70-75) and +0x56c is
+               the scale that swells it. This copy never drew it. Slot 5 is
+               Model::Render, the same dispatch the head's own draw makes. */
+            if (func_ov002_020d225c(c)) {
+                char *m = *(char **)(c + 0x1d8);
+                if (m)
+                    ((void(__fastcall *)(void *, void *, const void *))(
+                        ((void ***)m)[0][5]))(m, 0, c + 0x56c);
+            }
         }
     }
 
