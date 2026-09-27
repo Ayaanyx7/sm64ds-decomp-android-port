@@ -60,8 +60,8 @@
     "pad_layout": 304
   },
   "totals": {
-    "c_extension": 4406,
-    "cpp_extension": 2466,
-    "src_files": 6872
+    "c_extension": 4403,
+    "cpp_extension": 2461,
+    "src_files": 6864
   }
 }
