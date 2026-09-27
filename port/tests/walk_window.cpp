@@ -1516,6 +1516,11 @@ int  port_vs_match_end_frozen(void);
    builds the text and the loop below draws it */
 int  port_vs_match_end_banner(char *out, int n);
 void port_message_composite_engine_a(void *fb);
+void port_fader_wipe_render(void);   /* hal/fader_wipes.cpp */
+/* engine A's brightness targets for the fade composite below: null = the whole
+   panel, else one byte per host pixel (SCREEN_W stride), 1 = apply BLDY there
+   (hal/message_compositor.cpp, ENGINE A'S BRIGHTNESS TARGETS) */
+extern "C" const unsigned char *port_engine_a_bright_mask(void);
 int port_probe_message_id(void);
 int port_probe_message_fire(void *player, int id);
 /* frame-scripted headless pad press (hal/input_probe.cpp): apply ORs the
@@ -16794,6 +16799,11 @@ int main(void)
         if (selftest && frame == 0)
             fprintf(stderr, "[w] rendered\n");
 
+        /* THE FADER WIPE'S MESH (hal/fader_wipes.cpp, THE WIPE'S PICTURE): the
+           iris FaderWipe::AdvanceFade queued at phase 2, submitted into this
+           frame's geometry now that the frame is open and before it is
+           rasterised. Nothing queued on a frame with no wipe moving. */
+        port_fader_wipe_render();
         ph_begin(&t_phase);
         /* clear: build one row, memcpy the rest (0xFF101820 is not a
            repeating byte pattern, so memset cannot do it directly) */
@@ -16865,58 +16875,22 @@ int main(void)
         hal_sub_screen_present(&fb.px[0][0], ntr::active_w, ntr::active_h);
         if (g_ip_on > 0 && g_ip_tick_ok) ip_snap(g_ip_p2, fb);
 
-        /* THE FADE COMPOSITE, ENGINE A'S. The DS colour-special-effects unit's
-           brightness modes (BLDCNT mode 2 or 3 plus BLDY) darken or brighten
-           the whole of an engine's 2D panel after the scene is drawn. IT IS PER
-           ENGINE: 0x4000050/0x4000054 is engine A's and only engine A's, and
-           0x4001050/0x4001054 is engine B's. `fb` is engine A's framebuffer, so
-           this loop is engine A's blend and nothing else; engine B's is applied
-           where engine B's picture is composed (hal/sub_screen.cpp passes
-           port_fader_blend_state_sub into ppu_compose_stacked). This used to
-           claim it covered both screens, which was true only because every fade
-           the fader drives writes both engines the same values -- ov007's
-           opening writes them differently and that is where it showed.
-           Composited after the sub-screen present but before the host debug
-           overlay, because the overlay is not game content and must stay
-           readable through a fade. Phase 2 (port_frame_phase2) wrote those
-           registers this frame; read them back and do the same fade over the finished
-           framebuffer. EVY is the 0..16 coefficient: fade-to-black is
-           rgb*(1 - evy/16), fade-to-white is rgb + (255-rgb)*evy/16, both per
-           channel, which is exactly the DS blend math (16/16 = full).
-
-           THE CORNER-INSET PANEL IS INSIDE `fb` WHEN THIS RUNS and therefore
-           takes engine A's blend. That is unchanged and deliberate: the inset is
-           a host convenience, not an LCD, and reproducing it exactly keeps a
-           layout change a layout change. The STACKED layout is the one where
-           both halves are real DS screens, and there each half now carries its
-           own engine's blend. */
-        {
-            int evy = 0, toWhite = 0;
-            if (!rb_skip_render() && port_fader_blend_state(&evy, &toWhite)) {
-                if (evy > 16) evy = 16;
-                g_ip_fade_on = 1;          /* run interp1: tick N's fade */
-                g_ip_fade_evy = evy;
-                g_ip_fade_white = toWhite;
-                for (int y = 0; y < ntr::active_h; ++y) {
-                    uint32_t *row = fb.px[y];
-                    for (int x = 0; x < ntr::active_w; ++x) {
-                        uint32_t p = row[x];
-                        int r = (p >> 16) & 0xff, g = (p >> 8) & 0xff,
-                            b = p & 0xff;
-                        if (toWhite) {
-                            r += ((255 - r) * evy) >> 4;
-                            g += ((255 - g) * evy) >> 4;
-                            b += ((255 - b) * evy) >> 4;
-                        } else {
-                            r -= (r * evy) >> 4;
-                            g -= (g * evy) >> 4;
-                            b -= (b * evy) >> 4;
-                        }
-                        row[x] = 0xFF000000u | ((uint32_t)r << 16) |
-                                 ((uint32_t)g << 8) | (uint32_t)b;
-                    }
-                }
-            }
+        /* THE FADE COMPOSITE, ENGINE A'S, now runs from the tail of
+           hal_sub_screen_present just above (hal/message_compositor.cpp,
+           port_engine_a_fade), at the same point in this frame: after the
+           corner-inset panel went into `fb`, before the host debug overlay.
+           It moved so the scene loop (hal/scene_boot.cpp), which calls the same
+           present and never ran this block, applies engine A's BLDCNT / BLDY
+           too. */
+        /* run interp1 (resolved at the fold): the engine-A fade above is now
+           applied per pixel inside hal_sub_screen_present, so tick N's picture
+           already carries it and a blended picture cannot replay it as one
+           coefficient. A tick with an engine-A brightness fade in motion is
+           a SNAP: every picture of it is the tick's own, already faded. */
+        if (g_ip_on > 0 && g_ip_tick_ok) {
+            int ip_evy = 0, ip_white = 0;
+            if (port_fader_blend_state(&ip_evy, &ip_white))
+                g_ip_tick_ok = 0;
         }
 
         if (g_ip_on > 0 && g_ip_tick_ok) ip_snap(g_ip_p4, fb);   /* run interp1 */

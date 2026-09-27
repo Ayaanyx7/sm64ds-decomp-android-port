@@ -776,12 +776,61 @@ static void port_adv_coin_count_top(HUD *self, int dy)
                                              2 + dy, -1, 1, 0);
 }
 
+/* THE RED-COIN AND SILVER-STAR ROWS, MOVED TO THE BOTTOM-LEFT (Tango, forum
+ * thread "Red coin HUD icons and Silver Stars HUD icons overlap with the life
+ * counter", 0.5.0). A LAYOUT CHOICE OF THE PORT'S, NOT THE CARTRIDGE'S.
+ *
+ * The cartridge draws both rows at the top-left of the top screen, x = 0x10,
+ * y = 0xa, with the red coins dropping to y = 0x1c when silver stars hold the
+ * row (src/_ZN3HUD14RenderRedCoinsEv.cpp, src/_ZN3HUD17RenderSilverStarsEv.cpp),
+ * and it can, because its life counter is on the BOTTOM screen. This arm put
+ * the life counter on the top screen at that same corner (xBase 0x10, y 0xa,
+ * above), so both rows landed on it. Tango's placement: silver stars at the
+ * bottom-left, red coins above them, and the two swap so the kind collected
+ * FIRST is on the bottom row. The rows keep the ROM's own sprites, x start and
+ * x step (0xb red, 0x11 silver) and the ROM's row spacing (0x1c - 0xa = 0x12),
+ * mirrored to the bottom edge: the bottom row's top at 0xa6 leaves the same 10
+ * rows under a 16-row sprite that 0xa leaves above one. Counts are the ROM's
+ * (data_0209f30c red, data_0209f310 silver, per player).
+ *
+ * SM64DS_ADV_RS_BOTTOM=0 draws the two rows through the ROM's own leaves again
+ * (top-left, over the lives), on the same exe. */
+extern "C" {
+extern signed char data_0209f30c[];         /* per-player red-coin counts     */
+extern char data_ov002_0210c6b8;           /* the red-coin HUD sprite        */
+extern int data_ov001_020abac8[];          /* the silver-star HUD sprite     */
+}
+static void port_adv_red_silver_bottom(void)
+{
+    static int first;                /* 0 none yet, 1 red coins, 2 silver stars */
+    const int idx = data_0209f250;
+    const int red = (unsigned char)data_0209f30c[idx];
+    const int silver = (unsigned short)(short)data_0209f310[idx];
+    if (!red && !silver)
+        first = 0;
+    else if (!first)
+        first = silver ? 2 : 1;      /* both on one frame: silver below */
+    const int bottom = 0xa6, above = 0xa6 - 0x12;
+    const int red_y = (first == 1 || !silver) ? bottom : above;
+    const int silver_y = (first == 2 || !red) ? bottom : above;
+    for (int i = 0; i < red; i++)
+        _ZN3OAM6RenderEbP7OamAttriiiiP9Matrix2x2(0, &data_ov002_0210c6b8,
+                                                 0x10 + i * 0xb, red_y, -1, 1, 0);
+    for (int i = 0; i < silver; i++)
+        _ZN3OAM6RenderEbP7OamAttriiiiP9Matrix2x2(0, data_ov001_020abac8,
+                                                 0x10 + i * 0x11, silver_y, -1, 1,
+                                                 0);
+}
+
 /* Returns 1 when it has drawn the whole adventure arm itself and the caller
    must NOT also run HUD::Render; 0 means "not my case, run the ROM's". */
 static int port_adv_hud_render_stars_lives_on_top(HUD *self)
 {
     static int want = -1, star_dy = 0, coin_dy = 18, life_dy = 0;
+    static int rs_bottom = 1;
     if (want < 0) {
+        const char *rs = std::getenv("SM64DS_ADV_RS_BOTTOM");
+        rs_bottom = (rs && rs[0] == '0') ? 0 : 1;
         const char *e = std::getenv("SM64DS_ADV_HUD_TOP");
         want = (e && e[0] == '0') ? 0 : 1;
         e = std::getenv("SM64DS_ADV_STAR_TOP_Y");
@@ -809,8 +858,12 @@ static int port_adv_hud_render_stars_lives_on_top(HUD *self)
         _ZN3HUD17RenderHealthMeterEv((void *)self);
         if (_ZN5Event6GetBitEj(0x1d) == 0) {
             port_adv_coin_count_top(self, coin_dy);
-            _ZN3HUD14RenderRedCoinsEv((void *)self);
-            _ZN3HUD17RenderSilverStarsEv((void *)self);
+            if (rs_bottom) {
+                port_adv_red_silver_bottom();
+            } else {
+                _ZN3HUD14RenderRedCoinsEv((void *)self);
+                _ZN3HUD17RenderSilverStarsEv((void *)self);
+            }
             _ZN3HUD15RenderTimeTimerEv((void *)self);
         }
         /* SM64DS_BOUNCE_ARROWS=1 RAISES THE ROM'S OWN CUE, and raises nothing

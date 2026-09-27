@@ -87,6 +87,17 @@ void rt_hblank_dispatch();
 // frame -- after the game's behaviour work, before the host rasterises.
 void rt_scanout_frame();
 
+// THE WINDOW REGISTERS, LINE BY LINE (run hunt1, lane HUNTHW). A mask-2 handler
+// (the ROM's dWipe_c, func_0202f2c4) rewrites WIN0H / WIN1H on every HBlank, so
+// the 192 visible lines each have their own horizontal window edges. The last
+// rt_scanout_frame recorded them: rows[y] is the WIN1H:WIN0H word the 2D unit
+// had while drawing line y (line 0 = the value when the scan began, line y + 1 =
+// the value after the HBlank at VCOUNT y). Returns false, leaving *rows alone,
+// on a frame on which no handler ran on lines 0..190: the registers were then
+// constant for the whole frame and the one-rectangle read is exact. engine 0 is
+// the main engine (0x04000040), 1 the sub engine (0x04001040).
+bool rt_window_rows(int engine, const uint32_t **rows);
+
 // The DS's power-on interrupt state (IME set, IE carrying VBlank). It stands
 // in for src/func_0201a054.c, the game's own IRQ init, which is in no slice.
 // Idempotent. rt_run calls it; a frame loop that does not run on the fiber

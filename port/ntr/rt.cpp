@@ -156,10 +156,22 @@ void hblank_line() {
         ++g_hb_window_writes;
 }
 
+// rt_window_rows' record (see rt.h): the WIN1H:WIN0H word of each engine for
+// each visible line of the last scan, and whether a handler wrote any of them.
+uint32_t g_win_rows[2][192];
+bool g_win_rows_live;
+
+inline void win_rows_take(int y) {
+    g_win_rows[0][y] = *reinterpret_cast<volatile uint32_t *>(REG_WIN0H);
+    g_win_rows[1][y] = *reinterpret_cast<volatile uint32_t *>(REG_WIN0H_SUB);
+}
+
 // Advance the scanline counter across a frame. Anything spinning on VCOUNT --
 // the decomp does, in func_02013f4c -- needs this to actually move.
 void run_scanlines() {
     const bool off = hblank_off();
+    bool rows_written = false;
+    win_rows_take(0);
     for (uint16_t line = 0; line < 263; ++line) {
         reg16(REG_VCOUNT) = line;
         if (off) continue;
@@ -175,6 +187,7 @@ void run_scanlines() {
                 std::fflush(stderr);
             }
             hblank_line();
+            if (line < 191) rows_written = true;
         } else if (hblank_trace()) {
             const unsigned g = rt_hblank_gates();
             if (g != g_hb_gates_said && (g & HBLANK_GATE_HANDLER)) {
@@ -190,7 +203,9 @@ void run_scanlines() {
                 std::fflush(stderr);
             }
         }
+        if (line < 191) win_rows_take(line + 1);
     }
+    g_win_rows_live = rows_written;
 }
 
 }  // namespace
@@ -226,6 +241,12 @@ uint32_t rt_irq_restore(uint32_t prev) {
 bool rt_irq_masked() { return g.cpsr_i != 0; }
 
 void rt_scanout_frame() { run_scanlines(); }
+
+bool rt_window_rows(int engine, const uint32_t **rows) {
+    if (!g_win_rows_live || engine < 0 || engine > 1 || !rows) return false;
+    *rows = g_win_rows[engine];
+    return true;
+}
 
 void rt_hblank_counters(unsigned long long *deliveries,
                         unsigned long long *window_writes) {

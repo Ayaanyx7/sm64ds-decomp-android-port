@@ -4097,8 +4097,15 @@ extern "C" void hal_lc_menu_pad(void)
 
 /* Bottom of the frame: upload the shadows the game filled, rasterise engine B,
    drop it into the corner. With the panel off nothing here writes a pixel. */
-void hal_sub_screen_present(unsigned int *dst, int w, int h)
+/* The corner-inset rectangle this frame's present drew, for engine A's fade
+   (hal_sub_screen_present below); g_inset_live is 0 on a frame that drew no
+   inset (stacked layout, panel off, the level-clear compose). */
+static int g_inset_rect[4];
+static int g_inset_live;
+
+static void sub_screen_present_body(unsigned int *dst, int w, int h)
 {
+    g_inset_live = 0;
     hal_screens_probe();
     hal_obj_parity_probe();
     /* SM64DS_SUB_SCALE is a divisor: 1 = full DS size (a quarter of the 2x
@@ -4325,6 +4332,18 @@ void hal_sub_screen_present(unsigned int *dst, int w, int h)
            on; with it off not a pixel of this runs. */
         if (improved_map_on()) hal_sub_panel_decor(dst, w, h);
         ntr::ppu_compose_sub(g_sub, dst, w, h, g_x0, g_y0, g_pan_num, g_pan_den);
+        /* the rectangle engine A's fade treats as one piece (the wrapper
+           below): the map, its one-pixel frame and, with the improved map,
+           the decoration round it */
+        {
+            int el = 0, et = 0, er = 0, eb = 0;
+            if (improved_map_on()) panel_extents(&el, &et, &er, &eb);
+            g_inset_rect[0] = g_x0 - (el > 1 ? el : 1);
+            g_inset_rect[1] = g_y0 - (et > 1 ? et : 1);
+            g_inset_rect[2] = g_x0 + g_pan_w + (er > 1 ? er : 1);
+            g_inset_rect[3] = g_y0 + g_pan_h + (eb > 1 ? eb : 1);
+            g_inset_live = 1;
+        }
         /* AND THE PANEL'S SECOND PASS, the MAP plaque, which the owner asked
            to sit ABOVE the map rather than behind it. Three layers in his own
            order: the plate, the map, the banner. */
@@ -4409,6 +4428,27 @@ void hal_sub_screen_present(unsigned int *dst, int w, int h)
                         *(volatile unsigned short *)0x0400100e);
         }
     }
+}
+
+/* THE PRESENT, and then ENGINE A'S FADE COMPOSITE over the framebuffer it was
+   handed (hal/message_compositor.cpp, port_engine_a_fade). Both frame loops
+   call this right after the engine-A compositor; the level loop used to run
+   the fade itself, here, after this call, and the scene loop never ran it.
+   The body above has an early return (the panel switched off), so the fade
+   hangs off this wrapper and not off the body's last line. */
+extern "C" void port_engine_a_fade(unsigned int *px, int w, int h);
+extern "C" void port_engine_a_bright_mask_rect(int x0, int y0, int x1,
+                                               int y1);
+void hal_sub_screen_present(unsigned int *dst, int w, int h)
+{
+    sub_screen_present_body(dst, w, h);
+    /* THE INSET TAKES ONE VERDICT: the whole panel is blended, as it always
+       was, instead of each of its pixels being judged by the engine-A layer
+       under it (see port_engine_a_bright_mask_rect) */
+    if (g_inset_live)
+        port_engine_a_bright_mask_rect(g_inset_rect[0], g_inset_rect[1],
+                                       g_inset_rect[2], g_inset_rect[3]);
+    port_engine_a_fade(dst, w, h);
 }
 
 /* ---- the stacked layout ----------------------------------------------------
