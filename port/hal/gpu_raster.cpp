@@ -560,6 +560,7 @@ bool ensure_vb(size_t verts)
 /* ---- the one-time start-up ----------------------------------------------- */
 
 void at_exit();
+void aa_at_exit();   /* with the edge-smoothing pass, below */
 
 bool start()
 {
@@ -613,6 +614,7 @@ void at_exit()
        a process whose game cannot run, and the render targets are the biggest
        thing this file ever asks a driver for. */
     port_gpu_device_address_rows("exit  ", g_addrcheck);
+    aa_at_exit();
     release_textures();
     release_targets();
     if (g_vb) { g_vb->Release(); g_vb = 0; }
@@ -900,6 +902,321 @@ void rbc_frame(const ntr::GxGpuFrame *f, bool drew)
     }
     ++g_rbc_frames;
 }
+
+#if defined(GX_HAS_GPU_AA)
+/* ---- THE EDGE-SMOOTHING PASS ON THE CARD (run perf2) --------------------
+ *
+ * ntr/gx.cpp's aa_pass smooths the finished 3D picture on the CPU after the
+ * translucent pass: five luma values per covered pixel, a contrast test, a
+ * direction, a blend. At RenderScale 4 that is 4 ms of a frame on a
+ * twelve-core machine and 15 ms on two cores. With the card drawing, gx.cpp
+ * hands the pass here instead (gx_set_gpu_aa): the picture as it stands
+ * (aa_pass has already copied it aside for the display capture, that copy
+ * is what is uploaded), and the coverage mask, go up; hal/gpu_raster.hlsl's
+ * aa_ps runs aa_band's rule on every pixel; the result comes back and every
+ * pixel that changed is written into the framebuffer and counted.
+ *
+ * THE RULE IS aa_band's, OPERATION FOR OPERATION, in exact arithmetic: see
+ * the shader. The frame goes up and comes back as packed 32-bit words, so no
+ * colour conversion stands between the CPU's bytes and the shader's.
+ * SM64DS_RENDERER_AACHECK=1 runs this file's own copy of aa_band (aa_ref,
+ * below) on the same input every frame and counts the pixels that differ;
+ * the count is printed at exit.
+ *
+ * The pass needs shader model 5 (the `precise` marks that forbid a fused
+ * multiply-add are only encoded there), so a device below feature level 11_0
+ * answers 0 and gx.cpp runs its own pass; so does any failure, the card
+ * having fallen back, and SM64DS_RENDERER_AA=0 (the knob that keeps the CPU
+ * pass with the card on, for timing). The software renderer never calls
+ * this: nothing registers it unless the "Renderer" setting is on. */
+ID3D11VertexShader       *g_aa_vs;
+ID3D11PixelShader        *g_aa_ps;
+ID3D11Texture2D          *g_aa_in, *g_aa_cv, *g_aa_out, *g_aa_st;
+ID3D11ShaderResourceView *g_aa_in_srv, *g_aa_cv_srv;
+ID3D11RenderTargetView   *g_aa_rtv;
+int g_aa_w, g_aa_h;
+/* SM64DS_RENDERER_AA: 0 the processor always, 1 the card always (where it
+   can), absent = WHICHEVER IS FASTER HERE, decided once at the first smoothed
+   frame. Both give the same picture, so this is a speed choice only.
+   Measured on level 6, same exe, card vs processor, median of 3 (RTX 4070):
+     2 cores  RenderScale 3  9.56 -> 4.02 ms   RenderScale 4 19.61 -> 6.67 ms
+     12 cores RenderScale 3  2.42 -> 3.35 ms   RenderScale 4  4.04 -> 5.26 ms
+     WARP, 12 cores           S4 4.10 -> 11.81 ms
+   The card's round trip (the picture up, the pass, the result back) costs a
+   roughly fixed couple of milliseconds; the processor's pass divides by its
+   cores. So the card takes it when this process has four processors or fewer
+   to run on (the affinity mask, which is what a two-core machine and the
+   two-core stand-in both report) and the device is a real card, not WARP. */
+int g_aa_on = -1;
+int g_aa_dead;         /* the pass cannot run on this device: CPU from now on */
+int g_aacheck;         /* SM64DS_RENDERER_AACHECK */
+long long g_aac_frames, g_aac_bad_frames, g_aac_bad_px;
+std::vector<uint32_t> g_aac_ref;
+long long g_aa_frames;
+double g_aa_ms;
+
+void release_aa()
+{
+    if (g_aa_rtv) { g_aa_rtv->Release(); g_aa_rtv = 0; }
+    if (g_aa_in_srv) { g_aa_in_srv->Release(); g_aa_in_srv = 0; }
+    if (g_aa_cv_srv) { g_aa_cv_srv->Release(); g_aa_cv_srv = 0; }
+    if (g_aa_in) { g_aa_in->Release(); g_aa_in = 0; }
+    if (g_aa_cv) { g_aa_cv->Release(); g_aa_cv = 0; }
+    if (g_aa_out) { g_aa_out->Release(); g_aa_out = 0; }
+    if (g_aa_st) { g_aa_st->Release(); g_aa_st = 0; }
+    g_aa_w = g_aa_h = 0;
+}
+
+/* The CPU pass takes over for the rest of the run, with one line saying why.
+   Not fall_back: the opaque pass on the card is unaffected by this. */
+void aa_give_up(const char *why, HRESULT hr)
+{
+    if (g_aa_dead) return;
+    g_aa_dead = 1;
+    fprintf(stderr, "[renderer] the edge smoothing goes back to the processor "
+            "(%s, code %08x); the picture is the same, only slower.\n", why,
+            (unsigned)hr);
+}
+
+bool ensure_aa(int w, int h)
+{
+    if (!g_aa_vs) {
+        if (port_gpu_device_feature_level() < 0xb000) {   /* D3D_FEATURE_LEVEL_11_0 */
+            aa_give_up("the card is older than Direct3D 11", 0);
+            return false;
+        }
+        HRESULT hr = g_dev->CreateVertexShader(kGpuAaVS, sizeof kGpuAaVS, 0, &g_aa_vs);
+        if (FAILED(hr)) { aa_give_up("its vertex shader would not load", hr); return false; }
+        hr = g_dev->CreatePixelShader(kGpuAaPS, sizeof kGpuAaPS, 0, &g_aa_ps);
+        if (FAILED(hr)) { aa_give_up("its pixel shader would not load", hr); return false; }
+    }
+    if (g_aa_in && g_aa_w == w && g_aa_h == h) return true;
+    release_aa();
+    D3D11_TEXTURE2D_DESC d;
+    memset(&d, 0, sizeof d);
+    d.Width = (UINT)w;
+    d.Height = (UINT)h;
+    d.MipLevels = d.ArraySize = 1;
+    d.SampleDesc.Count = 1;
+    d.Usage = D3D11_USAGE_DEFAULT;
+    d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    d.Format = DXGI_FORMAT_R32_UINT;
+    HRESULT hr = g_dev->CreateTexture2D(&d, 0, &g_aa_in);
+    if (FAILED(hr)) { aa_give_up("no picture texture", hr); return false; }
+    hr = g_dev->CreateShaderResourceView(g_aa_in, 0, &g_aa_in_srv);
+    if (FAILED(hr)) { aa_give_up("no picture view", hr); return false; }
+    d.Format = DXGI_FORMAT_R8_UINT;
+    hr = g_dev->CreateTexture2D(&d, 0, &g_aa_cv);
+    if (FAILED(hr)) { aa_give_up("no coverage texture", hr); return false; }
+    hr = g_dev->CreateShaderResourceView(g_aa_cv, 0, &g_aa_cv_srv);
+    if (FAILED(hr)) { aa_give_up("no coverage view", hr); return false; }
+    d.Format = DXGI_FORMAT_R32_UINT;
+    d.BindFlags = D3D11_BIND_RENDER_TARGET;
+    hr = g_dev->CreateTexture2D(&d, 0, &g_aa_out);
+    if (FAILED(hr)) { aa_give_up("no result target", hr); return false; }
+    hr = g_dev->CreateRenderTargetView(g_aa_out, 0, &g_aa_rtv);
+    if (FAILED(hr)) { aa_give_up("no result target view", hr); return false; }
+    d.BindFlags = 0;
+    d.Usage = D3D11_USAGE_STAGING;
+    d.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    hr = g_dev->CreateTexture2D(&d, 0, &g_aa_st);
+    if (FAILED(hr)) { aa_give_up("no result readback buffer", hr); return false; }
+    g_aa_w = w;
+    g_aa_h = h;
+    return true;
+}
+
+/* THIS FILE'S COPY OF ntr/gx.cpp's aa_band, for SM64DS_RENDERER_AACHECK only:
+   the same luma, the same tests, the same blends, into `out`. */
+inline float aa_luma(uint32_t p)
+{
+    return 0.299f * (float)((p >> 16) & 0xFF) +
+           0.587f * (float)((p >> 8) & 0xFF) +
+           0.114f * (float)(p & 0xFF);
+}
+inline uint32_t aa_mix2(uint32_t a, uint32_t b, float t)
+{
+    const float s = 1.0f - t;
+    uint32_t r = 0xFF000000u;
+    for (int sh = 16; sh >= 0; sh -= 8) {
+        const float v = (float)((a >> sh) & 0xFF) * s + (float)((b >> sh) & 0xFF) * t;
+        const int i = (int)(v + 0.5f);
+        r |= (uint32_t)(i < 0 ? 0 : (i > 255 ? 255 : i)) << sh;
+    }
+    return r;
+}
+void aa_ref(const ntr::GxGpuAa *a, uint32_t *out)
+{
+    for (int y = 0; y < a->h; ++y) {
+        const uint8_t *crow = a->cover + (size_t)y * a->stride;
+        const uint32_t *rm = a->src + (size_t)y * a->stride;
+        const uint32_t *rn = a->src + (size_t)(y > 0 ? y - 1 : 0) * a->stride;
+        const uint32_t *rs = a->src + (size_t)(y + 1 < a->h ? y + 1 : y) * a->stride;
+        uint32_t *orow = out + (size_t)y * a->w;
+        for (int x = 0; x < a->w; ++x) {
+            orow[x] = rm[x];
+            if (!crow[x]) continue;
+            const int xw = x > 0 ? x - 1 : 0;
+            const int xe = x + 1 < a->w ? x + 1 : x;
+            const uint32_t pM = rm[x], pN = rn[x], pS = rs[x];
+            const uint32_t pW = rm[xw], pE = rm[xe];
+            const float lM = aa_luma(pM), lN = aa_luma(pN), lS = aa_luma(pS);
+            const float lW = aa_luma(pW), lE = aa_luma(pE);
+            float lo = lM, hi = lM;
+            const float ls[4] = {lN, lS, lW, lE};
+            for (int i = 0; i < 4; ++i) {
+                if (ls[i] < lo) lo = ls[i];
+                if (ls[i] > hi) hi = ls[i];
+            }
+            const float range = hi - lo;
+            if (range < 8.0f || range < hi * 0.125f) continue;
+            const float d2x = fabsf(lW + lE - 2.0f * lM);
+            const float d2y = fabsf(lN + lS - 2.0f * lM);
+            const uint32_t n1 = (d2x >= d2y) ? pW : pN;
+            const uint32_t n2 = (d2x >= d2y) ? pE : pS;
+            const float avg = 0.25f * (lN + lS + lW + lE);
+            float t = fabsf(avg - lM) / range;
+            t = t * t;
+            if (t > 0.5f) t = 0.5f;
+            if (t <= 0.002f) continue;
+            orow[x] = aa_mix2(pM, aa_mix2(n1, n2, 0.5f), t);
+        }
+    }
+}
+
+void aac_report()
+{
+    fprintf(stderr, "[renderer-aacheck] %lld frame(s) smoothed on the card and "
+            "checked against the processor's rule: %lld differing, %lld "
+            "differing pixel(s)\n", g_aac_frames, g_aac_bad_frames, g_aac_bad_px);
+}
+
+int aa_backend(ntr::GxGpuAa *a)
+{
+    if (!g_aa_on || g_aa_dead || g_down || !g_dev || !a || a->w <= 0 || a->h <= 0)
+        return 0;
+    if (g_aa_on < 0) {
+        DWORD_PTR pm = 0, sm = 0;
+        int n = 0;
+        if (GetProcessAffinityMask(GetCurrentProcess(), &pm, &sm))
+            for (; pm; pm &= pm - 1) ++n;
+        const bool warp = port_gpu_device_is_warp() != 0;
+        g_aa_on = (n > 0 && n <= 4 && !warp) ? 1 : 0;
+        fprintf(stderr, "[renderer] edge smoothing: %s (%d processor(s)%s)\n",
+                g_aa_on ? "on the card" : "on the processor, which is faster here",
+                n, warp ? ", WARP" : "");
+        if (!g_aa_on) return 0;
+    }
+    if (!ensure_aa(a->w, a->h)) return 0;
+    const long long t0 = qpc();
+
+    D3D11_BOX box;
+    box.left = 0;
+    box.top = 0;
+    box.front = 0;
+    box.right = (UINT)a->w;
+    box.bottom = (UINT)a->h;
+    box.back = 1;
+    g_ctx->UpdateSubresource(g_aa_in, 0, &box, a->src, (UINT)a->stride * 4u, 0);
+    g_ctx->UpdateSubresource(g_aa_cv, 0, &box, a->cover, (UINT)a->stride, 0);
+
+    g_ctx->OMSetRenderTargets(1, &g_aa_rtv, 0);
+    D3D11_VIEWPORT vp;
+    vp.TopLeftX = 0.0f;
+    vp.TopLeftY = 0.0f;
+    vp.Width = (float)a->w;
+    vp.Height = (float)a->h;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    g_ctx->RSSetViewports(1, &vp);
+    D3D11_RECT sc;
+    sc.left = 0;
+    sc.top = 0;
+    sc.right = a->w;
+    sc.bottom = a->h;
+    g_ctx->RSSetScissorRects(1, &sc);
+    g_ctx->RSSetState(g_rast);
+    g_ctx->OMSetDepthStencilState(0, 0);
+    g_ctx->OMSetBlendState(0, 0, 0xffffffffu);
+    g_ctx->IASetInputLayout(0);
+    g_ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    g_ctx->VSSetShader(g_aa_vs, 0, 0);
+    g_ctx->PSSetShader(g_aa_ps, 0, 0);
+    ID3D11ShaderResourceView *srvs[2] = { g_aa_in_srv, g_aa_cv_srv };
+    g_ctx->PSSetShaderResources(0, 2, srvs);
+    g_ctx->Draw(3, 0);
+    ID3D11ShaderResourceView *none[2] = { 0, 0 };
+    g_ctx->PSSetShaderResources(0, 2, none);
+    g_ctx->OMSetRenderTargets(0, 0, 0);
+    g_ctx->CopyResource(g_aa_st, g_aa_out);
+
+    D3D11_MAPPED_SUBRESOURCE m;
+    memset(&m, 0, sizeof m);
+    const HRESULT hr = g_ctx->Map(g_aa_st, 0, D3D11_MAP_READ, 0, &m);
+    if (FAILED(hr)) {
+        /* nothing has been written yet: the CPU pass does this frame */
+        aa_give_up("its result could not be read back", hr);
+        return 0;
+    }
+    if (g_aacheck) {
+        g_aac_ref.resize((size_t)a->w * (size_t)a->h);
+        aa_ref(a, &g_aac_ref[0]);
+        long long bad = 0;
+        for (int y = 0; y < a->h; ++y) {
+            const uint32_t *orow =
+                (const uint32_t *)((const unsigned char *)m.pData + (size_t)y * m.RowPitch);
+            const uint32_t *rrow = &g_aac_ref[(size_t)y * a->w];
+            for (int x = 0; x < a->w; ++x) bad += orow[x] != rrow[x];
+        }
+        ++g_aac_frames;
+        if (bad) {
+            ++g_aac_bad_frames;
+            g_aac_bad_px += bad;
+            if (g_aac_bad_frames <= 5)
+                fprintf(stderr, "[renderer-aacheck] frame %lld: %lld pixel(s) "
+                        "differ\n", g_frames, bad);
+        }
+    }
+    /* THE WRITE, exactly aa_band's: a pixel is written, and counted, only
+       where the smoothed value differs from the frame as it stood. The live
+       framebuffer still holds that frame (a->src is aa_pass's copy of it). */
+    unsigned long long changed = 0;
+    for (int y = 0; y < a->h; ++y) {
+        const uint32_t *orow =
+            (const uint32_t *)((const unsigned char *)m.pData + (size_t)y * m.RowPitch);
+        const uint32_t *srow = a->src + (size_t)y * a->stride;
+        uint32_t *frow = a->fb + (size_t)y * a->stride;
+        int x = 0;
+        for (; x + 4 <= a->w; x += 4) {
+            const __m128i o = _mm_loadu_si128((const __m128i *)(orow + x));
+            const __m128i s = _mm_loadu_si128((const __m128i *)(srow + x));
+            if (_mm_movemask_epi8(_mm_cmpeq_epi32(o, s)) == 0xFFFF) continue;
+            for (int k = x; k < x + 4; ++k)
+                if (orow[k] != srow[k]) { frow[k] = orow[k]; ++changed; }
+        }
+        for (; x < a->w; ++x)
+            if (orow[x] != srow[x]) { frow[x] = orow[x]; ++changed; }
+    }
+    g_ctx->Unmap(g_aa_st, 0);
+    a->changed = changed;
+    ++g_aa_frames;
+    g_aa_ms += ms_between(t0, qpc());
+    return 1;
+}
+
+void aa_at_exit()
+{
+    if (g_aa_frames)
+        fprintf(stderr, "[renderer] %lld frame(s) smoothed on the card, %.3f ms "
+                "per frame for the whole round trip.\n", g_aa_frames,
+                g_aa_ms / (double)g_aa_frames);
+    release_aa();
+    if (g_aa_vs) { g_aa_vs->Release(); g_aa_vs = 0; }
+    if (g_aa_ps) { g_aa_ps->Release(); g_aa_ps = 0; }
+}
+#else   /* ntr/gx.h without the edge-smoothing hook: the CPU pass always */
+void aa_at_exit() {}
+#endif
 
 /* ---- the frame ----------------------------------------------------------- */
 
@@ -1228,7 +1545,15 @@ extern "C" void port_gpu_raster_configure(void)
     if (g_rbcheck) atexit(rbc_report);
     g_rbtime = env_int("SM64DS_RENDERER_RBTIME", 0);
     if (g_rbtime) atexit(rbt_report);
+#if defined(GX_HAS_GPU_AA)
+    g_aa_on = env_int("SM64DS_RENDERER_AA", -1);
+    g_aacheck = env_int("SM64DS_RENDERER_AACHECK", 0);
+    if (g_aacheck) atexit(aac_report);
+#endif
     ntr::gx_set_gpu_opaque(&backend);
+#if defined(GX_HAS_GPU_AA)
+    ntr::gx_set_gpu_aa(&aa_backend);
+#endif
 }
 
 extern "C" int port_gpu_raster_active(void)
