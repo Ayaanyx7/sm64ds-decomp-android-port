@@ -67,6 +67,11 @@ int func_02057020(void) {
     return (int)(base + lz);
 }
 
+/* The host's save file is held against other game windows for as long as a
+   transfer's id owns the card; the release of that id ends the hold
+   (port/ntr/backup.cpp, "ONE TRANSFER, ONE HOLDER"). */
+void port_backup_transfer_end(int lock_id);
+
 // PORT_HOST_ABI: ARM asm primitive (func_02057078, OS_ReleaseLockID): the ROM
 //   body is an `asm` block, so it is written here as the same steps. An id
 //   from 0x60 up is in the second word, the rest in the first, and the id's
@@ -77,6 +82,7 @@ int func_02057020(void) {
 void func_02057078(int lock_id) {
     volatile unsigned int *w = lock_words();
     int idx = lock_id & 0xffff;   /* every caller passes the id as a u16 */
+    port_backup_transfer_end(idx);
     if (idx - 0x60 >= 0) {
         w += 1;
         idx -= 0x60;
