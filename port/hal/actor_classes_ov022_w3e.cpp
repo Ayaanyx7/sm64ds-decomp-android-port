@@ -163,7 +163,7 @@ extern "C" void *__fastcall port_actor_s30_base(void *self, void *, void *out);
     243  InitResources / Behavior                      -> methods
     243  CleanupResources / D0                         -> C names  */
 #include "RollingLogLll.h"
-#include "RollingLogLll.h"
+#include "daObj_volcanoCannon_c.h"
 
 extern "C" {
 /* the arm9 shared half -- the same slot-for-slot set the four wave-8 tables
@@ -607,20 +607,30 @@ DSSTATE_END
    are daObj_volcanoCannon_c_classInit, _ZN21daObj_volcanoCannon_cD0Ev, _ZN21daObj_volcanoCannon_cD1Ev.
    Read out of extracted/overlays/overlay_0022.bin; the LHS is not a config
    symbol anywhere, so the alias cannot be defeated by a later slice. */
+/* SLOTS 0, 6 AND 16 ARE THIS CLASS'S OWN. The ROM words of 0x0211447c are
+   0x021128b8 (daObj_volcanoCannon_c::InitResources), 0x02112800 (::Behavior)
+   and 0x021125e0 (its D1), read out of overlay_0022.bin. These three used to
+   reach ROLLING_LOG_LLL (70)'s bodies at 0x02112590 / 0x02112560 and its D1,
+   a leftover of the shifted dsd naming above: the ring's first fireball ran
+   the rolling log's InitResources, which read a resource table this 0x11c-byte
+   actor does not have and called through -1, and the quarantine froze the
+   VolcanoRing whose Behavior had spawned it. */
 static int __fastcall vf_init(void *s, void *)
-{ return ((RollingLogLll *)s)->RollingLogLll::InitResources(); }
+{ return ((daObj_volcanoCannon_c *)s)->daObj_volcanoCannon_c::InitResources(); }
 static int __fastcall vf_clean(void *s, void *)
 { return _ZN21daObj_volcanoCannon_c16CleanupResourcesEv(s); }
 static int __fastcall vf_behavior(void *s, void *)
-{ return ((RollingLogLll *)s)->RollingLogLll::Behavior(); }
+{ return ((daObj_volcanoCannon_c *)s)->daObj_volcanoCannon_c::Behavior(); }
 static int __fastcall vf_render(void *s, void *)
 { return ((fBase_c *)s)->fBase_c::Render(); }
-/* slot 16: src/_ZN21daObj_volcanoCannon_cD1Ev.cpp is held out (MSVC mangles it
-   ??1RollingLogLll@@UAE@XZ). The ROM body at 0x021125e0 restores the vptr,
-   runs MovingCylinderClsn::D1 at +0xd4 and then Actor::D2 -- HIGH ADDRESS
-   FIRST, one member, no Deallocate (that is D0's). */
-/* slot 16 is the matched src D1 through hal/dtor_faces_cpp.cpp (lane DTOR-FACES-CPP);
-   the transcribed thunk that stood here (vf_d1) spelled the same chain by hand. */
+/* slot 16: the ROM body at 0x021125e0 restores the vptr, runs
+   MovingCylinderClsn::D1 at +0xd4 and then Actor::D2 -- HIGH ADDRESS FIRST,
+   one member, no Deallocate (that is D0's). That body is the matched
+   src/_ZN21daObj_volcanoCannon_cD1Ev.cpp (??1daObj_volcanoCannon_c@@QAE@XZ),
+   reached through the face hal/actorport_dtor_bridge.cpp aliases onto it. */
+extern "C" void __fastcall actorport_d16t_daObj_volcanoCannon_c(void *, void *);
+static int __fastcall vf_d1(void *s, void *e)
+{ actorport_d16t_daObj_volcanoCannon_c(s, e); return (int)(size_t)s; }
 static int __fastcall vf_d0(void *s, void *)
 { return (int)(size_t)_ZN21daObj_volcanoCannon_cD0Ev((int *)s); }
 /* the two pointer-to-member records, as __fastcall (ecx is arg 1) so the
@@ -638,7 +648,7 @@ extern "C" void hal_fill_volcano_fire_vtable(void)
     vt[3]  = (void *)vf_clean;
     vt[6]  = (void *)vf_behavior;
     vt[9]  = (void *)vf_render;
-    vt[16] = (void *)PORT_D16(hal_cppd1_RollingLogLll);
+    vt[16] = (void *)PORT_D16(vf_d1);
     vt[17] = (void *)vf_d0;
     /* ov22e_fill_shared wrote slot 30; this table has no slot 31 and the fill
        never touches one. */
