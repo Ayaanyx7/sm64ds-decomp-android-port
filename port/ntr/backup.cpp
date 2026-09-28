@@ -590,21 +590,15 @@ PortBackupFill g_port_backup_fill;
 
 DSSTATE_END
 
-// ---- OS_GetLockID (ROM: func_02057020) lives in hal/boot_hw.cpp ---------
-// This file once carried a constant-id face for it (return 0x40). Lane BOOT
-// hosts the primitive faithfully in port/hal/boot_hw.cpp: the ROM's clz search
-// over the two lock words at 0x027fffb0, seeded by the boot spans. The two
-// definitions collided at integration (LNK2005), and the faithful one stays.
-// SaveDataToCart / ReadDataFromCart still refuse on -3, which that body returns
-// only when both lock words are exhausted.
-
-// ---- FACE: OS_ReleaseLockID (ROM: func_02057078) ---------------------------
-// PORT_HOST_ABI: the `asm` sibling of the above, clearing the same bit in the
-// same unmapped bitmask. Nothing to clear.
-void func_02057078(int lock_id)
-{
-    (void)lock_id;
-}
+// ---- OS_GetLockID / OS_ReleaseLockID (ROM: func_02057020 / func_02057078) ---
+// Both live in hal/os_lockid.cpp: the ROM's search over the two lock words at
+// 0x027fffb0 and its release, which sets the id's bit back. This file once
+// carried a constant-id face for the first (return 0x40) and a do-nothing face
+// for the second. The constant face went at integration; the do-nothing one
+// stayed after the words became real, so every SaveDataToCart and
+// ReadDataFromCart kept its id for good. Four go at the title and two per
+// save, so from the 23rd save of one process on, SaveDataToCart took its -3
+// arm and returned before writing anything, and nothing said so.
 
 // ---- FACE: the ARM7's card-backup server (ROM: func_02060f60) --------------
 // PORT_HOST_ABI: the ROM body pushes `cmd` down PXI channel 0xB with IPCSend
