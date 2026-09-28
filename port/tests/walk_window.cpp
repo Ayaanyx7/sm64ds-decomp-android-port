@@ -1204,18 +1204,85 @@ static int ss_save_state(const char *how, int to_disk)
    its way through, so the second F9 is a plain slot load.
 
    Returns 1 if the world was restored. The caller owns the census and the
-   reseat, because only it knows which pointers it holds. */
+   reseat, because only it knows which pointers it holds.
+
+   THE SAVE FILE IS NOT ROLLED BACK (run hunt2, lane SAVELOSS1). The game's
+   copy of the open save file -- the 0x32c-byte save object at 0x0209caa0:
+   the 0x44-byte file record (stars, coin records, keys, flags), the
+   minigame records at +0x44 and the open slot at +0x328 -- sits inside the
+   captured .dsstate span, so a restore used to put back the copy from the
+   moment of the snapshot. Nothing was lost on disk yet, but the next time the
+   game saved (the star menu's Save, the pause menu's Save), the ROM's own
+   SaveData::SaveCurrentFile wrote that OLD copy over the file: every star and
+   coin record saved after the snapshot was gone. Measured on the 0.5.1 exe:
+   F8 in the castle, a later session saves a Lethal Lava Land star, a later
+   session presses F9 (the disk state) and saves a Shifting Sand Land star --
+   the file ends with SSL's star and without LLL's. A player's report of 79
+   stars becoming 65, Lethal Lava Land and Shifting Sand Land emptied down to
+   their coin records, is that shape.
+   On the cartridge the game's copy of the file never goes backwards during a
+   session: stars, coin records and flags are only ever added to it, and what
+   SaveCurrentFile writes is always at least what was written before. So the
+   save object is carried across the restore: the world goes back to the
+   snapshot, the file stays as the player left it. The five pieces are copied
+   by their own names and sizes (hal/level_boot.cpp hosts them as one grouped
+   run; nothing here depends on that grouping). Every load through
+   ss_load_state does it -- F9, the menu's load row and the scripted
+   SM64DS_SS_LOAD the soaks drive; only SM64DS_SS_DISKLOAD's boot read does not. */
+extern "C" unsigned char data_0209cab4[];   /* the save object's five pieces,  */
+extern "C" unsigned char data_0209cad2[];   /* hal/level_boot.cpp's SAVEBLK    */
+extern "C" unsigned char data_0209cae4[];   /* run: caa0 0x14, cab4 0x1e,      */
+extern "C" unsigned char data_0209caf4[];   /* cad2 0x12, cae4 0x10, caf4 728  */
+struct SsFileKeep {
+    unsigned char caa0[0x14], cab4[0x1e], cad2[0x12], cae4[0x10], caf4[728];
+};
+static void ss_file_keep(SsFileKeep *k)
+{
+    memcpy(k->caa0, data_0209caa0, sizeof k->caa0);
+    memcpy(k->cab4, data_0209cab4, sizeof k->cab4);
+    memcpy(k->cad2, data_0209cad2, sizeof k->cad2);
+    memcpy(k->cae4, data_0209cae4, sizeof k->cae4);
+    memcpy(k->caf4, data_0209caf4, sizeof k->caf4);
+}
+static void ss_file_put_back(const SsFileKeep *k)
+{
+    const int moved =
+        memcmp(data_0209caa0, k->caa0, sizeof k->caa0) ||
+        memcmp(data_0209cab4, k->cab4, sizeof k->cab4) ||
+        memcmp(data_0209cad2, k->cad2, sizeof k->cad2) ||
+        memcmp(data_0209cae4, k->cae4, sizeof k->cae4) ||
+        memcmp(data_0209caf4, k->caf4, sizeof k->caf4);
+    memcpy(data_0209caa0, k->caa0, sizeof k->caa0);
+    memcpy(data_0209cab4, k->cab4, sizeof k->cab4);
+    memcpy(data_0209cad2, k->cad2, sizeof k->cad2);
+    memcpy(data_0209cae4, k->cae4, sizeof k->cae4);
+    memcpy(data_0209caf4, k->caf4, sizeof k->caf4);
+    fprintf(stderr, "[savestate] the open save file was kept as it was before "
+                    "the load (%s)\n",
+            moved ? "the snapshot held an older copy of it"
+                  : "the snapshot's copy was the same");
+}
 static int ss_load_state(void)
 {
+    static SsFileKeep keep;
+    ss_file_keep(&keep);
     if (lk6_savestate_has()) {
-        if (lk6_savestate_load()) { ss_note("state loaded"); return 1; }
+        if (lk6_savestate_load()) {
+            ss_file_put_back(&keep);
+            ss_note("state loaded");
+            return 1;
+        }
         ss_note("state NOT loaded (see log)");
         return 0;
     }
     if (lk7_persist_present()) {
         fprintf(stderr, "[savestate] the slot was empty, so the disk state was "
                         "read instead\n");
-        if (lk7_persist_read()) { ss_note("state loaded from disk"); return 1; }
+        if (lk7_persist_read()) {
+            ss_file_put_back(&keep);
+            ss_note("state loaded from disk");
+            return 1;
+        }
         /* the header refusals -- another build's on-disk layout, a damaged
            file, a world that is not runnable -- used to be reported at boot,
            because that is where the read was. They belong wherever the read
@@ -2431,6 +2498,8 @@ extern "C" void port_ss_rollguard_hook(void (*)(void), void (*)(void));
 extern "C" void port_rollguard_stash(void);
 extern "C" void port_rollguard_unstash(void);
 
+#include "perf_trace.inc"   /* run perf2: SM64DS_PERF_TRACE, inert unset */
+
 /* ---- THE FRAME PACER'S CLOCK ------------------------------------------
    frame_pace below sleeps out the remainder of a frame budget that is 16.65ms
    or 33.3ms depending on what the running scene put in the ROM's own divider
@@ -2631,6 +2700,17 @@ static int g_ip_deferred;
 static long long g_ip_pace_seen;
 static double g_ip_cost_ms = 4.0;   /* running average blended-picture cost */
 static int g_ip_tick_shown;         /* this tick has put a picture up */
+/* run hunt2 lane SMFIT1, THE FIT RULE (see ip_fit_commit). g_ip_tick_final:
+   the tick's own finished picture (tick N itself) is up, so nothing blended
+   may follow it in this tick, because every blend is behind tick N. */
+static int g_ip_tick_final;
+static int g_ip_tick_blends;        /* blended pictures this tick drew */
+static int g_ip_tick_refused;       /* a slot of this tick had no room for one */
+static double g_ip_plain_ms = 1.0;  /* running average cost of a plain present */
+static double g_ip_work_ms;         /* running average of a tick's own work */
+static int g_ip_tick_probe;         /* the slow fallback's retry tick */
+static int g_ip_tick_measure;       /* ...that draws one blend to measure */
+static int g_ip_tick_late;          /* a blend of this tick ran past its end */
 static int ip_present_slot(long long t, long long deadline);
 static void ip_flush_deferred(void);
 
@@ -2815,6 +2895,7 @@ static void frame_pace(void)
         const char *e = getenv("SM64DS_TRACE_PACE");
         trace = e ? atoi(e) : 0;
     }
+    pt_mark(PS_PACE);
     if (!qpf.QuadPart) QueryPerformanceFrequency(&qpf);
     QueryPerformanceCounter(&now);
     g_ip_pace_seen = now.QuadPart;
@@ -6986,7 +7067,27 @@ static const BITMAPINFO *g_present_stack_bi;
    the framebuffer's, which is the DS panel at whatever tier this binary was
    built for, so this is 4:3 at every tier -- and STACK_W/STACK_H are the same
    panel twice, stacked, so the stacked fit is 2:3. */
+static void present_body(void);
 static void present(void)
+{
+    /* run perf2: charge the blit to present, or to present_x when the
+       pacer is the caller (FrameRate's repeated pictures) */
+    if (g_pt_on > 0) {
+        static int first[2];
+        const int k = g_pt_kind > 0 ? 1 : 0;
+        pt_push(g_pt_stage == PS_PACE ? PS_PRESENT_X : PS_PRESENT);
+        present_body();
+        pt_pop();
+        if (!first[k] && g_pt_kind >= 0) {
+            first[k] = 1;
+            pt_milestone(k ? "first scene picture" : "first level picture");
+        }
+        return;
+    }
+    present_body();
+}
+
+static void present_body(void)
 {
     /* THE PICTURE BOUNDARY the card's clock is measured over. Closing the
        previous picture's measurement here rather than at the foot of this
@@ -7242,9 +7343,7 @@ static int ip_build(double alpha)
     g_ip_sum_replay += ip_ms_since(t0);
     const long long t1 = ip_qpc();
     ntr::Framebuffer &o = *g_ip_fb;
-    for (int x = 0; x < ntr::active_w; ++x) o.px[0][x] = 0xFF101820u;
-    for (int y = 1; y < ntr::active_h; ++y)
-        memcpy(o.px[y], o.px[0], ntr::active_w * sizeof(o.px[0][0]));
+    ntr::gx_clear_fill(o);     /* the frame's own clear, as the tick's */
     ntr::gx_render(o);
     ntr::gx_interp_end();
     g_ip_sum_raster += ip_ms_since(t1);
@@ -7313,6 +7412,47 @@ static void ip_note(double build_ms, double pres_ms)
     g_ip_sum_replay = g_ip_sum_raster = g_ip_sum_compose = 0;
 }
 
+/* THE COST OF A BLEND, AS THE FIT RULE READS IT (run hunt2 lane SMFIT1): the
+   median of the last IP_COST_N blended pictures, build and present together.
+   A running average was one slow picture away from saying "nothing fits" for
+   seconds: measured, one 100 ms picture (the process preempted, a driver
+   stall) took it from 9.5 to 30 ms, and every slot after that was refused.
+   A median steps over a lone outlier and still follows a real change within
+   half a window. g_ip_cost_min is the smallest of the same window: the slow
+   fallback's retry asks whether the cheapest recent blend fits. A retry's
+   sample replaces the LARGEST slot, one slot and never the window: a retry
+   drawn while the machine is still busy then only replaces another busy
+   sample, and the samples from before the hitch keep saying what a blend
+   costs on a healthy machine. (Refilling the whole window from one retry
+   was a way to stay off for good: one busy retry made every slot, and so
+   the cheapest, the busy cost, and no retry fitted again. REVSMFIT1: 1300
+   ticks after a 6 s squeeze onto one core, 4 of 4.) */
+enum { IP_COST_N = 9 };
+static double g_ip_cost_win[IP_COST_N];
+static int g_ip_cost_n, g_ip_cost_at;
+static double g_ip_cost_min = 4.0;
+static void ip_cost_sample(double ms)
+{
+    if (!g_ip_cost_n) {
+        for (int i = 0; i < IP_COST_N; ++i) g_ip_cost_win[i] = ms;
+        g_ip_cost_n = IP_COST_N;
+        g_ip_cost_at = 0;
+    } else if (g_ip_tick_probe) {
+        int big = 0;
+        for (int i = 1; i < IP_COST_N; ++i)
+            if (g_ip_cost_win[i] > g_ip_cost_win[big]) big = i;
+        g_ip_cost_win[big] = ms;
+    } else {
+        g_ip_cost_win[g_ip_cost_at] = ms;
+        g_ip_cost_at = (g_ip_cost_at + 1) % IP_COST_N;
+    }
+    double s[IP_COST_N];
+    for (int i = 0; i < IP_COST_N; ++i) s[i] = g_ip_cost_win[i];
+    qsort(s, IP_COST_N, sizeof s[0], port_pic_cmp);
+    g_ip_cost_ms = s[IP_COST_N / 2];
+    g_ip_cost_min = s[0];
+}
+
 /* One picture: blended when this tick can, the tick's own frame otherwise. */
 static void ip_present_alpha(double alpha)
 {
@@ -7327,7 +7467,10 @@ static void ip_present_alpha(double alpha)
     LARGE_INTEGER q0, q1, q2, qf;
     QueryPerformanceFrequency(&qf);
     QueryPerformanceCounter(&q0);
-    if (!ip_build(alpha)) {
+    pt_push(PS_SMOOTH);
+    const int ip_built = ip_build(alpha);
+    pt_pop();
+    if (!ip_built) {
         ++g_ip_plain;
         present();
         return;
@@ -7339,8 +7482,12 @@ static void ip_present_alpha(double alpha)
     g_present_fb = was;
     QueryPerformanceCounter(&q2);
     ++g_ip_blended;
+    ++g_ip_tick_blends;
     const double cost = (q2.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
-    g_ip_cost_ms = g_ip_cost_ms * 0.8 + cost * 0.2;
+    ip_cost_sample(cost);
+    /* finished past the tick's end: this blend made the game late */
+    if (g_ip_tick_len > 0 && q2.QuadPart > g_ip_tick_t0 + g_ip_tick_len)
+        g_ip_tick_late = 1;
     ip_note((q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart,
             (q2.QuadPart - q1.QuadPart) * 1000.0 / (double)qf.QuadPart);
 }
@@ -7358,16 +7505,26 @@ static int ip_owns_picture(void)
    machine (or a RenderScale) where the raster is slow. So a blended picture
    is only started when the time left before the deadline covers what the
    recent ones cost (an average kept here, plus a quarter millisecond). Otherwise the slot
-   gets the tick's own finished picture -- free, and never behind what is on
-   screen -- if the tick has not been shown at all yet, and nothing at all if
-   it has: the picture already up simply stays one slot longer. */
-static void ip_present_plain_or_skip(int *presented)
+   gets the tick's own finished picture -- a present with no raster, and
+   never behind what is on screen -- once: if the tick has not been shown at
+   all yet, or if only blends of it have been shown and the present still
+   fits (run hunt2 lane SMFIT1: a tick with room for one blend then shows two
+   pictures, the blend and tick N itself, instead of the blend alone for a
+   whole tick). After tick N itself is up the slot shows nothing new: the
+   picture already up simply stays one slot longer. */
+static double ip_left_ms(long long deadline);
+static void ip_present_plain_or_skip(int *presented, long long deadline)
 {
-    if (!g_ip_tick_shown) {
+    if (!g_ip_tick_final &&
+        (!g_ip_tick_shown ||
+         ip_left_ms(deadline) >= g_ip_plain_ms + 0.25)) {
+        const long long t0 = ip_qpc();
         ++g_ip_pictures;
         ++g_ip_plain;
         present();
+        g_ip_plain_ms = g_ip_plain_ms * 0.8 + ip_ms_since(t0) * 0.2;
         g_ip_tick_shown = 1;
+        g_ip_tick_final = 1;
         *presented = 1;
     } else {
         *presented = 0;
@@ -7380,14 +7537,24 @@ static void ip_present_plain_or_skip(int *presented)
    costs the game nothing: that turn simply sleeps less. What it may not do is
    run past the start of the next tick. (`deadline`, the turn's own, is the
    later of the two only when the pacer paces whole ticks.) */
-static int ip_fits(long long deadline)
+static double ip_left_ms(long long deadline)
 {
     LARGE_INTEGER f;
     QueryPerformanceFrequency(&f);
     const long long tick_end = g_ip_tick_t0 + g_ip_tick_len;
     const long long end = tick_end > deadline ? tick_end : deadline;
-    const double left = (end - ip_qpc()) * 1000.0 / (double)f.QuadPart;
-    return left >= g_ip_cost_ms + 0.25;
+    return (end - ip_qpc()) * 1000.0 / (double)f.QuadPart;
+}
+/* The margin is a fifth of the cost plus half a millisecond: a blend runs on
+   a machine that is doing other things too, and one that overruns the tick's
+   end makes the game itself late. */
+static int ip_fits(long long deadline)
+{
+    /* the fallback's measuring retry: its first blend is drawn whatever the
+       test says, so the cost is always measured again (see ip_fit_commit) */
+    if (g_ip_tick_measure && !g_ip_tick_blends) return 1;
+    const double c = g_ip_tick_probe ? g_ip_cost_min : g_ip_cost_ms;
+    return ip_left_ms(deadline) >= c * 1.2 + 0.5;
 }
 
 /* The pacer's extra picture, due at slot time t (QPC), to be finished before
@@ -7400,9 +7567,11 @@ static int ip_present_slot(long long t, long long deadline)
 {
     (void)t;
     if (!ip_owns_picture()) { present(); return 1; }
+    if (g_ip_tick_final) return 0;   /* tick N is up; a blend would step back */
     if (!ip_fits(deadline)) {
         int shown = 0;
-        ip_present_plain_or_skip(&shown);
+        g_ip_tick_refused = 1;
+        ip_present_plain_or_skip(&shown, deadline);
         return shown;
     }
     ip_present_alpha((double)(ip_qpc() - g_ip_tick_t0) / (double)g_ip_tick_len);
@@ -7416,9 +7585,16 @@ static int ip_present_slot(long long t, long long deadline)
    so every blended picture lands on the even grid; unpaced, it is drawn here. */
 static void ip_present_tick(void)
 {
-    if (!ip_owns_picture()) { present(); return; }
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
+    /* the tick's own work, measured to here: the fit line's W */
+    if (g_ip_on > 0 && g_ip_tick_t0 > 0 && now.QuadPart > g_ip_tick_t0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        const double w = (now.QuadPart - g_ip_tick_t0) * 1000.0 / (double)f.QuadPart;
+        g_ip_work_ms = g_ip_work_ms * 0.8 + w * 0.2;
+    }
+    if (!ip_owns_picture()) { present(); return; }
     if (g_ip_pace_seen && now.QuadPart - g_ip_pace_seen < 2 * g_ip_tick_len) {
         g_ip_deferred = 1;
         return;
@@ -7430,13 +7606,132 @@ static void ip_present_tick(void)
 
 /* The clock had no slack this turn (an overrun, or under a millisecond left):
    the tick is already late, so it gets its own finished picture, which costs
-   nothing, rather than a blend that would make it later still. */
+   nothing, rather than a blend that would make it later still.
+
+   run hunt2 lane SMFIT1: UNLESS THE TICK IS NOT LATE AT ALL. While the ROM
+   loop's halt pumps the pacer once per VBLANK, a tick is two turns (three in
+   a 20-tick scene), and a tick whose work runs past its FIRST turn has
+   overrun that turn only: the tick's own end is a turn or two away. Showing
+   tick N itself here used to leave the rest of the tick either repeating it
+   or, worse, blending after it (a blend is behind tick N, so the picture
+   stepped back). Measured on the ending at Thunder's settings: work of 15 to
+   20 ms against a 16.65 ms turn inside a 50 ms tick, and most ticks drew no
+   blend. So when a blend still fits before the tick's end the hand-off is
+   kept for the next turn's clock, which takes it exactly as it takes a
+   hand-off made in its own turn; the picture already up stays until then. */
 static void ip_flush_deferred(void)
 {
+    if (ip_owns_picture() && !g_ip_tick_shown && ip_fits(0)) return;
     g_ip_deferred = 0;
     if (!ip_owns_picture()) { present(); return; }
     int shown = 0;
-    ip_present_plain_or_skip(&shown);
+    g_ip_tick_refused = 1;
+    ip_present_plain_or_skip(&shown, 0);
+}
+
+/* THE FIT RULE (run hunt2 lane SMFIT1), called once per tick just before the
+   tick's commit; 1 = this tick takes the slow fallback (snap, no snapshots).
+
+   It replaces a fixed rule -- "a blend that costs more than 0.3 of a tick
+   turns blending off, one tick in 128 tries again" -- that turned it off on
+   machines where it fitted. A card-drawn 16:9 picture at RenderScale 3 with
+   edge smoothing costs 8 to 11 ms, just past 0.3 of 33.3 ms; at FrameRate 60
+   a tick needs ONE blend beside its own work (about the same again), so the
+   tick had room for it and still went to repeats most of the time, and one
+   slow picture held it there for seconds because the average only moved on
+   the 1-in-128 retry.
+
+   Whether a picture fits is already decided per picture, with measured
+   numbers, where it is drawn (ip_present_slot: the time left before the
+   tick's end against the measured cost of a blend). So the fallback reads
+   what those decisions came to: a tick that was ready to blend and drew no
+   blend at all counts toward it, a tick that drew one resets it. Sixteen
+   such ticks in a row (about half a second) and the machine truly cannot
+   fit one blend at this setting: the fallback is on and the snapshots stop.
+   While it is on, one tick in 32 (about a second) is ready to blend again
+   and asks whether the cheapest of the last measured blends fits (see
+   ip_cost_sample); if a blend is drawn and ends inside the tick the
+   fallback is off. Every fourth retry (about four seconds) draws one blend
+   whatever the test says, so the cost is measured again even when every
+   recent sample is a busy one: a machine that has recovered is seen to
+   have recovered. A blend that ran past the tick's end
+   made the game itself late, so it counts against the machine too: three
+   such ticks among the last 32 that were ready to blend and the fallback
+   is on, and a retry blend that ran late does not turn it off. Both edges
+   are counted in ticks, so it does not flap from one tick to the next.
+   SM64DS_INTERP_TRACE prints a summary line every 240 ticks; each switch
+   prints one line either way. */
+enum { IP_FIT_ENTER = 16, IP_FIT_PROBE = 32, IP_FIT_WIN = 240, IP_FIT_LATE = 3,
+       IP_FIT_MEASURE = 4 };
+static int ip_bits(unsigned v)
+{
+    int n = 0;
+    for (; v; v &= v - 1) ++n;
+    return n;
+}
+static int ip_fit_commit(void)
+{
+    static int slow, nofit, since, ready_prev, retries;
+    static unsigned late_bits;
+    static int w_ticks, w_ready, w_blend, w_slow, w_refused, w_blends, w_late;
+    /* the tick that just ended: was it ready to blend, and did it? Only a
+       tick the pacer gave a start can have drawn a blend at all; an unpaced
+       run (a selftest, the SM64DS_INTERP_PROBE instrument) has none, and its
+       ticks say nothing about whether a blend fits */
+    if (ready_prev && g_ip_tick_ok && g_ip_rate_ok && g_ip_tick_t0 > 0) {
+        const int late = g_ip_tick_late;
+        ++w_ready;
+        w_blends += g_ip_tick_blends;
+        if (g_ip_tick_refused) ++w_refused;
+        if (late) ++w_late;
+        late_bits = (late_bits << 1) | (late ? 1u : 0u);
+        if (g_ip_tick_blends > 0) ++w_blend;
+        if (g_ip_tick_blends > 0 && !late) {
+            nofit = 0;
+            if (slow) {
+                slow = 0;
+                late_bits = 0;
+                fprintf(stderr, "[interp] fit: a blend fits again (%.2f ms "
+                        "beside %.2f ms of tick work in %.2f ms): smooth "
+                        "motion is back on\n", g_ip_cost_ms, g_ip_work_ms,
+                        PORT_VBLANK_MS * port_frame_divider());
+            }
+        }
+        if (!slow && ((g_ip_tick_blends == 0 && ++nofit >= IP_FIT_ENTER) ||
+                      ip_bits(late_bits) >= IP_FIT_LATE)) {
+            slow = 1;
+            since = 0;
+            retries = 0;
+            fprintf(stderr, "[interp] fit: %s (a blend %.2f ms, the tick's "
+                    "own work %.2f ms, the tick %.2f ms): pictures repeat, "
+                    "and one tick in %d tries again\n",
+                    nofit >= IP_FIT_ENTER
+                        ? "no blend fitted in 16 ticks in a row"
+                        : "blends ran past the tick's end 3 times in 32 ticks",
+                    g_ip_cost_ms, g_ip_work_ms,
+                    PORT_VBLANK_MS * port_frame_divider(), IP_FIT_PROBE);
+            late_bits = 0;
+            nofit = 0;
+        }
+    }
+    int this_slow = 0;
+    if (slow) this_slow = (++since % IP_FIT_PROBE) != 0;
+    g_ip_tick_probe = slow && !this_slow;
+    g_ip_tick_measure = g_ip_tick_probe && (++retries % IP_FIT_MEASURE) == 0;
+    ready_prev = !this_slow;
+    ++w_ticks;
+    if (this_slow) ++w_slow;
+    if (w_ticks >= IP_FIT_WIN) {
+        if (ip_trace())
+            fprintf(stderr, "[interp] fit: %d ticks: %d ready to blend, %d "
+                    "drew a blend (%d blends), %d had a slot with no room, %d "
+                    "in the slow fallback, %d ran late | blend %.2f ms, tick "
+                    "work %.2f ms, plain present %.2f ms\n", w_ticks, w_ready,
+                    w_blend, w_blends, w_refused, w_slow, w_late, g_ip_cost_ms,
+                    g_ip_work_ms, g_ip_plain_ms);
+        w_ticks = w_ready = w_blend = w_slow = w_refused = w_blends = w_late = 0;
+    }
+    return this_slow;
 }
 
 /* SM64DS_INTERP_PROBE=<k> (with SM64DS_INTERP_PROBE_FROM / _TO, ROM frames):
@@ -9689,6 +9984,8 @@ static int scene_window_run(void)
            QueryPerformanceCounter reads a frame, the same two the level loop
            has always paid. */
         double t_frame_scene;
+        pt_frame_begin(1, -1 - port_scene_env_want());
+        pt_mark(PS_SCENE_IN);
         ph_begin(&t_frame_scene);
         if (scene_menu_at >= 0 &&
             port_rom_frame_checked(frame, "scene-menu-at") == scene_menu_at)
@@ -9702,9 +9999,12 @@ static int scene_window_run(void)
 
         /* the scene's own frame; the menu's pause is its second argument, the
            same switch the level loop's game_ticked is */
+        pt_mark(PS_SCENE_TICK);
         port_scene_tick(port_rom_frame_checked(frame, "scene-tick"), !menu_on);
 
+        pt_mark(PS_SCENE_PRESENT);
         scene_host_present_frame(hwnd, stacked, fb);
+        pt_mark(PS_POST);
         /* THE HOSTED ARM7, EXACTLY ONCE A FRAME -- and port_scene_tick above
            has already done it on every frame that ticked the game, so this
            call is only for the frames that did not.
@@ -10044,6 +10344,7 @@ extern "C" void port_frame_ctrl_publish(void)
 
 int main(void)
 {
+    pt_arm();   /* run perf2: SM64DS_PERF_TRACE, inert unset */
     /* THE ASPECT IS CHOSEN HERE, ONCE, BEFORE ANYTHING TOUCHES THE FRAMEBUFFER.
        host_setting_aspect() reads the Aspect key from settings.json (or
        SM64DS_ASPECT, or the legacy SM64DS_WIDESCREEN) as a RATIO -- width over
@@ -10306,7 +10607,9 @@ int main(void)
        manifest sha. The pointer-rebase passes below (port_ov002_patch,
        port_cross_patch, the overlay syms patches) then run over the loaded
        bytes exactly as they would over baked-in ones. */
+    pt_milestone("io + winapi + pacer ready");
     port_romdata_load();
+    pt_milestone("romdata loaded");
 #endif
     /* SM64DS_DUMP_LEVEL_NAMES=1: print the debug level-select rows exactly as
        the menu's MENU_LEVEL row renders them -- row, id, name, entrance,
@@ -10366,6 +10669,7 @@ int main(void)
        span and names the four PXI arms it cannot run. */
     port_boot_rom_pre_main();
     _ZN4Heap18InitializeRootHeapEv();
+    pt_milestone("rom pre-main + root heap");
     if (!data_020a0ea0) return 2;
     /* and main()'s own first three calls, which the ROM makes after Entry has
        returned from func_02019780: the OS tick, the alarm system and the main
@@ -10580,6 +10884,7 @@ int main(void)
                         "by the port's starvation wake instead of by the ROM's "
                         "own VBlank\n");
     }
+    pt_milestone("sinits + patches done");
     if (port_scene_env_want() >= 0) {
         const int scene_rc =
             port_scene_want_window()
@@ -10695,6 +11000,7 @@ int main(void)
     /* everything func_0201a054 does BEFORE that line, in its order: the tick
        veneer and the boot timestamp, the VBlank handler install, the owner
        record and the debug name. hal/boot_os.cpp lists the arms it skips. */
+    pt_milestone("level boot begins");
     port_boot_rom_game_init_head();
     _ZN4Heap18InitializeGameHeapEjPS_(0x3b000, 0);
     if (!data_020a0eac_c) {
@@ -10955,21 +11261,13 @@ int main(void)
     g_character = *(unsigned char *)(c + 0x6d9) & 3;
     g_character_pending = g_character;
 
-    /* SKIP THE CHARACTER INTRO CUTSCENE, which the other three spawn with and
-       Mario does not. func_ov002_020c4188 is that cutscene's state machine,
-       entered whenever +0x71e is nonzero, and it is built on two things the
-       port does not have: the Message box (func_0201f32c, guarded to a no-op
-       in hal/level_boot.cpp) and the camera-script calls that follow it. With
-       the message guarded it simply faults one step further along, on the
-       object the message was supposed to have made. Zeroing the cutscene id is
-       the honest version of "not hosted": the state machine returns on its
-       first line and the character just plays. No-op for Mario, who arrives
-       with it already 0. */
-    if (*(unsigned char *)(c + 0x71e) && !getenv("SM64DS_INTRO_CUTSCENE")) {
-        fprintf(stderr, "[char] skipping intro cutscene %u (not hosted)\n",
-                (unsigned)*(unsigned char *)(c + 0x71e));
-        *(unsigned char *)(c + 0x71e) = 0;
-    }
+    /* Player+0x71e is the pending one-time message (the course-entry text and
+       the first-power-up hints), and nothing here touches it: the ROM's own
+       func_ov002_020c4188 runs it (src/actors/Player.cpp). This used to zero it
+       as "not hosted", from before the message bank loaded
+       (hal/level_boot.cpp, port_message_archive_seat); since
+       func_ov002_020c43c4 records the save's seen bit before it sets the id,
+       zeroing it lost each hint for good. */
     if (!real_boot) {
         static struct { unsigned short id; unsigned char refs; void *p; } kp;
         _ZN13SharedFilePtr9ConstructEj(&kp, 1941);
@@ -11797,6 +12095,8 @@ int main(void)
             mo_capture_opt = host_setting_mouse_capture();
         }
         ph_begin(&t_frame);
+        pt_frame_begin(0, port_level_id());
+        pt_mark(PS_HOST_IN);
         rb_frame_begin();
         ph_begin(&t_phase);
         /* the focus edge, read once a frame BEFORE any key is. Coming back,
@@ -15018,26 +15318,10 @@ int main(void)
                the one Camera::Render published, in the ROM's own scene units,
                and Actor::BeforeBehavior reads exactly those three words to
                place every actor for the Clipper. */
-            /* THE CHARACTER INTRO CUTSCENE IS NOT HOSTED, so hold its id at 0
-               every tick rather than once at startup -- the level-enter sets it
-               AFTER the Player exists, which is why clearing it at spawn did
-               nothing. func_ov002_020c4188 is that cutscene and it is built on
-               the Message box the port does not have; with the message guarded
-               to a no-op it just faults one step further along, on the object
-               the message was supposed to have made. Yoshi enters it every run
-               (Mario never does, Luigi and Wario survive 300 frames without
-               it), so this is the difference between Yoshi being playable and
-               not. Zero means the state machine returns on its first line. */
-            if (*(unsigned char *)(c + 0x71e) && !getenv("SM64DS_INTRO_CUTSCENE")) {
-                static int said;
-                if (!said) {
-                    said = 1;
-                    fprintf(stderr, "[char] intro cutscene %u suppressed "
-                            "(not hosted)\n",
-                            (unsigned)*(unsigned char *)(c + 0x71e));
-                }
-                *(unsigned char *)(c + 0x71e) = 0;
-            }
+            /* Player+0x71e (the pending one-time message) is no longer held at
+               0 here: see the note at the spawn. func_ov002_020c44c4 sets it on
+               the course entry and func_ov002_020c43c4 on a first power-up,
+               and func_ov002_020c4188 opens the box and clears it again. */
             /* THE SAVE-PROMPT FLAG stand-in is retired: Stage::Behavior's own
                arm (src/_ZN5Stage8BehaviorEv.cpp) now runs the ROM's
                Stage::LC_Update (src/_ZN5Stage9LC_UpdateEv.cpp) off this flag,
@@ -15084,6 +15368,7 @@ int main(void)
             port_vs_match_end_hold();
             {
                 const double rb_t = rb_probe_mode() ? rb_now_ms() : 0.0;
+                pt_mark(PS_ROM_FRAME);
                 if (k1_rom) {
                     /* src/func_020197b8.c phase 4: `func_02044120();`, all five
                        walks. Its render walk (list 5) submits this frame's
@@ -15105,6 +15390,7 @@ int main(void)
                     port_actor_tick();
                 }
                 if (rb_probe_mode()) rb_note(RB_ACTOR_TICK, rb_now_ms() - rb_t);
+                pt_mark(PS_HOST_POST);
             }
             port_vs_stars_probe(frame);        /* TEMPORARY: SM64DS_VS_STARS */
             /* SM64DS_DOOR_PROBE's per-frame line, HERE rather than beside the
@@ -15198,8 +15484,10 @@ int main(void)
            makes. hal/scene_boot.cpp's port_scene_tick calls it at the matching
            point on the scene path. Read that file's banner before moving it:
            every blink in the game hangs off this one counter. */
-        if (game_ticked)
+        if (game_ticked) {
             port_frame_clock_tick();
+            ntr::rt_timer0_advance((unsigned)data_0208ee44);   /* DS timer 0: the OS tick */
+        }
         /* PHASE 2 (the graphics block's word 0 and the fade steps) used to be
            called here, after the actor tick. It is the ROM's func_02019390 now,
            at the ROM's point before the tick: see PHASE 2, THE FRAME'S RESET,
@@ -15477,6 +15765,7 @@ int main(void)
            records GetAngleToCamera reads. Without the second call the
            published angle never moves and Mario walks relative to a stale
            heading. */
+        pt_mark(PS_CAMERA);
         ph_begin(&t_phase);
         /* STAR1 fly-around, the cutscene-camera gate. While a cutscene script
            is running (data_0209fc48 != 0) the kuppa script feeds camera
@@ -16014,6 +16303,7 @@ int main(void)
            the render walk has already submitted into it (the Camera's Render
            and the rig first, then the Stage and every actor): nothing here
            may reset it. */
+        pt_mark(PS_SUBMIT);
         ph_begin(&t_phase);
         if (!k1_rom) {
             ntr::gx_reset();
@@ -16804,18 +17094,16 @@ int main(void)
            frame's geometry now that the frame is open and before it is
            rasterised. Nothing queued on a frame with no wipe moving. */
         port_fader_wipe_render();
+        pt_mark(PS_RASTER);
         ph_begin(&t_phase);
-        /* clear: build one row, memcpy the rest (0xFF101820 is not a
-           repeating byte pattern, so memset cannot do it directly) */
+        /* clear: the colour the DS shows where nothing is drawn -- the
+           3D CLEAR_COLOR when it is opaque, else engine A's backdrop (see
+           gx_clear_fill in ntr/gx.h; one row built, the rest copied) */
         /* port/rollback: a replayed frame presents nothing, so the clear, the
            raster, the engine-A composite, the fade and the overlays below
            all stand down with it (rb_skip_render); they write host pixels
            only, and they were a third of a replayed frame's cost */
-        if (!rb_skip_render()) {
-        for (int x = 0; x < ntr::active_w; ++x) fb.px[0][x] = 0xFF101820u;
-        for (int y = 1; y < ntr::active_h; ++y)
-            memcpy(fb.px[y], fb.px[0], ntr::active_w * sizeof(fb.px[0][0]));
-        }
+        if (!rb_skip_render()) ntr::gx_clear_fill(fb);
         /* the rollback probe's re-run skips the rasteriser (SM64DS_ROLLBACK_DET_SKIP) */
         if (!rb_resim_skip_render() && !rb_skip_render())
         ntr::gx_render(fb);
@@ -16824,16 +17112,11 @@ int main(void)
            split path, under the F5 menu, in the stacked layout or through
            the rollback skip is a SNAP: its extra pictures are this one. */
         if (g_ip_on > 0) {
-            /* TOO SLOW TO HELP: when a blended picture costs more than a
-               third of a tick (measured: a software raster at RenderScale 4,
-               13 to 15 ms), almost no blend fits beside the tick's own work,
-               and the snapshots would only make the tick itself late. Such ticks snap without them; one tick in
-               128 still blends, so the cost is measured again and the pictures
-               come back when the machine or the setting allows. */
-            static unsigned ip_retry;
-            const double tick_ms = PORT_VBLANK_MS * port_frame_divider();
-            const int ip_slow = g_ip_cost_ms > 0.3 * tick_ms &&
-                                (++ip_retry & 127u) != 0;
+            /* TOO SLOW TO HELP is decided by what actually fitted, not by a
+               fixed share of the tick (run hunt2 lane SMFIT1): see
+               ip_fit_commit. A tick in the slow fallback snaps without the
+               snapshots. */
+            const int ip_slow = ip_fit_commit();
             if (!ip_slow) ip_snap(g_ip_p3, fb);
             const int ip_snapit = (menu_on || !k1_rom || stacked || ip_slow ||
                                    rb_skip_render() || rb_resim_skip_render())
@@ -16842,6 +17125,10 @@ int main(void)
             g_ip_tick_ok = ntr::gx_interp_commit(data_0209b3ec, ip_snapit, &ist);
             ++g_ip_serial;
             g_ip_tick_shown = 0;
+            g_ip_tick_final = 0;
+            g_ip_tick_blends = 0;
+            g_ip_tick_refused = 0;
+            g_ip_tick_late = 0;
             g_ip_rate_ok = port_frame_rate_target() * port_frame_divider() > 60;
             {
                 LARGE_INTEGER qf;
@@ -16864,6 +17151,7 @@ int main(void)
            there (BG3 + the cursor OBJ), so raster engine A's 2D and write only
            the covered pixels over the 3D framebuffer. Before the fade composite,
            so the box dims with the master-brightness blend the same as the DS. */
+        pt_mark(PS_COMP_A);
         if (!rb_skip_render())
             port_message_composite_engine_a(&fb);
         ph_end(PH_RASTER, t_phase);
@@ -16871,8 +17159,10 @@ int main(void)
            rasterise engine B, and drop it into the corner at 1:1 DS pixels.
            With the panel toggled off this writes nothing. Before the overlay,
            so F3 text stays readable over the panel. */
+        pt_mark(PS_SUB);
         if (!rb_skip_render())
         hal_sub_screen_present(&fb.px[0][0], ntr::active_w, ntr::active_h);
+        pt_mark(PS_FADE_OVL);
         if (g_ip_on > 0 && g_ip_tick_ok) ip_snap(g_ip_p2, fb);
 
         /* THE FADE COMPOSITE, ENGINE A'S, now runs from the tail of
@@ -17052,11 +17342,13 @@ int main(void)
         if (stacked && !rb_skip_render())
             stack_present_arm(stack_img, hwnd);
 
+        pt_mark(PS_PRESENT);
         ph_begin(&t_phase);
         if (!rb_resim_skip_render() && !rb_skip_render())
         ip_present_tick();
         ph_end(PH_BLIT, t_phase);
         ph_end(PH_FRAME, t_frame);
+        pt_mark(PS_POST);
         rb_frame_body_end();
         if (rb_probe_mode()) {
             rb_note(RB_PH_INPUT,  g_clk.raw[PH_INPUT]);
@@ -17378,7 +17670,9 @@ int main(void)
            shipped path moves. */
         if (!(port_rom_loop_enabled() && r3e_sound_at_phase9()))
         { const double t_snd = ovl_now_ms();
+        pt_mark(PS_SOUND);
         sdat_host_tick();   /* hosted ARM7: drain the sound queue, feed the mixer */
+        pt_mark(PS_POST);
         rb_frame_sound_ms(ovl_now_ms() - t_snd); }
         /* THE FRAME BOUNDARY. Everything this frame -- tick, render, present --
            is done, and nothing of the next frame has started, so an editor's

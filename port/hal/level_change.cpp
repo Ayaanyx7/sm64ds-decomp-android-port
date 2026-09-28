@@ -172,6 +172,7 @@ void port_intro_arm_for_entry(void);     /* hal/level_boot.cpp: the intro seam -
                                             says "this entry came off a save-file
                                             pick"; the seam itself decides */
 void CleanCommonModelDataArr(void);
+void port_stage_release_shared_models(void);   /* hal/level_boot.cpp */
 void port_model_vram_reset(void);   /* hal/model_host.cpp */
 void port_fader_wipes_reset(void);  /* hal/fader_wipes.cpp: the seven wipes
                                        Stage::InitResources builds fresh */
@@ -1962,6 +1963,13 @@ extern "C" int port_level_change_apply(void)
        the next level's first Model::LoadFile walks one: the second boot got
        as far as spawning the castle grounds' butterflies and then called
        through a freed entry. */
+    /* ...and one statement before it in the ROM body, its first: the release
+       of the twelve shared preloads (Stage::CleanupResources:68-69), which
+       port_stage_boot_body loads again for the next level. Only for the Stage
+       the port keeps across a change: one the ROM destroyed itself (the Game
+       Over crossing, port_stage_object() null) already released them. */
+    if (port_stage_object())
+        port_stage_release_shared_models();
     CleanCommonModelDataArr();
 
     /* and the texture-VRAM cursors, which are the port's own expression of

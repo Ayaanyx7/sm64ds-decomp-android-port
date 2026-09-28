@@ -209,21 +209,6 @@ extern int data_020a0e68;
    base method and renders the head at the pose the anim system already left. */
 void _ZN5Model6RenderEPK7Vector3(void *self, const void *pos);
 }
-static void m43_mul(const int *a, const int *b, int *out)
-{
-    for (int r = 0; r < 3; ++r)
-        for (int c2 = 0; c2 < 3; ++c2)
-            out[r * 3 + c2] = (int)(((long long)a[r * 3] * b[c2] +
-                                     (long long)a[r * 3 + 1] * b[3 + c2] +
-                                     (long long)a[r * 3 + 2] * b[6 + c2]) >>
-                                    12);
-    for (int c2 = 0; c2 < 3; ++c2)
-        out[9 + c2] = (int)(((long long)a[9] * b[c2] +
-                             (long long)a[10] * b[3 + c2] +
-                             (long long)a[11] * b[6 + c2]) >>
-                            12) +
-                      b[9 + c2];
-}
 
 /* THE HEAD-MODEL GROUP, Player::Render's second draw. Player::Render walks one
    model out of the array at Player +0x154, indexed by
@@ -1872,10 +1857,23 @@ void hal_render_player_world(void *player)
        Virtual18 -- which is host slot 6 (_ZTV9ModelAnim is D1 0, D0 1,
        Model::DoSetFile 2, UpdateVerts 3, Virtual10 4, Render 5, Virtual18 6,
        read out of the ROM's own table at 0x0208e980) and takes the matrix and
-       the scale, unlike Render. The bone matrix is composed through `scene`
-       the way the head at
-       +0x154 is, because this path renders in scene space, not the ROM's
-       world space. */
+       the scale, unlike Render.
+
+       THE BONE GOES IN AS IT IS, the ROM's statement word for word. This used
+       to compose it through `scene` first, the way the head at +0x154 once
+       was; the head path dropped that (hal_render_head_group: the neck is
+       copied into the head's bone 0 and the head's own mat4x3 is left as
+       func_ov002_020e444c seated it), and the wings were left behind.
+       func_ov002_020e444c seats the wing model's mat4x3 too (Player+0x190 =
+       +0x174 + 0x1c, src/func_ov002_020e444c.c:56), with the same player root
+       the body draws through, and Virtual18 is Virtual10 (the matrix into
+       transforms[0]) + Model::Render through that mat4x3
+       (src/_ZN9ModelAnim9Virtual18EjPK7Vector3.cpp). So the composed matrix
+       applied the root twice and the wings drew far off the player: the first
+       time a live Wing Cap reached this block (lane FEATHER1, a ? block's
+       feather in Bob-omb Battlefield) the gate opened and nothing showed on
+       the cap. ModelBase::ApplyOpacity is the statement's first line, as in
+       the balloon arm above. */
     {
         static int probe = -1;
         if (probe < 0) probe = std::getenv("SM64DS_WINGS_PROBE") ? 1 : 0;
@@ -1903,8 +1901,8 @@ void hal_render_player_world(void *player)
         /* inside the ROM's `mIsBalloon == 0` arm, like the body draw above */
         if (gate != 0 && !balloon) {
             char *bones = *(char **)((char *)ma + 0x14);
-            int composed[12];
             const int *src;
+            _ZN9ModelBase12ApplyOpacityEj(m4, *(const unsigned char *)(c + 0x6f5));
             if (*(unsigned char *)(c + 0x6db) == 3) {
                 Matrix4x3_FromTranslation(&data_020a0e68, -0x1b33, -0x666, 0);
                 Matrix4x3_ApplyInPlaceToRotationZ(&data_020a0e68, 0x4000);
@@ -1913,7 +1911,6 @@ void hal_render_player_world(void *player)
             } else {
                 src = (const int *)(bones + 0x2d0);
             }
-            m43_mul(src, scene, composed);
             /* Slot 6, not 5. The ROM's _ZTV9ModelAnim at 0x0208e980 is seven slots
                -- D1 0, D0 1, Model::DoSetFile 2, UpdateVerts 3, Virtual10 4,
                Render 5, Virtual18 6 (0x0208e99c = 020167c4) -- and
@@ -1931,7 +1928,7 @@ void hal_render_player_world(void *player)
                epilogue pops edi, esi and ebx before it restores the frame
                pointer. */
             ((void(__fastcall *)(void *, void *, unsigned, const void *))(
-                ((void ***)m4)[0][6]))(m4, 0, (unsigned)(uintptr_t)composed,
+                ((void ***)m4)[0][6]))(m4, 0, (unsigned)(uintptr_t)src,
                                        c + 0x80);
         }
     }
@@ -2511,7 +2508,9 @@ int data_020a0f1c[4], data_020a4d54[4], data_020a6440[4], data_020a6444[4];
 int data_020a6484[4], data_020a6494[4], data_020a6498[4];
 int data_0209cdd0, data_0209cdd4, data_0209cdd8, data_0209cddc, data_0209cde0;
 int data_0209f220[8], data_0209f264[8], data_020a0d90[8], data_020a0f38[8];
-int data_020a4b58[4], data_020a4b68[4], data_020a60f4[4];
+int data_020a4b58[4], data_020a4b68[4];
+/* data_020a60f4 is not here: it is data_020a60c4 + 0x30 on the DS and
+   ntr/runtime.cpp hosts the two as one band (the timer callbacks). */
 /* DTCM, AND IT IS 16 KB AND NOT 64 BYTES. This used to read "DTCM scratch the
    timer list walker anchors at" and be sized for that one reader, which is the
    undersized-hosted-global shape: a span decided by the first caller found

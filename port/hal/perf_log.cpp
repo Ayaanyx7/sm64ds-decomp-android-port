@@ -98,6 +98,60 @@ unsigned long long g_drop_base;
 int                g_drop_seeded;
 unsigned long long g_bucket_dropped;
 
+/* ---- THE BOOT TIME (run perf2, lane AUDIOBOOT) ------------------------
+   How long the player waited, measured from the process's own creation time
+   so the loader and the CRT start-up count too. Two figures: bootMs on the
+   header line (launch to the first frame handed in here, which for a player
+   is the title's first picture) and levelBootMs on a one-off "boot" line
+   (launch to the first frame of a course). A box whose audio device took
+   25 s to open is how this was found; the report had no way to show it.
+
+   THE FIRST LEVEL FRAME needs the level field, which the caller fills only on
+   frames port_perf_log_due() asks for. So until a course frame has been
+   seen, due() says yes on every frame, and g_due_real remembers whether the
+   bucket actually asked: the snapshot fields are taken only on those frames,
+   exactly as before, so every sample line is what it was. The extra cost is
+   the snapshot reads on title and menu frames until the first course frame,
+   and nothing after it. Both clocks come off the resident kernel32 by
+   GetProcAddress, rule 1 above. */
+double g_boot_ms = -1.0;
+double g_level_boot_ms = -1.0;
+int    g_level_boot_level;
+int    g_poll_level = 1;
+int    g_due_real;
+
+typedef BOOL (WINAPI *GetProcessTimes_t)(HANDLE, LPFILETIME, LPFILETIME,
+                                         LPFILETIME, LPFILETIME);
+typedef VOID (WINAPI *GetSystemTimeFt_t)(LPFILETIME);
+
+double ms_since_launch(void)
+{
+    static GetProcessTimes_t gpt;
+    static GetSystemTimeFt_t now;
+    static int looked;
+    if (!looked) {
+        looked = 1;
+        HMODULE k = GetModuleHandleA("kernel32.dll");
+        if (k) {
+            gpt = (GetProcessTimes_t)GetProcAddress(k, "GetProcessTimes");
+            now = (GetSystemTimeFt_t)GetProcAddress(k,
+                                          "GetSystemTimePreciseAsFileTime");
+            if (!now)
+                now = (GetSystemTimeFt_t)GetProcAddress(k,
+                                          "GetSystemTimeAsFileTime");
+        }
+    }
+    if (!gpt || !now) return -1.0;
+    FILETIME c, e, kt, u, n;
+    if (!gpt(GetCurrentProcess(), &c, &e, &kt, &u)) return -1.0;
+    now(&n);
+    const unsigned long long c64 =
+        ((unsigned long long)c.dwHighDateTime << 32) | c.dwLowDateTime;
+    const unsigned long long n64 =
+        ((unsigned long long)n.dwHighDateTime << 32) | n.dwLowDateTime;
+    return n64 > c64 ? (double)(n64 - c64) / 10000.0 : 0.0;
+}
+
 /* ---- ASCII JSON, by hand ----------------------------------------------
    No library, and no string from this process's environment or filesystem
    ever reaches it. The only free text is hardware model names, which are
@@ -369,6 +423,7 @@ void perf_write_header(int win_w, int win_h)
     key_i(g_fp, "presentBackend", host_setting_present_backend());
     key_i(g_fp, "vsync", host_setting_vsync());
     key_i(g_fp, "frameRateTarget", host_setting_frame_rate());
+    key_f1(g_fp, "bootMs", g_boot_ms);
     fprintf(g_fp, "}\n");
     /* one line on the flight recorder, so a play log says the report exists
        and what the machine query cost, and nothing else all session */
@@ -432,6 +487,18 @@ void perf_write_sample(double t_s)
     key_i(g_fp, "memKb", g_mem_kb);
     key_i(g_fp, "windowW", g_win_w);
     key_i(g_fp, "windowH", g_win_h);
+    fprintf(g_fp, "}\n");
+}
+
+/* the one-off boot line: the first course frame, once a session */
+void perf_write_boot(void)
+{
+    fprintf(g_fp, "{\"type\":\"boot\"");
+    key_f1(g_fp, "t", g_header_written ? (perf_now_ms() - g_t0_ms) / 1000.0
+                                       : 0.0);
+    key_i(g_fp, "level", g_level_boot_level);
+    key_f1(g_fp, "bootMs", g_boot_ms);
+    key_f1(g_fp, "levelBootMs", g_level_boot_ms);
     fprintf(g_fp, "}\n");
 }
 
@@ -521,15 +588,29 @@ extern "C" int port_perf_log_on(void)
 extern "C" int port_perf_log_due(void)
 {
     if (!port_perf_log_on()) return 0;
-    if (!g_header_written) return 1;        /* the first frame writes line 1 */
-    return (perf_now_ms() - g_t0_ms) >= g_next_t_s * 1000.0 ? 1 : 0;
+    if (!g_header_written)                  /* the first frame writes line 1 */
+        g_due_real = 1;
+    else
+        g_due_real = (perf_now_ms() - g_t0_ms) >= g_next_t_s * 1000.0 ? 1 : 0;
+    /* until the first course frame, every frame reports its level (the boot
+       time banner above); g_due_real keeps the bucket's own snapshot rule */
+    return (g_due_real || g_poll_level) ? 1 : 0;
 }
 
 extern "C" void port_perf_log_frame(const struct PortPerfFrame *f)
 {
     if (!port_perf_log_on() || !f) return;
 
-    if (f->snapshot) {
+    if (!g_header_written) g_boot_ms = ms_since_launch();
+    int boot_line = 0;
+    if (f->snapshot && g_poll_level && f->level >= 0) {
+        g_poll_level = 0;
+        g_level_boot_level = f->level;
+        g_level_boot_ms = g_header_written ? ms_since_launch() : g_boot_ms;
+        boot_line = 1;
+    }
+
+    if (f->snapshot && g_due_real) {
         g_level = f->level;
         if (f->tris >= 0) g_tris = f->tris;
         if (f->actors >= 0) g_actors = f->actors;
@@ -549,8 +630,10 @@ extern "C" void port_perf_log_frame(const struct PortPerfFrame *f)
         g_t0_ms = perf_now_ms();
         g_next_t_s = 5.0;
         bucket_reset();
+        if (boot_line) perf_write_boot();   /* the run began in a course */
         return;
     }
+    if (boot_line) perf_write_boot();
 
     ++g_frames;
     g_sum_frame += f->frame_ms;

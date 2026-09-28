@@ -130,7 +130,17 @@ inline uint16_t rd16(uint32_t a) { return *reinterpret_cast<volatile uint16_t *>
 inline uint32_t rd32(uint32_t a) { return *reinterpret_cast<volatile uint32_t *>(a); }
 inline uint8_t rd8(uint32_t a) { return *reinterpret_cast<volatile uint8_t *>(a); }
 
-inline uint32_t bgr555(uint16_t c) {
+/* THE PER-PIXEL HELPERS ARE FORCED INLINE (lane TWOD). cl kept bgr555 and
+   tile_px as real calls inside the scan-out's per-pixel loops (a sampling
+   profile of the bottom screen put a fifth of its time in the two calls).
+   Inlining changes where the arithmetic runs, not what it computes. */
+#if defined(_MSC_VER)
+#define PPU_SUB_INLINE __forceinline
+#else
+#define PPU_SUB_INLINE inline __attribute__((always_inline))
+#endif
+
+PPU_SUB_INLINE uint32_t bgr555(uint16_t c) {
     const uint32_t r = (c >> 0) & 0x1F, g = (c >> 5) & 0x1F, b = (c >> 10) & 0x1F;
     return 0xFF000000u | ((r << 3 | r >> 2) << 16) | ((g << 3 | g >> 2) << 8)
            | (b << 3 | b >> 2);
@@ -465,14 +475,65 @@ int mm_trace_at(void)
     return g_mm_trace_frame;
 }
 
-void raster_obj(uint32_t dispcnt) {
+/* THE HOST'S PER-ENTRY QUESTIONS, asked once a frame and in the raster's own
+   order (entry 127 down to 0): the seam-snow overlay's claim, the camera-button
+   veto with its trace and count, and the OAM-age trace. They were the head of
+   raster_obj's loop; they are split out, statement for statement, so their
+   answers are one per entry per frame whatever draws afterwards -- the scan-out
+   and SM64DS_TWOD_VERIFY's reference both draw from the same skip[] -- and so
+   the answers are part of what the scan-out cache compares. skip[i] = 1 is the
+   old `continue`. Nothing here draws. */
+void obj_decide(uint32_t dispcnt, uint8_t *skip) {
+    std::memset(skip, 0, 128);
+    if (!((dispcnt >> 12) & 1))
+        return;
+    const uint32_t oam_b = g_oam_src_b ? g_oam_src_b : kOamBase;
+    for (int i = 127; i >= 0; --i) {
+        const uint16_t a0 = rd16(oam_b + i * 8u);
+        const uint16_t a1 = rd16(oam_b + i * 8u + 2);
+        const uint16_t a2 = rd16(oam_b + i * 8u + 4);
+        /* the seam-snow overlay owns these while engaged; see seam_snow */
+        if (ppu_seam_snow_owns(a2)) { skip[i] = 1; continue; }
+        /* THE FOUR MAP ARROWS, declined. See the banner over cam_button_entry. */
+        {
+            static long frame;
+            if (i == 127) ++frame;
+            const int v = g_obj_veto_b ? g_obj_veto_b(a2) : 0;
+            const int trace = mm_trace_at() >= 0 && frame == mm_trace_at();
+            if (trace && (a0 | a1 | a2))
+                std::fprintf(stderr, "[mmtrace] f%ld e%3d y%3u x%3u tile%4u "
+                             "pal%2u a0=%04x a1=%04x a2=%04x%s\n", frame, i,
+                             (unsigned)(a0 & 0xFFu), (unsigned)(a1 & 0x1FFu),
+                             (unsigned)(a2 & 0x3FFu), (unsigned)(a2 >> 12),
+                             a0, a1, a2, (v & 1) ? "  <- camera button" : "");
+            if (v & 2) { ++g_mm_skipped; skip[i] = 1; continue; }
+        }
+        /* SM64DS_OAMAGE_TRACE: engine B's half of the probe in ppu.cpp. */
+        {
+            static int bget = -1;
+            if (bget < 0) {
+                const char *e = std::getenv("SM64DS_OAMAGE_TRACE");
+                bget = e && *e && *e != '0';
+            }
+            static unsigned bf;
+            if (bget && i == 127) ++bf;
+            if (bget && a2 == 0x1010)
+                std::fprintf(stderr, "[oamage] B f%u src=%08x slot%d y=%d\n",
+                             bf, (unsigned)oam_b, i, (int)(a0 & 0xff));
+        }
+    }
+}
+
+// obj_spans / bg_spans copy this and sample_bg's addressing for the skip cache: change them too (SM64DS_TWOD_VERIFY=1).
+void raster_obj(uint32_t dispcnt, const uint8_t *skip, ObjPixel (*obj)[256],
+                uint8_t (*objwin)[256]) {
     static const int kSizes[3][4][2] = {
         {{8, 8}, {16, 16}, {32, 32}, {64, 64}},
         {{16, 8}, {32, 8}, {32, 16}, {64, 32}},
         {{8, 16}, {8, 32}, {16, 32}, {32, 64}},
     };
-    std::memset(g_obj, 0, sizeof g_obj);
-    std::memset(g_objwin, 0, sizeof g_objwin);
+    std::memset(obj, 0, sizeof(ObjPixel) * 192 * 256);
+    std::memset(objwin, 0, 192 * 256);
     if (!((dispcnt >> 12) & 1))
         return;
     const uint32_t boundary = 32u << ((dispcnt >> 20) & 3);
@@ -513,38 +574,10 @@ void raster_obj(uint32_t dispcnt) {
     const uint32_t oam_b = g_oam_src_b ? g_oam_src_b : kOamBase;
 
     for (int i = 127; i >= 0; --i) {
+        if (skip[i]) continue;
         const uint16_t a0 = rd16(oam_b + i * 8u);
         const uint16_t a1 = rd16(oam_b + i * 8u + 2);
         const uint16_t a2 = rd16(oam_b + i * 8u + 4);
-        /* the seam-snow overlay owns these while engaged; see seam_snow */
-        if (ppu_seam_snow_owns(a2)) continue;
-        /* THE FOUR MAP ARROWS, declined. See the banner over cam_button_entry. */
-        {
-            static long frame;
-            if (i == 127) ++frame;
-            const int v = g_obj_veto_b ? g_obj_veto_b(a2) : 0;
-            const int trace = mm_trace_at() >= 0 && frame == mm_trace_at();
-            if (trace && (a0 | a1 | a2))
-                std::fprintf(stderr, "[mmtrace] f%ld e%3d y%3u x%3u tile%4u "
-                             "pal%2u a0=%04x a1=%04x a2=%04x%s\n", frame, i,
-                             (unsigned)(a0 & 0xFFu), (unsigned)(a1 & 0x1FFu),
-                             (unsigned)(a2 & 0x3FFu), (unsigned)(a2 >> 12),
-                             a0, a1, a2, (v & 1) ? "  <- camera button" : "");
-            if (v & 2) { ++g_mm_skipped; continue; }
-        }
-        /* SM64DS_OAMAGE_TRACE: engine B's half of the probe in ppu.cpp. */
-        {
-            static int bget = -1;
-            if (bget < 0) {
-                const char *e = std::getenv("SM64DS_OAMAGE_TRACE");
-                bget = e && *e && *e != '0';
-            }
-            static unsigned bf;
-            if (bget && i == 127) ++bf;
-            if (bget && a2 == 0x1010)
-                std::fprintf(stderr, "[oamage] B f%u src=%08x slot%d y=%d\n",
-                             bf, (unsigned)oam_b, i, (int)(a0 & 0xff));
-        }
         const bool affine = a0 & 0x100;
         if (!affine && (a0 & 0x200)) continue;          // disabled
         // OBJ MODE, attribute 0 bits 10-11: 0 normal, 1 semi-transparent,
@@ -708,12 +741,12 @@ void raster_obj(uint32_t dispcnt) {
                     }
                     const uint16_t v = rd16(kObjVram + at);
                     if (!(v & 0x8000)) continue;
-                    if (g_obj[py][px].hit && prio > g_obj[py][px].prio)
+                    if (obj[py][px].hit && prio > obj[py][px].prio)
                         continue;
-                    g_obj[py][px].color = bgr555(v);
-                    g_obj[py][px].prio = prio;
-                    g_obj[py][px].hit = 1;
-                    g_obj[py][px].semi = 0;
+                    obj[py][px].color = bgr555(v);
+                    obj[py][px].prio = prio;
+                    obj[py][px].hit = 1;
+                    obj[py][px].semi = 0;
                     continue;
                 }
                 const uint32_t slot =
@@ -741,7 +774,7 @@ void raster_obj(uint32_t dispcnt) {
                 // texel is opaque, so the pixel is inside the window, and the
                 // colour it would have had is discarded.
                 if (is_win) {
-                    g_objwin[py][px] = 1;
+                    objwin[py][px] = 1;
                     continue;
                 }
                 // Priority resolves OBJ-vs-OBJ (see the header note): overwrite
@@ -749,14 +782,14 @@ void raster_obj(uint32_t dispcnt) {
                 // least as good (lower or equal number). With the 127->0 walk
                 // that keeps the lowest-index sprite on a tie and lets a
                 // higher-priority sprite win regardless of its index.
-                if (g_obj[py][px].hit && prio > g_obj[py][px].prio)
+                if (obj[py][px].hit && prio > obj[py][px].prio)
                     continue;
-                g_obj[py][px].color = color;
-                g_obj[py][px].prio = prio;
-                g_obj[py][px].hit = 1;
+                obj[py][px].color = color;
+                obj[py][px].prio = prio;
+                obj[py][px].hit = 1;
                 // OBJ mode 1 is semi-transparent: it alpha-blends with the
                 // layer below it regardless of BLDCNT's first-target bits.
-                g_obj[py][px].semi = (objmode == 1);
+                obj[py][px].semi = (objmode == 1);
             }
         }
     }
@@ -843,7 +876,7 @@ void read_windows(uint32_t dispcnt, Windows &w) {
 }
 
 /* Is column x inside window i's horizontal extent on line y? */
-inline bool win_h_inside(const Windows &w, int i, int x, int y) {
+PPU_SUB_INLINE bool win_h_inside(const Windows &w, int i, int x, int y) {
     if (!w.rows_on) return x >= w.x1[i] && x < w.x2[i];
     const int x1 = w.rx1[i][y], x2 = w.rx2[i][y];
     if (x1 < x2) return x < x1 ? w.rs[i][y] != 0 : x < x2;
@@ -851,12 +884,13 @@ inline bool win_h_inside(const Windows &w, int i, int x, int y) {
     return x < x2 ? w.rs[i][y] != 0 : false;
 }
 
-inline unsigned window_mask(const Windows &w, int x, int y) {
+PPU_SUB_INLINE unsigned window_mask(const Windows &w, int x, int y,
+                                    const uint8_t (*objwin)[256]) {
     if (!w.any) return 0x3F;
     for (int i = 0; i < 2; ++i)
         if (w.on[i] && win_h_inside(w, i, x, y) && y >= w.y1[i] && y < w.y2[i])
             return w.in[i];
-    if (w.obj_on && g_objwin[y][x]) return w.obj_in;
+    if (w.obj_on && objwin[y][x]) return w.obj_in;
     return w.out;
 }
 
@@ -864,7 +898,7 @@ inline unsigned window_mask(const Windows &w, int x, int y) {
 
 struct Bright { int mode, factor; };
 
-inline uint32_t apply_bright(uint32_t c, const Bright &b) {
+PPU_SUB_INLINE uint32_t apply_bright(uint32_t c, const Bright &b) {
     if (!b.factor || b.mode == 0 || b.mode == 3) return c;
     int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, bl = c & 0xFF;
     if (b.mode == 1) {
@@ -926,7 +960,7 @@ inline Blend read_blend() {
 // DS's own arithmetic. The framebuffer holds bgr555-expanded 8-bit channels and
 // (v<<3|v>>2)>>3 recovers the original 5-bit value exactly, so the round trip
 // is lossless and the blend is what the hardware produces.
-inline uint32_t blend_alpha(uint32_t top, uint32_t below, int eva, int evb) {
+PPU_SUB_INLINE uint32_t blend_alpha(uint32_t top, uint32_t below, int eva, int evb) {
     const int r1 = ((top >> 16) & 0xFF) >> 3, g1 = ((top >> 8) & 0xFF) >> 3,
               b1 = (top & 0xFF) >> 3;
     const int r2 = ((below >> 16) & 0xFF) >> 3, g2 = ((below >> 8) & 0xFF) >> 3,
@@ -942,9 +976,9 @@ inline uint32_t blend_alpha(uint32_t top, uint32_t below, int eva, int evb) {
 // The effect for one pixel, given the top layer and the one directly below it.
 // `below` (col[1]/id[1]) is always valid: a pixel with nothing under the top is
 // resolved against the backdrop, id 5, which BLDCNT can name as a 2nd target.
-inline uint32_t blend_apply(const Blend &bl, unsigned mask, uint32_t top,
-                            int top_id, bool top_semi, uint32_t below,
-                            int below_id) {
+PPU_SUB_INLINE uint32_t blend_apply(const Blend &bl, unsigned mask, uint32_t top,
+                                    int top_id, bool top_semi, uint32_t below,
+                                    int below_id) {
     if (bl.off) return top;
     // Window bit 5 disables colour special effects inside this region.
     if (!(mask & 0x20)) return top;
@@ -981,24 +1015,17 @@ inline uint32_t blend_apply(const Blend &bl, unsigned mask, uint32_t top,
     return top;
 }
 
-}  // namespace
-
-void ppu_scanout_sub(SubFramebuffer &fb)
+// ---- the scan-out -------------------------------------------------------------
+//
+// scan_ref IS THE SCAN-OUT AS IT SHIPPED (0.5.1), kept whole as the reference the
+// faster path is proved against. ppu_scanout_sub below does the frame's one-time
+// work (the audit sample, the DISPCNT_B read with the host's suppression, the
+// host's per-entry OBJ questions) and then draws; SM64DS_TWOD_VERIFY=1 draws the
+// same frame a second time through scan_ref into buffers of its own and compares
+// the two pictures byte for byte (see twod_verify_sub).
+void scan_ref(SubFramebuffer &fb, uint32_t dispcnt, const uint8_t *skip,
+              ObjPixel (*obj)[256], uint8_t (*objwin)[256])
 {
-    // The audit's per-frame seam. This is the one scan-out the live harness
-    // calls every frame, so it samples BOTH engines' register files rather than
-    // just this one's -- engine A's live compositor is hal/message_compositor.cpp
-    // and this lane does not own that file. Inert unless SM64DS_PPU_AUDIT is set.
-    ppu_audit_sample("ppu_scanout_sub");
-
-    /* THE HOST'S LAYER SUPPRESSION, applied at the ONE read of DISPCNT_B this
-       scan-out makes, so every layer decision below -- the BG rasters, the
-       window logic, the blend targets -- sees one consistent register value.
-       Zero unless something installed a mask, and then it can only CLEAR
-       enable bits: nothing here can turn a layer on that the game turned off.
-       The register itself is not written, so the ROM reads back exactly what
-       it wrote. See ppu_sub_set_bg_suppress. */
-    const uint32_t dispcnt = rd32(kRegBase) & ~g_bg_suppress;
     const unsigned disp_mode = (dispcnt >> 16) & 3;
     const bool forced_blank = (dispcnt >> 7) & 1;
 
@@ -1023,14 +1050,14 @@ void ppu_scanout_sub(SubFramebuffer &fb)
     Windows win;
     read_windows(dispcnt, win);
 
-    raster_obj(dispcnt);
+    raster_obj(dispcnt, skip, obj, objwin);
 
     const uint32_t backdrop = bgr555(rd16(kPlttBase));
     const Blend bld = read_blend();
 
     for (int y = 0; y < SUB_H; ++y) {
         for (int x = 0; x < SUB_W; ++x) {
-            const unsigned mask = window_mask(win, x, y);
+            const unsigned mask = window_mask(win, x, y, objwin);
             // Resolve the TOP visible layer and the one directly BELOW it, which
             // is all the colour-effect unit needs. Priority 0 is nearest; at
             // equal priority a sprite is above a background and among
@@ -1040,7 +1067,7 @@ void ppu_scanout_sub(SubFramebuffer &fb)
             bool semi = false;
             int found = 0;
             for (int prio = 0; prio < 4 && found < 2; ++prio) {
-                const ObjPixel &o = g_obj[y][x];
+                const ObjPixel &o = obj[y][x];
                 if (o.hit && o.prio == prio && (mask & 0x10)) {
                     if (!found) semi = o.semi;
                     col[found] = o.color; id[found] = 4; ++found;
@@ -1062,6 +1089,609 @@ void ppu_scanout_sub(SubFramebuffer &fb)
             fb.px[y][x] = apply_bright(c, br);
         }
     }
+}
+
+/* ---- THE FAST SCAN-OUT -------------------------------------------------------
+ *
+ * The same picture as scan_ref, drawn a line at a time instead of a pixel at a
+ * time. What moves out of the per-pixel loop, and why each is the same answer:
+ *
+ *   - THE STANDARD BG PALETTE is expanded once a frame (pal32) instead of once a
+ *     pixel. Every standard-palette read in sample_bg is bgr555(rd16(kPlttBase +
+ *     index * 2)) with index 0..255, and nothing writes palette memory during a
+ *     scan-out, so pal32[index] is that value.
+ *   - EACH ENABLED BG IS SAMPLED A WHOLE LINE AT A TIME (sample_line), with its
+ *     kind decided once per line and the y-only terms computed once per line.
+ *     The per-pixel arithmetic is sample_bg's, term for term; the affine sums
+ *     are regrouped as (ref + P*y) + P*x, which is the same integer (no term can
+ *     overflow: 28-bit reference, 16-bit P times at most 255). sample_bg only
+ *     reads memory, so sampling a layer where a nearer one covers it changes
+ *     nothing; every address it forms is inside the VRAM reservation.
+ *   - THE PRIORITY WALK uses a per-frame list of the enabled BGs in the
+ *     reference's visit order (priority, then index) with the sprite pixel
+ *     slotted in by its own priority, and stops at the first layer when the
+ *     colour-effect unit will not read the one below it (see the walk).
+ *   - THE WINDOW MASK is 0x3F without a call when no window is on.
+ *
+ * The resolve, the colour-effect unit and master brightness are the reference's
+ * own functions. SM64DS_TWOD_VERIFY=1 compares this against scan_ref every frame;
+ * SM64DS_TWOD_OLD=1 draws through scan_ref alone (timing A/B on one binary). */
+PPU_SUB_INLINE bool tile_px(const BgLayer &c, const uint32_t *pal32, uint32_t tile,
+                            int fx, int fy, uint16_t se, uint32_t &out)
+{
+    uint32_t index;
+    if (c.bpp8) {
+        index = rd8(c.chars + tile * 64 + fy * 8 + fx);
+        if (index == 0) return false;
+        if (c.ext) {
+            out = bgr555(rd16(c.ext + (((se >> 12) & 0xF) * 256 + index) * 2));
+            return true;
+        }
+    } else {
+        const uint8_t pair = rd8(c.chars + tile * 32 + fy * 4 + (fx >> 1));
+        index = (fx & 1) ? (pair >> 4) : (pair & 0xF);
+        if (index == 0) return false;
+        index += ((se >> 12) & 0xF) * 16;
+    }
+    out = pal32[index];
+    return true;
+}
+
+/* One BG line: col[x] and ok[x] are sample_bg(c, x, y)'s out and return. */
+void sample_line(const BgLayer &c, int y, const uint32_t *pal32, uint32_t *col,
+                 uint8_t *ok)
+{
+    if (c.kind == BG_TEXT) {
+        const int py = (y + c.vofs) & (c.map_h * 8 - 1);
+        const int ty = py >> 3, fy0 = py & 7;
+        const int blocks_w = c.map_w >> 5;
+        const uint32_t rowbase =
+            c.screen + ((ty >> 5) * blocks_w) * 0x800 + (ty & 31) * 32 * 2;
+        const int wm = c.map_w * 8 - 1;
+        for (int x = 0; x < 256; ++x) {
+            const int px = (x + c.hofs) & wm;
+            const int tx = px >> 3;
+            const uint16_t se = rd16(rowbase + (tx >> 5) * 0x800 + (tx & 31) * 2);
+            int fx = px & 7, fy = fy0;
+            if (se & 0x400) fx = 7 - fx;
+            if (se & 0x800) fy = 7 - fy;
+            ok[x] = tile_px(c, pal32, se & 0x3FF, fx, fy, se, col[x]) ? 1 : 0;
+        }
+        return;
+    }
+    const int bx = c.refx + c.pb * y, by = c.refy + c.pd * y;
+    if (c.kind == BG_BITMAP_256 || c.kind == BG_BITMAP_DIRECT) {
+        for (int x = 0; x < 256; ++x) {
+            int px = (bx + c.pa * x) >> 8;
+            int py = (by + c.pc * x) >> 8;
+            if (c.wrap) {
+                px &= c.map_w - 1;
+                py &= c.map_h - 1;
+            } else if (px < 0 || px >= c.map_w || py < 0 || py >= c.map_h) {
+                ok[x] = 0;
+                continue;
+            }
+            const uint32_t at = (uint32_t)py * (uint32_t)c.map_w + (uint32_t)px;
+            if (c.kind == BG_BITMAP_DIRECT) {
+                const uint16_t v = rd16(c.screen + at * 2);
+                ok[x] = (v & 0x8000) ? 1 : 0;
+                if (ok[x]) col[x] = bgr555(v);
+            } else {
+                const uint8_t i8 = rd8(c.screen + at);
+                ok[x] = i8 ? 1 : 0;
+                if (ok[x]) col[x] = pal32[i8];
+            }
+        }
+        return;
+    }
+    /* BG_AFFINE and BG_EXT_AFFINE */
+    const int tw = c.map_w >> 3;
+    for (int x = 0; x < 256; ++x) {
+        int px = (bx + c.pa * x) >> 8;
+        int py = (by + c.pc * x) >> 8;
+        if (c.wrap) {
+            px &= c.map_w - 1;
+            py &= c.map_h - 1;
+        } else if (px < 0 || px >= c.map_w || py < 0 || py >= c.map_h) {
+            ok[x] = 0;
+            continue;
+        }
+        uint16_t se;
+        uint32_t tile;
+        int fx = px & 7, fy = py & 7;
+        if (c.kind == BG_AFFINE) {
+            tile = rd8(c.screen + (py >> 3) * tw + (px >> 3));
+            se = 0;
+        } else {
+            se = rd16(c.screen + ((py >> 3) * tw + (px >> 3)) * 2);
+            tile = se & 0x3FF;
+            if (se & 0x400) fx = 7 - fx;
+            if (se & 0x800) fy = 7 - fy;
+        }
+        ok[x] = tile_px(c, pal32, tile, fx, fy, se, col[x]) ? 1 : 0;
+    }
+}
+
+void scan_fast(SubFramebuffer &fb, uint32_t dispcnt, const uint8_t *skip,
+               ObjPixel (*obj)[256], uint8_t (*objwin)[256])
+{
+    const unsigned disp_mode = (dispcnt >> 16) & 3;
+    const bool forced_blank = (dispcnt >> 7) & 1;
+
+    Bright br;
+    {
+        const uint16_t mb = rd16(kRegBase + 0x6C);
+        br.factor = mb & 0x1F;
+        if (br.factor > 16) br.factor = 16;
+        br.mode = (mb >> 14) & 3;
+    }
+
+    if (disp_mode == 0 || forced_blank) {
+        // Display off is white on a DS panel, not black.
+        for (int y = 0; y < SUB_H; ++y)
+            for (int x = 0; x < SUB_W; ++x) fb.px[y][x] = 0xFFFFFFFFu;
+        return;
+    }
+
+    BgLayer bgs[4];
+    for (int i = 0; i < 4; ++i) read_bg(bgs[i], i, dispcnt);
+
+    Windows win;
+    read_windows(dispcnt, win);
+
+    raster_obj(dispcnt, skip, obj, objwin);
+
+    uint32_t pal32[256];
+    for (int i = 0; i < 256; ++i) pal32[i] = bgr555(rd16(kPlttBase + i * 2));
+    const uint32_t backdrop = pal32[0];
+    const Blend bld = read_blend();
+
+    /* The enabled BGs in the reference's visit order (priority, then index),
+       flattened: flat[k] with its priority fprio[k]. */
+    int flat[4], fprio[4], nflat = 0;
+    for (int prio = 0; prio < 4; ++prio)
+        for (int bg = 0; bg < 4; ++bg)
+            if (bgs[bg].kind != BG_OFF && bgs[bg].prio == prio) {
+                flat[nflat] = bg;
+                fprio[nflat++] = prio;
+            }
+
+    uint32_t lcol[4][256];
+    uint8_t lok[4][256];
+    for (int y = 0; y < SUB_H; ++y) {
+        for (int bg = 0; bg < 4; ++bg)
+            if (bgs[bg].kind != BG_OFF)
+                sample_line(bgs[bg], y, pal32, lcol[bg], lok[bg]);
+        const ObjPixel *orow = obj[y];
+        for (int x = 0; x < SUB_W; ++x) {
+            const unsigned mask = win.any ? window_mask(win, x, y, objwin) : 0x3Fu;
+            uint32_t col[2] = {backdrop, backdrop};
+            int id[2] = {5, 5};
+            bool semi = false;
+            int found = 0;
+            const ObjPixel &o = orow[x];
+            /* THE WALK, flattened: the sprite pixel goes in front of the
+               first BG whose priority is not nearer than its own (at equal
+               priority a sprite is above a BG), and after all of them if
+               every BG is nearer -- the reference's order exactly. It stops
+               at the first layer when the colour-effect unit will not read
+               the one below it: blend_apply reads `below` only when effects
+               are on, the window's bit 5 is set, and the top is a
+               semi-transparent sprite or BLDCNT is in alpha mode. */
+            int lim = 2;
+            bool objpend = o.hit && (mask & 0x10);
+            for (int k = 0; k <= nflat; ++k) {
+                if (objpend && (k == nflat || o.prio <= fprio[k])) {
+                    objpend = false;
+                    if (!found) semi = o.semi;
+                    col[found] = o.color; id[found] = 4; ++found;
+                    if (found == 1)
+                        lim = (!bld.off && (mask & 0x20) && (semi || bld.mode == 1)) ? 2 : 1;
+                    if (found >= lim) break;
+                }
+                if (k == nflat) break;
+                const int bg = flat[k];
+                if (!(mask & (1u << bg))) continue;
+                if (lok[bg][x]) {
+                    col[found] = lcol[bg][x]; id[found] = bg; ++found;
+                    if (found == 1)
+                        lim = (!bld.off && (mask & 0x20) && (semi || bld.mode == 1)) ? 2 : 1;
+                    if (found >= lim) break;
+                }
+            }
+            const uint32_t c = found ? blend_apply(bld, mask, col[0], id[0], semi,
+                                                   col[1], id[1])
+                                     : backdrop;
+            fb.px[y][x] = apply_bright(c, br);
+        }
+    }
+}
+
+/* SM64DS_TWOD_OLD=1: draw through scan_ref only, the shipped scan-out, so a
+   timing before / after is one binary and one run shape. */
+int twod_old_on()
+{
+    static int v = -1;
+    if (v < 0) {
+        const char *e = std::getenv("SM64DS_TWOD_OLD");
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v;
+}
+
+/* ---- THE UNCHANGED-FRAME SKIP ---------------------------------------------------
+ *
+ * Most frames the bottom screen is the same picture as the frame before (the map
+ * holds still, the menus wait for input), and scan_fast redrew all of it anyway.
+ * So the scan-out remembers, per destination framebuffer, EVERY INPUT it read and
+ * the picture it drew, and when every input is byte-for-byte what it was it hands
+ * back that picture instead of drawing it again.
+ *
+ * NOT DIRTY BITS AND NOT A HASH: a byte comparison against a saved copy, so a
+ * change can only be missed if an input is left out of the list, and the list is
+ * built from the same register values the drawing reads (scan_spans). The inputs:
+ *
+ *   - the DISPCNT_B value after the host's suppression, and the OAM source;
+ *   - engine B's whole register block 0x04001000..0x0400106F (BG control,
+ *     scroll, affine, windows, BLDCNT / BLDALPHA / BLDY, master brightness);
+ *   - the host's per-entry sprite answers (skip[], from obj_decide);
+ *   - the per-line window record (ntr::rt_window_rows), whether it is live and
+ *     all 192 lines of it;
+ *   - memory: engine B's BG and OBJ palettes, its OAM (wherever the host points
+ *     it), and for each enabled BG and each drawn sprite the exact VRAM span its
+ *     arithmetic can reach (map, tile data, bitmap, extended palettes).
+ *
+ * If a span list would not fit, or anything is new, the frame is drawn. Two
+ * destinations are remembered (the panel's g_sub and the save menu's
+ * g_sub_menu, which a swapped frame scans with a different suppression mask).
+ * SM64DS_TWOD_NOCACHE=1 draws every frame (scan_fast); SM64DS_TWOD_VERIFY=1
+ * still compares every handed-back picture against a fresh scan_ref. */
+struct Span {
+    uint32_t lo, hi;
+};
+
+constexpr int kMaxSpans = 192;
+
+struct ScanKey {
+    uint32_t dispcnt;
+    uint32_t oam_src;
+    uint32_t rows_on;
+    uint8_t regs[0x70];
+    uint8_t skip[128];
+    uint32_t rows[192];
+};
+
+struct ScanSlot {
+    const SubFramebuffer *dst;
+    bool valid;
+    ScanKey key;
+    int nspan;
+    Span span[kMaxSpans];
+    uint8_t *bytes;
+    size_t cap;
+    uint32_t out[SUB_H][SUB_W];
+};
+
+ScanSlot *g_scan_slot[2];
+unsigned g_scan_next;
+long g_scan_hits, g_scan_draws;
+
+inline int span_add(Span *v, int n, uint32_t lo, uint32_t hi)
+{
+    if (n < 0) return n;
+    if (n >= kMaxSpans) return -1;
+    v[n].lo = lo;
+    v[n].hi = hi;
+    return n + 1;
+}
+
+/* What one BG's sampler can read, from the same fields read_bg filled in. */
+int bg_spans(const BgLayer &c, Span *v, int n)
+{
+    switch (c.kind) {
+    case BG_TEXT:
+        n = span_add(v, n, c.screen,
+                     c.screen + (uint32_t)((c.map_w >> 5) * (c.map_h >> 5)) * 0x800u);
+        n = span_add(v, n, c.chars, c.chars + (c.bpp8 ? 0x10000u : 0x8000u));
+        break;
+    case BG_AFFINE:
+        n = span_add(v, n, c.screen,
+                     c.screen + (uint32_t)((c.map_w >> 3) * (c.map_h >> 3)));
+        n = span_add(v, n, c.chars, c.chars + (c.bpp8 ? 256u * 64u : 256u * 32u));
+        break;
+    case BG_EXT_AFFINE:
+        n = span_add(v, n, c.screen,
+                     c.screen + (uint32_t)((c.map_w >> 3) * (c.map_h >> 3)) * 2u);
+        n = span_add(v, n, c.chars, c.chars + 0x10000u);
+        break;
+    case BG_BITMAP_256:
+        n = span_add(v, n, c.screen, c.screen + (uint32_t)(c.map_w * c.map_h));
+        break;
+    case BG_BITMAP_DIRECT:
+        n = span_add(v, n, c.screen, c.screen + (uint32_t)(c.map_w * c.map_h) * 2u);
+        break;
+    default:
+        return n;
+    }
+    if (c.ext) n = span_add(v, n, c.ext, c.ext + 0x2000u);
+    return n;
+}
+
+/* What raster_obj can read in OBJ VRAM, entry by entry, with raster_obj's own
+   filters (skip[], the disable bit, shape 3) and its own address arithmetic. */
+int obj_spans(uint32_t dispcnt, const uint8_t *skip, Span *v, int n)
+{
+    if (!((dispcnt >> 12) & 1)) return n;
+    static const int kSizes[3][4][2] = {
+        {{8, 8}, {16, 16}, {32, 32}, {64, 64}},
+        {{16, 8}, {32, 8}, {32, 16}, {64, 32}},
+        {{8, 16}, {8, 32}, {16, 32}, {32, 64}},
+    };
+    const uint32_t boundary = 32u << ((dispcnt >> 20) & 3);
+    const bool map1d = (dispcnt >> 4) & 1;
+    const uint32_t oam_b = g_oam_src_b ? g_oam_src_b : kOamBase;
+    bool c256_any = false;
+    for (int i = 127; i >= 0; --i) {
+        if (skip[i]) continue;
+        const uint16_t a0 = rd16(oam_b + i * 8u);
+        const uint16_t a1 = rd16(oam_b + i * 8u + 2);
+        const uint16_t a2 = rd16(oam_b + i * 8u + 4);
+        const bool affine = a0 & 0x100;
+        if (!affine && (a0 & 0x200)) continue;
+        const unsigned objmode = (a0 >> 10) & 3;
+        const int shape = (a0 >> 14) & 3;
+        if (shape == 3) continue;
+        const int size = (a1 >> 14) & 3;
+        const uint32_t w = (uint32_t)kSizes[shape][size][0];
+        const uint32_t h = (uint32_t)kSizes[shape][size][1];
+        const bool c256 = a0 & 0x2000;
+        const uint32_t tile = a2 & 0x3FF;
+        uint32_t lo, hi;
+        if (objmode == 3) {
+            if ((dispcnt >> 6) & 1) {
+                const uint32_t bnd = ((dispcnt >> 22) & 1) ? 256u : 128u;
+                lo = tile * bnd;
+                hi = lo + w * h * 2u;
+            } else {
+                const uint32_t wide = ((dispcnt >> 5) & 1) ? 256u : 128u;
+                const uint32_t mask = (wide >> 3) - 1u;
+                lo = (tile & mask) * 0x10u + (tile & ~mask) * 0x80u;
+                hi = lo + ((h - 1u) * wide + w) * 2u;
+            }
+        } else {
+            const uint32_t tw = w / 8u, th = h / 8u;
+            const uint32_t slotmax =
+                map1d ? (c256 ? ((th - 1u) * tw + (tw - 1u)) * 2u
+                              : (th - 1u) * tw + (tw - 1u))
+                      : (th - 1u) * 32u + (c256 ? (tw - 1u) * 2u : (tw - 1u));
+            lo = tile * boundary;
+            hi = lo + slotmax * 32u + (c256 ? 64u : 32u);
+            if (c256) c256_any = true;
+        }
+        n = span_add(v, n, kObjVram + lo, kObjVram + hi);
+    }
+    if (c256_any && ((dispcnt >> 31) & 1))
+        n = span_add(v, n, kObjExtPltt, kObjExtPltt + 0x2000u);
+    return n;
+}
+
+/* The whole input list for one frame, sorted and merged; -1 = did not fit. */
+int scan_spans(uint32_t dispcnt, const uint8_t *skip, Span *v)
+{
+    int n = 0;
+    n = span_add(v, n, kPlttBase, kPlttBase + 0x400u);   /* BG + OBJ palettes */
+    if ((dispcnt >> 12) & 1) {
+        const uint32_t oam_b = g_oam_src_b ? g_oam_src_b : kOamBase;
+        n = span_add(v, n, oam_b, oam_b + 0x400u);
+    }
+    BgLayer bgs[4];
+    for (int i = 0; i < 4; ++i) {
+        read_bg(bgs[i], i, dispcnt);
+        n = bg_spans(bgs[i], v, n);
+    }
+    n = obj_spans(dispcnt, skip, v, n);
+    if (n <= 0) return n;
+    for (int i = 1; i < n; ++i) {
+        const Span t = v[i];
+        int j = i - 1;
+        while (j >= 0 && (v[j].lo > t.lo || (v[j].lo == t.lo && v[j].hi > t.hi))) {
+            v[j + 1] = v[j];
+            --j;
+        }
+        v[j + 1] = t;
+    }
+    int m = 0;
+    for (int i = 0; i < n; ++i) {
+        if (v[i].hi <= v[i].lo) continue;
+        if (m && v[i].lo <= v[m - 1].hi) {
+            if (v[i].hi > v[m - 1].hi) v[m - 1].hi = v[i].hi;
+        } else {
+            v[m++] = v[i];
+        }
+    }
+    return m;
+}
+
+void scan_key(ScanKey &k, uint32_t dispcnt, const uint8_t *skip)
+{
+    std::memset(&k, 0, sizeof k);
+    k.dispcnt = dispcnt;
+    k.oam_src = g_oam_src_b;
+    for (int i = 0; i < 0x70; ++i) k.regs[i] = rd8(kRegBase + i);
+    std::memcpy(k.skip, skip, sizeof k.skip);
+    const uint32_t *rows = nullptr;
+    if (ntr::rt_window_rows(1, &rows)) {
+        k.rows_on = 1;
+        std::memcpy(k.rows, rows, sizeof k.rows);
+    }
+}
+
+int twod_nocache_on()
+{
+    static int v = -1;
+    if (v < 0) {
+        const char *e = std::getenv("SM64DS_TWOD_NOCACHE");
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v;
+}
+
+void scan_cached(SubFramebuffer &fb, uint32_t dispcnt, const uint8_t *skip)
+{
+    ScanSlot *sl = nullptr;
+    for (int i = 0; i < 2; ++i)
+        if (g_scan_slot[i] && g_scan_slot[i]->dst == &fb) sl = g_scan_slot[i];
+    if (!sl) {
+        const unsigned i = g_scan_next++ & 1u;
+        if (!g_scan_slot[i]) {
+            g_scan_slot[i] = static_cast<ScanSlot *>(std::calloc(1, sizeof(ScanSlot)));
+            if (!g_scan_slot[i]) {
+                scan_fast(fb, dispcnt, skip, g_obj, g_objwin);
+                return;
+            }
+        }
+        sl = g_scan_slot[i];
+        sl->dst = &fb;
+        sl->valid = false;
+    }
+    static ScanKey key;
+    static Span span[kMaxSpans];
+    scan_key(key, dispcnt, skip);
+    const int n = scan_spans(dispcnt, skip, span);
+    bool same = sl->valid && n > 0 && n == sl->nspan &&
+                std::memcmp(&key, &sl->key, sizeof key) == 0 &&
+                std::memcmp(span, sl->span, sizeof(Span) * (size_t)n) == 0;
+    if (same) {
+        const uint8_t *saved = sl->bytes;
+        for (int i = 0; i < n && same; ++i) {
+            const size_t len = span[i].hi - span[i].lo;
+            same = std::memcmp(reinterpret_cast<const void *>(span[i].lo), saved, len) == 0;
+            saved += len;
+        }
+    }
+    if (same) {
+        std::memcpy(fb.px, sl->out, sizeof fb.px);
+        ++g_scan_hits;
+        return;
+    }
+    scan_fast(fb, dispcnt, skip, g_obj, g_objwin);
+    ++g_scan_draws;
+    sl->valid = false;
+    if (n <= 0) return;
+    size_t total = 0;
+    for (int i = 0; i < n; ++i) total += span[i].hi - span[i].lo;
+    if (total > sl->cap) {
+        uint8_t *p = static_cast<uint8_t *>(std::realloc(sl->bytes, total));
+        if (!p) return;
+        sl->bytes = p;
+        sl->cap = total;
+    }
+    uint8_t *dst = sl->bytes;
+    for (int i = 0; i < n; ++i) {
+        const size_t len = span[i].hi - span[i].lo;
+        std::memcpy(dst, reinterpret_cast<const void *>(span[i].lo), len);
+        dst += len;
+    }
+    std::memcpy(&sl->key, &key, sizeof key);
+    std::memcpy(sl->span, span, sizeof(Span) * (size_t)n);
+    sl->nspan = n;
+    std::memcpy(sl->out, fb.px, sizeof sl->out);
+    sl->valid = true;
+}
+
+/* ---- SM64DS_TWOD_VERIFY=1: the old scan-out beside the new, every frame -------
+ *
+ * The reference draws into its own framebuffer and its own OBJ buffers, from the
+ * same DISPCNT_B value and the same per-entry host answers (skip[]), so the only
+ * thing that can differ is the drawing. Every frame that differs prints one line
+ * (the first 20 in full: how many pixels, the first one and both colours) and the
+ * run ends with a SUMMARY line on stderr. Off, none of this is reached and nothing
+ * is allocated. */
+struct TwodRef {
+    SubFramebuffer fb;
+    ObjPixel obj[192][256];
+    uint8_t objwin[192][256];
+};
+TwodRef *g_twod_ref;
+long g_twod_frames, g_twod_bad, g_twod_badpx;
+
+int twod_verify_on()
+{
+    static int v = -1;
+    if (v < 0) {
+        const char *e = std::getenv("SM64DS_TWOD_VERIFY");
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v;
+}
+
+void twod_verify_summary()
+{
+    std::fprintf(stderr, "[twod] SUMMARY sub verify: %ld scan-outs compared, "
+                 "%ld differ (%ld px); unchanged-frame skip: %ld handed back, "
+                 "%ld drawn\n", g_twod_frames, g_twod_bad, g_twod_badpx,
+                 g_scan_hits, g_scan_draws);
+}
+
+void twod_verify_sub(const SubFramebuffer &fb, uint32_t dispcnt,
+                     const uint8_t *skip)
+{
+    if (!g_twod_ref) {
+        g_twod_ref = static_cast<TwodRef *>(std::calloc(1, sizeof(TwodRef)));
+        if (!g_twod_ref) return;
+        std::atexit(twod_verify_summary);
+    }
+    scan_ref(g_twod_ref->fb, dispcnt, skip, g_twod_ref->obj, g_twod_ref->objwin);
+    ++g_twod_frames;
+    if (std::memcmp(fb.px, g_twod_ref->fb.px, sizeof fb.px) == 0) return;
+    long n = 0;
+    int fx = -1, fy = -1;
+    for (int y = 0; y < SUB_H; ++y)
+        for (int x = 0; x < SUB_W; ++x)
+            if (fb.px[y][x] != g_twod_ref->fb.px[y][x]) {
+                if (!n) { fx = x; fy = y; }
+                ++n;
+            }
+    ++g_twod_bad;
+    g_twod_badpx += n;
+    if (g_twod_bad <= 20)
+        std::fprintf(stderr, "[twod] sub MISMATCH scan-out %ld: %ld px, first (%d,%d) "
+                     "new %08x ref %08x, DISPCNT_B %08x\n", g_twod_frames, n, fx, fy,
+                     (unsigned)fb.px[fy][fx], (unsigned)g_twod_ref->fb.px[fy][fx],
+                     (unsigned)dispcnt);
+}
+
+}  // namespace
+
+void ppu_scanout_sub(SubFramebuffer &fb)
+{
+    // The audit's per-frame seam. This is the one scan-out the live harness
+    // calls every frame, so it samples BOTH engines' register files rather than
+    // just this one's -- engine A's live compositor is hal/message_compositor.cpp
+    // and this lane does not own that file. Inert unless SM64DS_PPU_AUDIT is set.
+    ppu_audit_sample("ppu_scanout_sub");
+
+    /* THE HOST'S LAYER SUPPRESSION, applied at the ONE read of DISPCNT_B this
+       scan-out makes, so every layer decision below -- the BG rasters, the
+       window logic, the blend targets -- sees one consistent register value.
+       Zero unless something installed a mask, and then it can only CLEAR
+       enable bits: nothing here can turn a layer on that the game turned off.
+       The register itself is not written, so the ROM reads back exactly what
+       it wrote. See ppu_sub_set_bg_suppress. */
+    const uint32_t dispcnt = rd32(kRegBase) & ~g_bg_suppress;
+    uint8_t skip[128];
+    const bool shown = ((dispcnt >> 16) & 3) != 0 && !((dispcnt >> 7) & 1);
+    if (shown)
+        obj_decide(dispcnt, skip);
+    else
+        std::memset(skip, 0, sizeof skip);
+    if (twod_old_on())
+        scan_ref(fb, dispcnt, skip, g_obj, g_objwin);
+    else if (!shown || twod_nocache_on())
+        scan_fast(fb, dispcnt, skip, g_obj, g_objwin);
+    else
+        scan_cached(fb, dispcnt, skip);
+    if (twod_verify_on()) twod_verify_sub(fb, dispcnt, skip);
 }
 
 bool ppu_write_bmp_sub(const char *path, const SubFramebuffer &fb)

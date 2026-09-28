@@ -776,6 +776,85 @@ static void port_adv_coin_count_top(HUD *self, int dy)
                                              2 + dy, -1, 1, 0);
 }
 
+/* src/_ZN3HUD15RenderTimeTimerEv.cpp, verbatim except every y carries dy.
+ *
+ * THE COURSE TIMER MOVES DOWN WITH THE COINS. The cartridge draws the timer
+ * one row under the coin count: coin digits at y 2, timer digits at y 0x16 and
+ * its TIME / ' / " glyphs at y 0x1e, all on the top-right. This arm moved the
+ * coin count down by coin_dy to make room for the star count on the top row,
+ * which put the coins exactly on the timer's rows (digits at 2 + 18 = 20
+ * against the timer's 22), and the coins, drawn first, took the sprite
+ * priority tie: the timer sat behind them. Shifting the timer by the same
+ * coin_dy keeps the ROM's own coin-to-timer spacing (0x16 - 2 = 20 rows) under
+ * the moved coin row, so the three rows stack the way the cartridge stacks its
+ * two. The x positions, glyphs, digit split, language test and the 99'59"99
+ * cap are the ROM's; the one guard, data_ov002_02111184, is the ROM's "a timer
+ * is running on this course" byte that the player's floor check sets on the
+ * slide's start floor (src/actors/Player.cpp:2606-2616).
+ *
+ * SM64DS_TIMER_TRACE=1 prints the Timer's raw GetTime and the time the HUD
+ * shows, once every 30 calls (one second of ticks at the course divider), so
+ * the rate can be read against the cartridge's: 33514000 / 64 timer counts a
+ * second (the ROM's own divisor below). */
+extern "C" {
+extern unsigned char data_ov002_02111184;  /* a timer is on this course    */
+extern int data_0209d4c8;                  /* the course Timer object      */
+extern char data_ov002_0210ce80;           /* TIME glyph, languages 2/4/5  */
+extern char _ZN3OAM4TIMEE;                 /* TIME glyph                   */
+extern char _ZN3OAM7MINUTESE;              /* the ' glyph                  */
+extern char data_ov002_0210c6c0;           /* the " glyph                  */
+extern unsigned long long _ZN5Timer7GetTimeEv(void *);
+int GetOwnerLanguage(void);
+}
+static void port_adv_time_timer_top(int dy)
+{
+    if (data_ov002_02111184 == 0)
+        return;
+
+    const unsigned long long raw = _ZN5Timer7GetTimeEv(&data_0209d4c8);
+    const unsigned long long t = raw << 6;
+    unsigned long long sec = t / 33514000;
+    unsigned long long centi = t / 33514 % 1000 / 10;
+    unsigned long long min = sec / 60;
+    sec = sec % 60;
+    if (min >= 100) {
+        min = 99;
+        sec = 59;
+        centi = 99;
+    }
+
+    {
+        static int trace = -1, calls;
+        if (trace < 0) trace = std::getenv("SM64DS_TIMER_TRACE") != 0;
+        if (trace && (calls++ % 30) == 0) {
+            std::fprintf(stderr, "[timer] call %d GetTime %llu shows %02u'%02u\"%02u\n",
+                         calls - 1, raw, (unsigned)min, (unsigned)sec,
+                         (unsigned)centi);
+            std::fflush(stderr);
+        }
+    }
+
+    const int lang = GetOwnerLanguage();
+    void *label = (lang == 5 || lang == 4 || lang == 2)
+                      ? (void *)&data_ov002_0210ce80 : (void *)&_ZN3OAM4TIMEE;
+    if (min / 10 != 0) {
+        _ZN3OAM6RenderEbP7OamAttriiii5Fix12IiES3_ii(0, label, 0xa4, 0x1e + dy, -1, 1,
+                                                    0x1000, 0x1000, 0, -1);
+        _ZN3OAM6RenderEbP7OamAttriiiiP9Matrix2x2(0, func_020aba70[min / 10], 0xb8,
+                                                 0x16 + dy, -1, 1, 0);
+    } else {
+        _ZN3OAM6RenderEbP7OamAttriiii5Fix12IiES3_ii(0, label, 0xac, 0x1e + dy, -1, 1,
+                                                    0x1000, 0x1000, 0, -1);
+    }
+    _ZN3OAM6RenderEbP7OamAttriiiiP9Matrix2x2(0, func_020aba70[min % 10], 0xc0, 0x16 + dy, -1, 1, 0);
+    _ZN3OAM6RenderEbP7OamAttriiiiP9Matrix2x2(0, &_ZN3OAM7MINUTESE, 0xc4, 0x1e + dy, -1, 1, 0);
+    _ZN3OAM6RenderEbP7OamAttriiiiP9Matrix2x2(0, func_020aba70[sec / 10], 0xcf, 0x16 + dy, -1, 1, 0);
+    _ZN3OAM6RenderEbP7OamAttriiiiP9Matrix2x2(0, func_020aba70[sec % 10], 0xd7, 0x16 + dy, -1, 1, 0);
+    _ZN3OAM6RenderEbP7OamAttriiiiP9Matrix2x2(0, &data_ov002_0210c6c0, 0xdb, 0x1e + dy, -1, 1, 0);
+    _ZN3OAM6RenderEbP7OamAttriiiiP9Matrix2x2(0, func_020aba70[centi / 10], 0xe8, 0x16 + dy, -1, 1, 0);
+    _ZN3OAM6RenderEbP7OamAttriiiiP9Matrix2x2(0, func_020aba70[centi % 10], 0xf0, 0x16 + dy, -1, 1, 0);
+}
+
 /* THE RED-COIN AND SILVER-STAR ROWS, MOVED TO THE BOTTOM-LEFT (Tango, forum
  * thread "Red coin HUD icons and Silver Stars HUD icons overlap with the life
  * counter", 0.5.0). A LAYOUT CHOICE OF THE PORT'S, NOT THE CARTRIDGE'S.
@@ -864,7 +943,7 @@ static int port_adv_hud_render_stars_lives_on_top(HUD *self)
                 _ZN3HUD14RenderRedCoinsEv((void *)self);
                 _ZN3HUD17RenderSilverStarsEv((void *)self);
             }
-            _ZN3HUD15RenderTimeTimerEv((void *)self);
+            port_adv_time_timer_top(coin_dy);
         }
         /* SM64DS_BOUNCE_ARROWS=1 RAISES THE ROM'S OWN CUE, and raises nothing
            else. data_0209f284 is the word HUD::Render reads to decide whether

@@ -65,22 +65,11 @@ struct Mtx43 { Fix12i a[12]; };
 /* shadow struct 'dBgCh_Gnd' */
 struct dBgCh_Gnd { char buf[0x68 - 0x18]; };
 
-/* shadow struct 'Sub' -- Render's local vtable-shape probe for mModel's own
- * vtable at slot 4 (f4). Distinct from InitResources' own same-named local
- * below, which is a completely different layout at a different address;
- * the two collided only because both legacy files picked "Sub" for an
- * unrelated anonymous read, so one is renamed here. */
-struct Sub {
-    virtual ~Sub() {}
-    virtual void a() {}
-    virtual void b() {}
-    virtual void c() {}
-    virtual int f4(int) = 0;
-};
-
 /* was the OTHER legacy file's own 'Sub' -- InitResources' probe of the
- * struct at data_0209f318+0x100, unrelated to Render's vtable-shape Sub
- * above. Renamed to keep both; see the note on Sub. */
+ * struct at data_0209f318+0x100. Render's same-named local (a vtable-shape
+ * probe of mModel with a virtual destructor) is gone: Render calls
+ * mModel.Render(0) through the real Model, which mwccarm emits as the same
+ * virtual call through +0x14 and MSVC numbers the same way. */
 struct F318Probe { char pad[0x7c]; short f7c; };
 
 /* shadow struct 'SharedFilePtr' */
@@ -279,12 +268,12 @@ int WingFeather::Behavior()
 /* recovered: named members + shared header, real C++ method */
 int WingFeather::Render()
 {
-    unsigned char b = *(unsigned char*)((char*)&mLifeTimer);
-    if (b < 0x2d) {
-        if (b & 1) return 1;
+    /* the last 45 frames on the ground blink: odd values skip the draw */
+    u8 life = mLifeTimer;
+    if (life < 0x2d) {
+        if (life & 1) return 1;
     }
-    Sub *sub = (Sub*)((char*)&mModel);
-    sub->f4(0);
+    mModel.Render(0);
     return 1;
 }
 

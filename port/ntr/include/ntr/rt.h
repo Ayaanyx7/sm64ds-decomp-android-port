@@ -80,6 +80,19 @@ bool rt_hblank_armed();
 // Call the registered mask-2 handler. Undefined unless rt_hblank_armed().
 void rt_hblank_dispatch();
 
+// DS TIMER 0 (run hunt2, lane HUD2). The ROM programs it once at boot
+// (src/func_02059788.c: TM0CNT_L = 0, TM0CNT_H = 0xc1 = run, IRQ on overflow,
+// prescaler F/64) and reads it as the OS tick (src/func_02059650.c: the
+// counter at 0x04000100 plus the overflow count its mask-8 handler keeps).
+// rt_timer0_advance moves it across `vblanks` DS frames of 560190 bus cycles
+// (263 lines x 2130) and raises the overflow interrupt the way the DS does.
+// The frame loops call it once per game tick with the ROM's own vblanks-per-
+// tick word (data_0208ee44), so a course timer counts DS time.
+// SM64DS_TIMER0_OFF=1 leaves the timer frozen (the pre-fix behaviour).
+void rt_timer0_advance(unsigned vblanks);
+bool rt_timer0_irq_gates_open();   // IE bit 3, IME, CPSR I (runtime.cpp)
+void rt_timer0_dispatch();         // the vector at bit 3 (runtime.cpp)
+
 // One frame of display scan-out: walk VCOUNT across all 263 lines and raise
 // the HBlank edge on each. rt_run does this itself between the game fiber
 // yielding and the frame hook; the walk_window level loop and the scene loop

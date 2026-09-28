@@ -88,8 +88,9 @@ struct GxTriangle {
     // their stencil protocol needs the depth buffer already final.
     uint8_t translucent;
     // POLYGON_ATTR bits 4-5: 0 modulation, 1 decal, 2 toon/highlight,
-    // 3 shadow. Only 3 changes the raster's behaviour (GBATEK shadow
-    // polygons); 1 and 2 draw as modulation, same as before they existed.
+    // 3 shadow. 3 is the shadow-volume protocol (GBATEK shadow polygons);
+    // 2 takes its vertex colour through the TOON TABLE, see gx_toon_table
+    // below; 1 draws as modulation, same as before it existed.
     uint8_t mode;
     // POLYGON_ATTR bits 24-29. For mode-3 polygons the ID selects the role:
     // 0 is the stencil mask, nonzero is the drawn shadow. For everything
@@ -233,6 +234,12 @@ struct GxGpuFrame {
     int tex_filter;        // 0 nearest, 1 bilinear, 2 trilinear
     uint32_t tex_generation;
     uint32_t clear_argb;   // what the framebuffer held when gx_render started
+    // THE TOON TABLE for this frame's mode-2 polygons (see gx_toon_table):
+    // toon_shade 0 = the frame has none, 1 = toon, 2 = highlight
+    // (DISP3DCNT bit 1), and toon_rgb the 32 entries as 0..255 floats, three
+    // per entry, in the units the vertex colour travels in.
+    int toon_shade;
+    const float *toon_rgb;
 };
 typedef int (*GxGpuOpaqueFn)(const GxGpuFrame *);
 void gx_set_gpu_opaque(GxGpuOpaqueFn fn);
@@ -241,9 +248,69 @@ int gx_gpu_opaque_registered();
 // draw one list both ways.
 GxGpuOpaqueFn gx_gpu_opaque();
 
+// ---- THE OPTIONAL GRAPHICS-CARD BACKEND FOR THE EDGE SMOOTHING (run perf2) --
+//
+// aa_pass (AntiAliasing 1) is the other CPU pass left after the card draws the
+// opaque picture. A backend is handed the frame as it stands (aa_pass's own
+// copy of it, which is also what the display capture reads), the coverage
+// mask and the live framebuffer; it writes every pixel the smoothing changes
+// into fb, exactly as aa_band would, sets `changed` and returns 1. 0 is never
+// an error: aa_pass then runs its own bands on the same frame. Nothing is
+// registered unless the "Renderer" setting is on (hal/gpu_raster.cpp), so the
+// software renderer's smoothing is untouched: one null test per smoothed frame.
+struct GxGpuAa {
+    const uint32_t *src;   // the frame before smoothing, SCREEN_W stride
+    const uint8_t *cover;  // the 3D coverage mask, same stride
+    uint32_t *fb;          // the live framebuffer, same stride
+    int stride;
+    int w, h;              // the active picture
+    unsigned long long changed;  // out: pixels rewritten
+};
+typedef int (*GxGpuAaFn)(GxGpuAa *);
+void gx_set_gpu_aa(GxGpuAaFn fn);
+#define GX_HAS_GPU_AA 1   // hal/gpu_raster.cpp registers its backend only when this exists
+
 // Rasterise them into fb with a depth buffer. Does not clear fb -- the 3D layer
 // composites over whatever the 2D engine already drew.
 void gx_render(Framebuffer &fb);
+
+// THE FRAME'S CLEAR, which is the colour the DS shows at a top-screen pixel
+// that neither a polygon nor a 2D layer covers. GBATEK, DS 3D Rear-Plane: the
+// rendering engine starts every frame from CLEAR_COLOR (0x04000350: bits 0-14
+// the colour, 16-20 the alpha); DS Video: the 3D picture is BG0, and a BG0
+// pixel whose alpha is 0 is transparent, so the layers under it and then the
+// BACKDROP (engine A's palette entry 0, 0x05000000) show there instead.
+//   BG0 shown as the 3D layer (DISPCNT bits 3 and 8) and the clear alpha
+//   nonzero: the clear colour (the star select's white, SetClearColor(0x7FFF,
+//   0x1F, ...) in src/_ZN12dScStarSel_c13InitResourcesEv.cpp);
+//   BG0 shown as the 3D layer with the clear alpha 0: the old constant
+//   0xFF101820, because the raster blends translucent polygons onto this fill
+//   where the DS lets the 2D engine blend them onto the layer below BG0;
+//   BG0 not shown as the 3D layer: the backdrop.
+// The 2D compositor then paints its layers over this exactly as before. The
+// fill covers the PRESENT rectangle; a pillarbox margin outside it keeps the
+// old constant 0xFF101820, which is also the whole answer before the I/O
+// window is mapped (a harness with no io_init). SM64DS_CLEAR_FILL_OLD=1 puts
+// the old constant back everywhere for A/B on one binary; SM64DS_CLEAR_PROBE=1
+// prints every change of the registers the answer is made from.
+uint32_t gx_clear_argb();
+void gx_clear_fill(Framebuffer &fb);
+
+// THE TOON TABLE (GBATEK, DS 3D Toon/Edge/Fog: TOON_TABLE 0x04000380, 32
+// BGR555 halfwords; DS 3D Polygon Attributes: mode 2). A mode-2 polygon's
+// vertex RED picks one of the 32 entries, per pixel, from the interpolated
+// colour. With DISP3DCNT bit 1 clear (toon) the entry REPLACES the vertex
+// colour and the texture modulates it as usual; with it set (highlight) the
+// vertex colour's green and blue take its red, it modulates as usual and the
+// entry is ADDED after, saturating. The mode-2 users: the cap morph
+// (src/actors/Player.cpp, func_ov002_020be3b0) strips the textures, sets mode 2
+// and rotates a rainbow into the table every tick; func_ov002_020beabc (a level
+// entered with a changed character, morph state 5); and ov007, the title menu's
+// Mario head and the file select's vortex (func_ov007_020b2bd4, the table from
+// func_ov007_020c93b4; the vortex runs in highlight mode). gx_render reads the table
+// and DISP3DCNT once per frame, only on a frame that submits a mode-2 polygon.
+// SM64DS_TOON_OFF=1 draws mode 2 as modulation again (the old picture).
+int gx_toon_table(float rgb[32 * 3]);
 
 // THE 3D COVERAGE MASK: one byte per host framebuffer pixel, 1 where the LAST
 // gx_render actually wrote a pixel (opaque, translucent or shadow), 0 where it

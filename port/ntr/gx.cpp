@@ -12,11 +12,13 @@
 #include "ntr/texture.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
+#include <climits>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -1823,6 +1825,8 @@ std::map<const uint32_t *, TexIdent> g_tex_ids;
 /* The registered backend for the opaque pass, or null. See GxGpuFrame in
    ntr/gx.h for what it is handed and what returning 0 means. */
 GxGpuOpaqueFn g_gpu_opaque = nullptr;
+/* and the one for the edge smoothing, or null (see GxGpuAa in ntr/gx.h) */
+GxGpuAaFn g_gpu_aa = nullptr;
 }  // namespace
 
 void gx_bind_texture(const uint32_t *rgba, int width, int height) {
@@ -2290,6 +2294,8 @@ int gx_gpu_opaque_registered() { return g_gpu_opaque != nullptr; }
    ways can put it back after taking it out. The A/B inside gx_render does
    that without help because it is inside; a test outside cannot. */
 GxGpuOpaqueFn gx_gpu_opaque() { return g_gpu_opaque; }
+
+void gx_set_gpu_aa(GxGpuAaFn fn) { g_gpu_aa = fn; }
 
 /* ---- THE TWO PICTURE-SMOOTHING SETTINGS' LATCHES (run hd2) ---------------
    Both are called once at boot from walk_window, beside ntr::configure_aspect,
@@ -2792,20 +2798,61 @@ static void texpx_report() {
     std::fflush(stdout);
 }
 
+/* THE FLOOR, WITHOUT THE LIBRARY CALL (run perf2, lane RASTER). The sampler
+   floors every texture coordinate, and in this 32-bit build std::floor is a
+   real call into the C library that returns through the x87 stack: about a
+   sixth of the raster's time was that call. These two give the same answer
+   as the library for every float, which the reasoning below and the
+   SM64DS_RASTER_AB comparison both say:
+     floor_to_int is (int)std::floor(f). The cast truncates toward zero, and
+       for a negative f with a fraction the truncation is one above the floor,
+       which the compare catches. A float too big for an int, or a NaN, casts
+       to INT_MIN exactly as the old cast of the old floor did, and the
+       INT_MIN test keeps it there instead of stepping past it.
+     floor_exact is std::floor(f) itself, as a float, for the filtered
+       sampler, which also needs the fraction. A float at or above 2^23 has no
+       fraction and neither do infinities, so those and NaN come back as they
+       went in; an f that is already whole comes back as f itself, which is
+       what keeps -0.0 as -0.0. */
+static inline int floor_to_int(float f) {
+    const int i = static_cast<int>(f);
+    return (i != INT_MIN && static_cast<float>(i) > f) ? i - 1 : i;
+}
+
+static inline float floor_exact(float f) {
+    if (!(std::fabs(f) < 8388608.0f)) return f;
+    const float t = static_cast<float>(static_cast<int>(f));
+    if (t == f) return f;
+    return t > f ? t - 1.0f : t;
+}
+
 // One texel coordinate under the DS wrap rules (GBATEK TEXIMAGE_PARAM 16-19):
 // repeat clear = CLAMP to the edge texel; repeat set = wrap; flip on top of
 // repeat mirrors every other tile. `repeat && !flip` is the exact expression
 // the raster used before wrap modes existed, so nothing that binds through
 // gx_bind_texture moves a pixel.
+/* A POWER-OF-TWO SIZE WRAPS WITH A MASK (run perf2, lane RASTER). Every
+   texture the DS itself can bind is 8 to 1024 texels on a side in powers of
+   two, and for those `i & (size - 1)` is exactly the "i % size, then add size
+   if negative" below it: two's complement makes the low bits of a negative
+   number its non-negative remainder, INT_MIN included. The two integer divides
+   this saves were on every textured pixel. A size that is not a power of two
+   (an HD pack at 3x, say) keeps the divide. */
 static int tex_coord_i(int i, int size, bool repeat, bool flip) {
     if (!repeat) return i < 0 ? 0 : (i >= size ? size - 1 : i);
+    const bool pow2 = size > 0 && (size & (size - 1)) == 0;
     if (!flip) {
+        if (pow2) return i & (size - 1);
         i %= size;
         return i < 0 ? i + size : i;
     }
     const int period = size * 2;
-    i %= period;
-    if (i < 0) i += period;
+    if (pow2) {
+        i &= period - 1;
+    } else {
+        i %= period;
+        if (i < 0) i += period;
+    }
     return i < size ? i : period - 1 - i;
 }
 
@@ -2816,7 +2863,7 @@ static int tex_coord_i(int i, int size, bool repeat, bool flip) {
    then the identical integer arithmetic: the nearest path samples the texel
    it always sampled. */
 static int tex_coord(float f, int size, bool repeat, bool flip) {
-    return tex_coord_i(static_cast<int>(std::floor(f)), size, repeat, flip);
+    return tex_coord_i(floor_to_int(f), size, repeat, flip);
 }
 
 /* ---- THE FILTERED SAMPLER (run hd2) ---------------------------------------
@@ -2845,7 +2892,7 @@ struct TexLevel {
 static uint32_t sample_bilinear(const TexLevel &L, float u, float v,
                                 bool rs, bool rt, bool fs, bool ft) {
     const float fu = u - 0.5f, fv = v - 0.5f;
-    const float flu = std::floor(fu), flv = std::floor(fv);
+    const float flu = floor_exact(fu), flv = floor_exact(fv);
     const int iu = static_cast<int>(flu), iv = static_cast<int>(flv);
     const float du = fu - flu, dv = fv - flv;
     const int x0 = tex_coord_i(iu, L.w, rs, fs);
@@ -3003,9 +3050,10 @@ struct Inv255 {
 static const Inv255 inv255;
 
 /* --- parallel raster -------------------------------------------------------
-   The screen is split BY ROW: worker k takes rows k, k+T, k+2T and so on.
-   Every row is written by exactly one worker, and every worker walks the whole
-   triangle list in submission order, so the depth resolution and the
+   The screen is split BY ROW into tiles of whole rows (see the bins beside
+   gx_render; before run perf2 worker k took rows k, k+T, k+2T and so on).
+   Every row is written by exactly one worker, and every worker walks its
+   triangles in submission order, so the depth resolution and the
    translucent blend over the framebuffer happen in the same order, against the
    same pixels, as they did on one thread. The frame that comes out is
    bit-for-bit the frame one thread produced: this partitions the work, it does
@@ -3080,6 +3128,18 @@ int raster_threads() {
             unsigned hc = std::thread::hardware_concurrency();
             n = hc ? (int)hc : 1;
             if (n > 8) n = 8;   /* past this the row bands stop paying */
+            /* SMALL MACHINES GET TWO WORKERS A CORE, AT LEAST FOUR (run perf2,
+               lane RASTER). Measured on a 6-core box pinned to two cores
+               with the old interleaved bands: two bands 12.2 ms of raster a
+               frame, four 7.4, eight 7.5. One worker a core leaves a core
+               idle whenever the other is descheduled or its rows run long,
+               and hardware_concurrency is exactly what a two-core laptop
+               reports. The rows a worker draws do not depend on how many
+               workers there are, so this moves time and never a pixel. */
+            if (n < 4) {
+                n = hc ? 2 * (int)hc : 4;
+                if (n < 4 && hc >= 2) n = 4;
+            }
         }
         if (n < 1) n = 1;
     }
@@ -3147,9 +3207,9 @@ MaskRow *g_tlattr;
  * it has already written: a filter fed on its own output smears instead of
  * smoothing. One scratch copy of the frame solves it -- read from the copy,
  * write to the framebuffer -- and it is the reason this is a buffer and not a
- * three-row window: the raster's row bands are INTERLEAVED (a thread owns
- * rows tid, tid+nt, ...), so a thread's neighbours are always another
- * thread's rows.
+ * three-row window: the raster's rows are split between threads (tiles of
+ * whole rows since run perf2, interleaved rows before it), so a row's
+ * neighbours can always be another thread's rows.
  * ON THE HEAP for the raster buffers' reason one block down, and allocated
  * only on the first frame the setting is actually on, so a run with the key
  * absent holds nothing. */
@@ -3211,6 +3271,141 @@ const float *gx_depth()
 {
     raster_buffers();
     return &g_depth[0][0];
+}
+
+/* ---- THE FRAME'S CLEAR AND THE TOON TABLE (run hunt2, lane RENDER2) --------
+   Both are plain latches of the 3D engine that the game stores straight into
+   the mapped I/O window and the hardware's rendering engine reads at draw time;
+   see the two blocks over gx_clear_argb and gx_toon_table in ntr/gx.h for the
+   GBATEK rules. Everything here reads the window only once io_ready() says it
+   is mapped, so a harness that draws without io_init keeps the old answers. */
+namespace {
+
+/* the constant the port cleared to before the clear colour was read, kept for
+   the pillarbox margins, the unmapped case and SM64DS_CLEAR_FILL_OLD */
+constexpr uint32_t kOldClear = 0xFF101820u;
+
+/* THIS FRAME'S TOON TABLE, as 0..255 floats in the units the vertex colour
+   travels in (bgr555_to_argb's expansion, so an entry reads exactly as the
+   same BGR555 value would as a vertex colour), and the shading it is for:
+   0 no mode-2 polygon this frame (or SM64DS_TOON_OFF), 1 toon, 2 highlight.
+   Written once at the head of gx_render, on the calling thread, before any
+   band starts; the bands only read it. */
+float g_toon8[32 * 3];
+int g_toon_shade = 0;
+
+/* THE ENTRY A PIXEL TAKES, from its interpolated vertex red (0..255). The
+   hardware interpolates the colour at six bits and indexes with the top five
+   (melonDS RenderPixel: RenderToonTable[vr >> 1]), so a vertex whose red is
+   the 5-bit value r lands on entry r, and between two vertices the step falls
+   half way. Rounding red * 31 / 255 is that: bgr555_to_argb's expansion of r
+   is within 0.06 of r * 255 / 31, so every vertex value reads back as its own
+   r with room to spare, and the boundary between r and r + 1 is their
+   midpoint. */
+inline int toon_index(float vr)
+{
+    const int i = static_cast<int>(vr * (31.0f / 255.0f) + 0.5f);
+    return i < 0 ? 0 : (i > 31 ? 31 : i);
+}
+
+int toon_off_env()
+{
+    static const int v = std::getenv("SM64DS_TOON_OFF") ? 1 : 0;
+    return v;
+}
+
+}  // namespace
+
+int gx_toon_table(float rgb[32 * 3])
+{
+    if (toon_off_env() || !io_ready()) return 0;
+    const volatile uint16_t *tt =
+        reinterpret_cast<const volatile uint16_t *>(0x04000380u);
+    for (int i = 0; i < 32; ++i) {
+        const uint32_t c = bgr555_to_argb(static_cast<uint16_t>(tt[i] & 0x7FFF));
+        rgb[i * 3 + 0] = (float)((c >> 16) & 0xFF);
+        rgb[i * 3 + 1] = (float)((c >> 8) & 0xFF);
+        rgb[i * 3 + 2] = (float)(c & 0xFF);
+    }
+    /* DISP3DCNT bit 1: 0 toon, 1 highlight */
+    const uint16_t d3 = *reinterpret_cast<const volatile uint16_t *>(0x04000060u);
+    return (d3 & 2u) ? 2 : 1;
+}
+
+uint32_t gx_clear_argb()
+{
+    static const int old = std::getenv("SM64DS_CLEAR_FILL_OLD") ? 1 : 0;
+    if (old || !io_ready()) return kOldClear;
+    const uint32_t cc = *reinterpret_cast<const volatile uint32_t *>(0x04000350u);
+    const uint32_t dc = *reinterpret_cast<const volatile uint32_t *>(0x04000000u);
+    const uint16_t bd = *reinterpret_cast<const volatile uint16_t *>(0x05000000u);
+    /* BG0 is the 3D layer and it is on: the rule message_compositor.cpp's
+       bg0_3d_shown uses for the same question */
+    const bool shown3d = (dc & 0x8u) != 0 && ((dc >> 8) & 1u) != 0;
+    const bool opaque = shown3d && ((cc >> 16) & 0x1Fu) != 0;
+    /* BG0 IS THE 3D LAYER AND ITS CLEAR IS TRANSPARENT: keep the old constant.
+       On the DS a translucent polygon over an alpha-0 rear plane is stored
+       unblended and the 2D engine blends it, by its 3D alpha, onto the layer
+       under BG0 (MG_TRAMPOLINE2's shooting-star trails onto the starfield,
+       G2x::SetBlendAlpha(1, 0x2e, 16, 16)). The raster here blends it onto
+       this fill instead, so filling with the backdrop turned those trails into
+       white rings. Until the compositor blends the 3D alpha onto the layers
+       below, this arm keeps the picture it always had. */
+    const uint32_t out = (shown3d && !opaque) ? kOldClear : bgr555_to_argb(
+        static_cast<uint16_t>((opaque ? cc : (uint32_t)bd) & 0x7FFFu));
+    static const int probe = std::getenv("SM64DS_CLEAR_PROBE") ? 1 : 0;
+    if (probe) {
+        static uint32_t last_cc = ~0u, last_dc = ~0u;
+        static uint32_t last_bd = ~0u, n = 0;
+        static unsigned long calls = 0;
+        ++calls;
+        if ((cc != last_cc || dc != last_dc || bd != last_bd) && n < 64) {
+            ++n;
+            last_cc = cc; last_dc = dc; last_bd = bd;
+            std::fprintf(stderr,
+                         "[clear] call %lu CLEAR_COLOR %08x DISPCNT %08x "
+                         "backdrop %04x DISP3DCNT %04x -> fill %08x (%s)\n",
+                         calls, (unsigned)cc, (unsigned)dc, (unsigned)bd,
+                         (unsigned)*reinterpret_cast<const volatile uint16_t *>(
+                             0x04000060u),
+                         (unsigned)out,
+                         opaque ? "the clear colour, alpha nonzero"
+                                : (shown3d ? "the old constant, clear alpha 0"
+                                           : "the backdrop, no 3D layer"));
+        }
+    }
+    return out;
+}
+
+void gx_clear_fill(Framebuffer &fb)
+{
+    const uint32_t c = gx_clear_argb();
+    const int w = active_w, h = active_h;
+    if (w <= 0 || h <= 0) return;
+    const int x0 = present_x(), y0 = present_y();
+    const int x1 = x0 + present_w(), y1 = y0 + present_h();
+    /* row 0 carries the present rectangle's columns if row 0 is inside it;
+       the rest are copies of one of two template rows, built once */
+    for (int x = 0; x < w; ++x)
+        fb.px[0][x] = (x >= x0 && x < x1 && 0 >= y0 && 0 < y1) ? c : kOldClear;
+    if (c == kOldClear || (x0 <= 0 && x1 >= w && y0 <= 0 && y1 >= h)) {
+        for (int y = 1; y < h; ++y)
+            std::memcpy(fb.px[y], fb.px[0], (size_t)w * sizeof(fb.px[0][0]));
+        return;
+    }
+    int in_row = -1, out_row = -1;
+    for (int y = 0; y < h; ++y) {
+        const bool in = y >= y0 && y < y1;
+        int &src = in ? in_row : out_row;
+        if (src < 0) {
+            if (y != 0)
+                for (int x = 0; x < w; ++x)
+                    fb.px[y][x] = (in && x >= x0 && x < x1) ? c : kOldClear;
+            src = y;
+        } else {
+            std::memcpy(fb.px[y], fb.px[src], (size_t)w * sizeof(fb.px[0][0]));
+        }
+    }
 }
 
 void gx_configure_anti_aliasing(int mode) {
@@ -3400,6 +3595,24 @@ static void aa_pass(Framebuffer &fb, int cw, int ch, int nt) {
     for (int y = 0; y < ch; ++y)
         std::memcpy(g_aa_src + (size_t)y * SCREEN_W, fb.px[y],
                     (size_t)cw * sizeof(uint32_t));
+    /* THE GRAPHICS CARD, when the "Renderer" setting registered one: the same
+       rule on the same copy, the changed pixels written back, the same count.
+       0 means it did not run, and the bands below do the frame instead. */
+    if (g_gpu_aa) {
+        GxGpuAa a;
+        a.src = g_aa_src;
+        a.cover = &g_cover[0][0];
+        a.fb = &fb.px[0][0];
+        a.stride = SCREEN_W;
+        a.w = cw;
+        a.h = ch;
+        a.changed = 0;
+        if (g_gpu_aa(&a)) {
+            g_aa_changed += a.changed;
+            g_aa_pre_valid = 1;
+            return;
+        }
+    }
     AaCtx ctx{&fb, cw, ch};
     /* THE SAME THREAD COUNT THE RASTER JUST USED, and through the same pool.
        RasterPool::run hands every band the width it was started at, so asking
@@ -3786,224 +3999,302 @@ void ab_bmp(const char *path, const uint32_t *px, int stride, int x0, int y0,
 
 }  // namespace
 
-void gx_render(Framebuffer &fb) {
-    /* run interp1: what reached the raster is the frame; seal its record. */
-    if (g_ip_rec) ip_rec_seal();
-    /* LAST FRAME'S PRE-SMOOTHING COPY STOPS BEING THIS FRAME'S HERE, before
-       anything is drawn. A capture that somehow ran against a frame this
-       function never finished would otherwise sample the frame before it. */
-    g_aa_pre_valid = 0;
-    const int tm = frame_ms();
-    std::chrono::steady_clock::time_point t_enter;
-    if (tm) t_enter = std::chrono::steady_clock::now();
-    tri_report();
-    texpx_report();
-    gx_mip_report();
-    mat_report();
-    mtx_report(false);
-    /* ---- THE PER-FRAME CLEARS ARE OVER THE LIVE PICTURE, NOT THE BUFFER ----
-       Every buffer here is allocated at SCREEN_W x SCREEN_H, the largest
-       extent any settings combination can ask for, and the picture is
-       active_w x active_h in its top-left corner. Clearing the whole
-       allocation was clearing rows and columns nothing reads: the raster's
-       bounding box is clamped to the present rectangle, which is inside the
-       active extent, and the 2D compositor and the display capture both loop
-       to active_w / active_h. So the clear is the active rectangle and the
-       rest of the allocation is left holding last frame's numbers, which no
-       pass can reach.
+namespace {
 
-       IT IS A SPEED FIX AND NOT A PIXEL ONE, and it is the fix that lets the
-       allocation grow for RenderScale 4 without making the DEFAULT run
-       slower: at 512x384 in a 1368x768 allocation this is 196 KB of coverage
-       and 768 KB of depth a frame instead of 1.05 MB and 4.2 MB. Measured
-       per-frame numbers and the byte-identical BMP proof are in the lane's
-       report.
+/* ---- ONE ROW'S COVERED RANGE, FROM THE EDGE FUNCTIONS (run perf2, lane RASTER)
+   The raster used to test every pixel of a triangle's bounding box, and a
+   thin or diagonal triangle covers a small part of its box: most of those
+   tests said no. This finds, per row, the range of x the three edge tests can
+   pass on, and the row loop then visits only that range. Each pixel it visits
+   still takes the EXACT test it always took, so the only question is whether
+   the range can leave out a pixel the old loop would have drawn. It cannot,
+   and the reason is monotonicity, not an estimate:
 
-       cw/ch are clamped to the allocation rather than trusted for the reason
-       every other clamp in this path exists: a wrong extent here is a write
-       past a static array. */
-    const int cw = active_w > 0 ? (active_w < SCREEN_W ? active_w : SCREEN_W) : 0;
-    const int ch = active_h > 0 ? (active_h < SCREEN_H ? active_h : SCREEN_H) : 0;
+   A pixel's edge value is r - ey * ((x + 0.5f) - vx) in floats, the same
+   expression, in the same order, as the row loop's. Every step of it is one
+   IEEE operation, and each is monotone in its input when the inputs are
+   finite: x + 0.5f grows with x, the subtraction keeps that order, the
+   multiply by a fixed ey keeps it or reverses it by ey's sign, and r minus
+   that reverses it again. So along a row each edge value only ever moves one
+   way, and "value >= 0" is true on a prefix of the row or on a suffix of it
+   (on all of it or none of it when ey is 0). A pixel is inside when all three
+   values are >= 0 or all three are <= 0, so the inside pixels are the union of
+   two intersections of prefixes and suffixes: two intervals. Each end is found
+   by starting from a double-precision estimate of where the edge crosses zero
+   and then stepping with the exact float test until it holds on one side and
+   fails on the other, which is the exact boundary whatever the estimate was.
+   The range visited is the span of the two intervals, one pixel wider on each
+   side for good measure, clipped to the box.
 
-    /* Depth clear. 1e30f is not a repeating byte pattern so memset cannot do
-       it, but one row can be built scalar and the rest copied from it, which
-       is memcpy's problem rather than a scalar loop's. */
-    raster_buffers();
+   The argument needs finite values that cannot overflow, so it is used only
+   when every vertex coordinate is within 1e18 of the origin (then no product
+   in the edge value can reach FLT_MAX); anything else, and any box eight
+   pixels wide or less, takes the whole box as before. */
+struct SpanTri {
+    float ey[3], vx[3];
+    double inv[3];
+};
+
+inline float span_edge(float r, float ey, float vx, int x) {
+    const float px = x + 0.5f;
+    return r - ey * (px - vx);
+}
+
+inline bool span_ok(const GxVertex &a, const GxVertex &b, const GxVertex &c) {
+    const float lim = 1e18f;
+    return std::fabs(a.x) <= lim && std::fabs(a.y) <= lim &&
+           std::fabs(b.x) <= lim && std::fabs(b.y) <= lim &&
+           std::fabs(c.x) <= lim && std::fabs(c.y) <= lim;
+}
+
+/* Narrow [L, R] to where all three edge values are >= 0 (sgn > 0) or all
+   three are <= 0 (sgn < 0). False when nothing in the row qualifies. */
+inline bool span_side(const SpanTri &st, const float r[3], int sgn, int &L,
+                      int &R) {
+    for (int k = 0; k < 3; ++k) {
+        const float ey = st.ey[k], vx = st.vx[k], rk = r[k];
+        auto P = [&](int x) {
+            const float n = span_edge(rk, ey, vx, x);
+            return sgn > 0 ? n >= 0 : n <= 0;
+        };
+        if (ey == 0.0f) {
+            if (!P(L)) return false;
+            continue;
+        }
+        const double est = (double)vx + (double)rk * st.inv[k] - 0.5;
+        if ((ey > 0.0f) == (sgn > 0)) {
+            /* true on a prefix: find the last x that passes */
+            double e = est;
+            if (e < (double)(L - 1)) e = (double)(L - 1);
+            if (e > (double)R) e = (double)R;
+            int x0 = (int)e;
+            while (x0 < R && P(x0 + 1)) ++x0;
+            while (x0 >= L && !P(x0)) --x0;
+            R = x0;
+        } else {
+            /* true on a suffix: find the first x that passes */
+            double e = est;
+            if (e < (double)L) e = (double)L;
+            if (e > (double)(R + 1)) e = (double)(R + 1);
+            int x0 = (int)e;
+            while (x0 > L && P(x0 - 1)) --x0;
+            while (x0 <= R && !P(x0)) ++x0;
+            L = x0;
+        }
+        if (L > R) return false;
+    }
+    return true;
+}
+
+/* The row's range to visit, or false when no pixel of it can be inside. */
+inline bool row_span(const SpanTri &st, float r0, float r1, float r2,
+                     int minx, int maxx, int &xs, int &xe) {
+    const float r[3] = {r0, r1, r2};
+    int l1 = minx, h1 = maxx, l2 = minx, h2 = maxx;
+    const bool pos = span_side(st, r, 1, l1, h1);
+    const bool neg = span_side(st, r, -1, l2, h2);
+    if (!pos && !neg) return false;
+    int lo, hi;
+    if (pos && neg) {
+        lo = l1 < l2 ? l1 : l2;
+        hi = h1 > h2 ? h1 : h2;
+    } else if (pos) {
+        lo = l1;
+        hi = h1;
+    } else {
+        lo = l2;
+        hi = h2;
+    }
+    xs = lo - 1 < minx ? minx : lo - 1;
+    xe = hi + 1 > maxx ? maxx : hi + 1;
+    return true;
+}
+
+}  // namespace
+
+namespace {
+
+/* ---- THE FRAME'S TRIANGLES BINNED BY ROW TILE (run perf2, lane RASTER) ----
+   The raster used to give each worker every nt-th row of the screen, so every
+   worker walked every triangle and set each one up again for itself: about a
+   fifth of the raster's CPU on eight threads. Now the screen is cut into
+   tiles of whole rows, each triangle is listed once, in submission order,
+   under every tile its clamped rows reach, and a worker takes the next tile
+   off a counter and draws only that tile's list. One worker owns each row
+   for the whole frame and walks its triangles in submission order, opaque
+   pass then translucent pass, so every pixel sees the same operations in the
+   same order as before: this partitions the work, it does not reorder it.
+   Built on the calling thread before any worker starts; read-only after.
+
+   THE STENCIL CLEARS ARE THE ONE PIECE OF STATE THAT IS NOT PER TRIANGLE. A
+   new shadow mask group clears the whole stencil, and whether a triangle
+   starts one depends on the triangle before it in the list, not on where
+   either of them is on the screen. So the clear points are found once, here,
+   as a running count per triangle (g_clr_cum), and a tile clears its own rows
+   when the count has moved since the last triangle it drew, and once more at
+   the end of the pass if it moved after that. Between two triangles a tile
+   draws, nothing else writes its rows, so a clear taken late is the same
+   clear. A tile clears its rows across the whole allocation width and every
+   tile runs, drawn on or not, which is the old per-band clear exactly. */
+std::vector<int> g_bin_off[2], g_bin_idx[2];
+std::vector<int> g_clr_cum;
+int g_clr_total;
+struct BinTri {
+    int i, pass, k0, k1;
+};
+std::vector<BinTri> g_bin_tmp;
+
+/* Rows a tile holds, SM64DS_RASTER_TILE to override for measurement. */
+int raster_tile_rows() {
+    static int n = -1;
+    if (n < 0) {
+        const char *e = getenv("SM64DS_RASTER_TILE");
+        n = e ? atoi(e) : 16;
+        if (n < 1) n = 1;
+    }
+    return n;
+}
+
+}  // namespace
+
+/* ---- SM64DS_RASTER_AB=1: THE OLD RASTER AGAINST THE NEW, ON EVERY FRAME ----
+   (run perf2, lane RASTER)
+
+   The raster in gx_render is allowed to get faster only if it draws the same
+   frame, to the byte. This is the instrument that says whether it does, and it
+   was written before any of the speed work so that every step of it could be
+   measured against the code as it stood.
+
+   With the switch on, each call that runs the raster passes runs them TWICE
+   from the same starting buffers. First the frozen copy below: the raster
+   body, the nearest and filtered samplers and the wrap rule exactly as they
+   were before the speed work, on one thread. Its six planes are set aside, the
+   buffers are put back as they were, and then the live code runs the same
+   passes on however many threads it chooses. The six planes the passes write
+   -- colour, depth, coverage, stencil, polygon id and the translucent
+   attribute -- are compared byte for byte over the WHOLE allocation, not just
+   the picture, and the live result is the one the frame keeps.
+
+   A frame with any difference prints its counts and the first pixel that
+   differs; a line every 300 frames and one at exit carry the running totals,
+   and the exit line says VERDICT=PASS only when every count is zero. Depth is
+   compared as bits, so a -0 against a +0 or a changed NaN counts.
+
+   Off, which is the default, this costs one test of a flag per frame, and the
+   copy below is never called. It stays in the file as the reference the next
+   change to the raster is measured against. */
+namespace {
+
+static int ref_tex_coord_i(int i, int size, bool repeat, bool flip) {
+    if (!repeat) return i < 0 ? 0 : (i >= size ? size - 1 : i);
+    if (!flip) {
+        i %= size;
+        return i < 0 ? i + size : i;
+    }
+    const int period = size * 2;
+    i %= period;
+    if (i < 0) i += period;
+    return i < size ? i : period - 1 - i;
+}
+
+static int ref_tex_coord(float f, int size, bool repeat, bool flip) {
+    return ref_tex_coord_i(static_cast<int>(std::floor(f)), size, repeat, flip);
+}
+
+static uint32_t ref_sample_bilinear(const TexLevel &L, float u, float v,
+                                bool rs, bool rt, bool fs, bool ft) {
+    const float fu = u - 0.5f, fv = v - 0.5f;
+    const float flu = std::floor(fu), flv = std::floor(fv);
+    const int iu = static_cast<int>(flu), iv = static_cast<int>(flv);
+    const float du = fu - flu, dv = fv - flv;
+    const int x0 = ref_tex_coord_i(iu, L.w, rs, fs);
+    const int x1 = ref_tex_coord_i(iu + 1, L.w, rs, fs);
+    const int y0 = ref_tex_coord_i(iv, L.h, rt, ft);
+    const int y1 = ref_tex_coord_i(iv + 1, L.h, rt, ft);
+    const uint32_t p00 = L.px[(size_t)y0 * L.w + x0];
+    const uint32_t p10 = L.px[(size_t)y0 * L.w + x1];
+    const uint32_t p01 = L.px[(size_t)y1 * L.w + x0];
+    const uint32_t p11 = L.px[(size_t)y1 * L.w + x1];
+    const float w00 = (1.0f - du) * (1.0f - dv);
+    const float w10 = du * (1.0f - dv);
+    const float w01 = (1.0f - du) * dv;
+    const float w11 = du * dv;
+    const float a00 = (float)(p00 >> 24) * w00;
+    const float a10 = (float)(p10 >> 24) * w10;
+    const float a01 = (float)(p01 >> 24) * w01;
+    const float a11 = (float)(p11 >> 24) * w11;
+    const float asum = a00 + a10 + a01 + a11;
+    if (asum <= 0.0f) return 0;
+    const float inv = 1.0f / asum;
+    auto ch = [&](int sh) {
+        const float s = (float)((p00 >> sh) & 0xFF) * a00 +
+                        (float)((p10 >> sh) & 0xFF) * a10 +
+                        (float)((p01 >> sh) & 0xFF) * a01 +
+                        (float)((p11 >> sh) & 0xFF) * a11;
+        const int i = (int)(s * inv + 0.5f);
+        return (uint32_t)(i < 0 ? 0 : (i > 255 ? 255 : i));
+    };
+    const int ai = (int)(asum + 0.5f);
+    const uint32_t a = (uint32_t)(ai < 0 ? 0 : (ai > 255 ? 255 : ai));
+    return (a << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
+}
+
+template <int FILTER>
+static uint32_t ref_sample_filtered(const TriTex &tt, const uint32_t *base, int w,
+                                int h, float u, float v, bool rs, bool rt,
+                                bool fs, bool ft) {
+    if (FILTER == 1) {
+        const TexLevel L{base, w, h};
+        return ref_sample_bilinear(L, u, v, rs, rt, fs, ft);
+    }
+    const TexLevel L0 = tex_level(tt, base, w, h, tt.lod);
+    const float s0 = (float)L0.w / (float)w, t0 = (float)L0.h / (float)h;
+    const uint32_t c0 = ref_sample_bilinear(L0, u * s0, v * t0, rs, rt, fs, ft);
+    if (tt.frac <= 0.0f) return c0;
+    const TexLevel L1 = tex_level(tt, base, w, h, tt.lod + 1);
+    if (L1.px == L0.px) return c0;
+    const float s1 = (float)L1.w / (float)w, t1 = (float)L1.h / (float)h;
+    const uint32_t c1 = ref_sample_bilinear(L1, u * s1, v * t1, rs, rt, fs, ft);
+    /* THE TWO LEVELS BLEND IN PREMULTIPLIED ALPHA TOO, for sample_bilinear's
+       reason: a coarse level of a cut-out is mostly transparent, and mixing
+       its colour in unweighted would grey the sharp level's edge. */
+    const float f1 = tt.frac, f0 = 1.0f - f1;
+    const float a0 = (float)(c0 >> 24) * f0, a1 = (float)(c1 >> 24) * f1;
+    const float asum = a0 + a1;
+    if (asum <= 0.0f) return 0;
+    const float inv = 1.0f / asum;
+    auto ch = [&](int sh) {
+        const float s = (float)((c0 >> sh) & 0xFF) * a0 +
+                        (float)((c1 >> sh) & 0xFF) * a1;
+        const int i = (int)(s * inv + 0.5f);
+        return (uint32_t)(i < 0 ? 0 : (i > 255 ? 255 : i));
+    };
+    const int ai = (int)(asum + 0.5f);
+    const uint32_t a = (uint32_t)(ai < 0 ? 0 : (ai > 255 ? 255 : ai));
+    return (a << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0);
+}
+
+struct RefArgs {
+    Framebuffer *fb;
+    uint32_t only;
+    bool have_shadow, have_translucent, want_id;
+    int pass_lo, pass_hi;
+};
+
+/* The raster body as it stood at the start of run perf2, verbatim apart from
+   the sampler names; the names it read from gx_render are rebound here. */
+template <int FILTER>
+void raster_ref(const RefArgs &ra, int tid, int nt) {
+    Framebuffer &fb = *ra.fb;
+    const uint32_t only = ra.only;
+    const bool have_shadow = ra.have_shadow;
+    const bool have_translucent = ra.have_translucent;
+    const bool want_id = ra.want_id;
+    const int pass_lo = ra.pass_lo, pass_hi = ra.pass_hi;
     DepthRow *const depth = g_depth;
-    for (int x = 0; x < cw; ++x) depth[0][x] = 1e30f;
-    for (int y = 1; y < ch; ++y)
-        std::memcpy(depth[y], depth[0], (size_t)cw * sizeof(float));
-
-    /* THE 3D COVERAGE MASK, see gx_coverage() in ntr/gx.h. One byte per pixel,
-       set beside every store into fb.px below and cleared here. It is what
-       lets the 2D compositor tell a pixel this engine drew from a pixel the
-       frame's clear left, which is the whole of "a BG at priority 3 sits
-       BEHIND the 3D layer at priority 1".
-       It is written from the raster bands, and that is safe for the reason
-       the framebuffer itself is: a band owns the rows y == tid (mod nt) and
-       no other band touches them. */
-    for (int y = 0; y < ch; ++y) std::memset(g_cover[y], 0, (size_t)cw);
-
-    /* --- shadow-polygon (POLYGON_ATTR mode 3) machinery -------------------
-       GBATEK's two-step protocol, and the reason a per-pixel stencil bit and
-       a per-pixel polygon ID exist at all. The game renders each drop shadow
-       as a closed VOLUME twice: first every material's attr set to mode 3 /
-       ID 0 / back faces only (func_02046120), then mode 3 / ID nonzero /
-       front faces only (func_02046088). The hardware's reading:
-
-         ID 0 (the mask):  where the depth test FAILS, set the pixel's
-                           stencil bit. No colour, no depth. A back face
-                           failing the depth test means the surface in the
-                           framebuffer is in front of the volume's far wall.
-         ID 1..63 (the draw): where the stencil bit is set, CLEAR it; then,
-                           if the depth test passes (the near wall is in
-                           front of that same surface -- so the surface is
-                           inside the volume) and the pixel's recorded
-                           polygon ID differs from the shadow's (a caster
-                           does not shadow itself), blend the shadow colour
-                           at the polygon's alpha. Depth is never written.
-
-       Rasterising those two passes as ordinary geometry is exactly the
-       wave-4 cone: the volume's own walls drawn as a column under the actor
-       (run linkw, w4a review pinned it). The buffers clear per frame and the
-       whole apparatus stays untouched -- one predictable branch -- for any
-       frame that submits no mode-3 polygon. */
     MaskRow *const stencil = g_stencil;
     MaskRow *const attrid = g_attrid;
-    /* The DS attribute word's OTHER half, the translucent one: bit 6 here says
-       this pixel has already taken a translucent fragment THIS FRAME and bits
-       0..5 are that fragment's polygon ID. The hardware refuses a translucent
-       fragment whose (flag, ID) already sits at the pixel, so a pixel takes one
-       blend per polygon ID and a figure's own overlapping surfaces never
-       compound against each other. melonDS's software renderer is the same
-       field and the same refusal: PlotTranslucentPixel builds
-       ((polyattr >> 8) & 0xFF0000) | (1<<22) and returns early when
-       (dstattr & 0x007F0000) == (attr & 0x007F0000), "skip if translucent
-       polygon IDs are equal". Without it the opening cutscene's Peach, 798
-       triangles under one polygon ID with a driven opacity, blends 1.4 times
-       per covered pixel and comes out solid and patchy where she crosses
-       herself. The flag is per frame (hardware clears it on the frame clear and
-       on any opaque write), so the clear below is the whole of its lifetime. */
     MaskRow *const tlattr = g_tlattr;
-    bool have_shadow = false;
-    bool have_translucent = false;
-    for (const GxTriangle &t : g.tris) {
-        if (t.mode == 3) have_shadow = true;
-        if (t.translucent) have_translucent = true;
-        if (have_shadow && have_translucent) break;
-    }
-    /* The same active-rectangle clear as the depth and coverage buffers
-       above, and these two are already conditional on the frame submitting a
-       shadow or a translucent polygon at all. */
-    /* THE POLYGON-ID BUFFER IS ALSO WHAT THE A/B COMPARES, so it is cleared
-       and filled on a frame the A/B is checking even when no shadow volume
-       asked for it. With the A/B off -- every run that is not measuring the
-       graphics-card renderer -- want_id is have_shadow and nothing about this
-       block or the write in the band below has changed. */
-    const bool want_id = have_shadow || (g_gpu_opaque && ab_mode());
-    if (have_shadow)
-        for (int y = 0; y < ch; ++y) std::memset(stencil[y], 0, (size_t)cw);
-    if (want_id) {
-        /* 0 is the clear plane's polygon ID (CLEAR_COLOR bits 24-29 reset
-           value); pixels no opaque polygon reaches keep it. */
-        for (int y = 0; y < ch; ++y) std::memset(attrid[y], 0, (size_t)cw);
-    }
-    if (have_translucent)
-        for (int y = 0; y < ch; ++y) std::memset(tlattr[y], 0, (size_t)cw);
-
-    /* SM64DS_TEX_ONLY=<hex teximage>: draw only the polygons that were
-       bound to that texture, so a material can be located on screen
-       without guessing from colour. */
-    static uint32_t only = [] {
-        const char *o = getenv("SM64DS_TEX_ONLY");
-        return o ? static_cast<uint32_t>(strtoul(o, nullptr, 16)) : 0u;
-    }();
-
-    /* SM64DS_PROBE_PX=x,y: every triangle that COVERS that pixel, with the
-       decision the raster made about it. One clear-colour pixel in a
-       finished frame is the whole question "which polygon should have been
-       here", and this answers it without guessing from the picture. */
-    static int probe_x = -1, probe_y = -1;
-    {
-        static int once = 0;
-        if (!once) {
-            once = 1;
-            if (const char *e = getenv("SM64DS_PROBE_PX"))
-                sscanf(e, "%d,%d", &probe_x, &probe_y);
-        }
-    }
-
-    /* The probe is a reporting pass of its own, on this thread: it prints, and
-       printing once per covering triangle is only meaningful in submission
-       order from one place. */
-    if (probe_x >= 0) {
-        for (const GxTriangle &t : g.tris) {
-            if (only && t.dbg_tex != only) continue;
-            const GxVertex &a = t.v[0], &b = t.v[1], &c = t.v[2];
-            const float area =
-                (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-            const float px = probe_x + 0.5f, py = probe_y + 0.5f;
-            const float w0 = ((b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x));
-            const float w1 = ((c.x - b.x) * (py - b.y) - (c.y - b.y) * (px - b.x));
-            const float w2 = ((a.x - c.x) * (py - c.y) - (a.y - c.y) * (px - c.x));
-            const bool cover = (w0 >= 0 && w1 >= 0 && w2 >= 0) ||
-                               (w0 <= 0 && w1 <= 0 && w2 <= 0);
-            const bool bf = area > 0.0f;
-            const bool culled = (bf && !(t.cull & 1)) || (!bf && !(t.cull & 2));
-            if (cover)
-                printf("[probe] COVER (%.3f,%.3f,%.5f/%.4f) (%.3f,%.3f,%.5f/"
-                       "%.4f) (%.3f,%.3f,%.5f/%.4f) area %.4g cull %u%s%s "
-                       "dbg %08x\n",
-                       a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w, c.x, c.y, c.z,
-                       c.w, area, t.cull,
-                       std::fabs(area) < 1e-6f ? " DEGENERATE" : "",
-                       culled ? " CULLED" : "", t.dbg_tex);
-        }
-    }
-
-    /* ---- THE FRAME'S LEVELS OF DETAIL, ONCE, ON THIS THREAD (run hd2) -----
-       Trilinear needs to know, for each triangle, which two sizes of its
-       texture the surface sits between. That is a map lookup and a logarithm
-       per triangle; doing it inside the bands would do it once per triangle
-       PER THREAD, and doing it per pixel would put a logarithm in the fill
-       loop. So it happens here, single-threaded, before any band starts, and
-       the bands only read it. Nothing below runs at filter 0 or 1: the vector
-       is never even sized. */
-    const int filt = g_tex_filter;
-    if (filt == 2) {
-        g_tritex.assign(g.tris.size(), TriTex{nullptr, 0, 0.0f});
-        for (size_t i = 0; i < g.tris.size(); ++i) {
-            const GxTriangle &t = g.tris[i];
-            if (!t.tex || t.tw <= 0 || t.th <= 0) continue;
-            const GxVertex &a = t.v[0], &b = t.v[1], &c = t.v[2];
-            const float ar =
-                (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-            g_tritex[i] = lod_for(t, ar);
-        }
-    }
-
-    /* One row band. tid picks the rows: tid, tid+nt, tid+2nt...
-       TWO PASSES, the hardware's own order: every opaque polygon first,
-       then the translucent ones, submission order kept within each pass.
-       The game leans on this -- the castle moat's water submits before
-       the terrain under it, and in one pass the opaque moat bed painted
-       over the already-blended surface. Rows are disjoint across threads,
-       so each thread runs both passes over its own rows and never sees
-       another thread's pixels. */
-    /* WHICH OF THE TWO PASSES THIS BAND RUNS. 0 and 1 is both of them, which
-       is every run that draws its own opaque pass and is the same loop as
-       before these two variables existed. A frame the graphics-card renderer
-       drew sets the low bound to 1, so the band runs the translucent and
-       shadow pass alone over the buffers the card filled. */
-    int pass_lo = 0, pass_hi = 1;
-    auto band_impl = [&](int tid, int nt, auto ftag) {
-    /* THE SAMPLER'S MODE IS A COMPILE-TIME CONSTANT IN HERE, which is the
-       whole point of the shape (run hd2). The body below is instantiated once
-       per mode and the mode is chosen once per band, so the nearest body --
-       the one every run with the key absent takes -- carries no test for a
-       filter, no branch per pixel and no call through a pointer: it is the
-       instruction stream it was before filtering existed. */
-    constexpr int FILTER = decltype(ftag)::value;
     bool prev_mask = false;
     for (int pass = pass_lo; pass <= pass_hi; ++pass)
     for (const GxTriangle &t : g.tris) {
@@ -4097,6 +4388,9 @@ void gx_render(Framebuffer &fb) {
                                (float)((c.color >> 8) & 0xFF),
                                (float)(c.color & 0xFF)};
         const uint32_t poly_a = (t.alpha >= 31 || t.alpha == 0) ? 31u : t.alpha;
+        /* MODE 2 (toon / highlight): 0 for every other polygon and for every
+           frame with no mode-2 polygon, which is the plain modulation below */
+        const int toon = (t.mode == 2) ? g_toon_shade : 0;
 
         /* first row of this band at or after miny */
         const int y_first = miny + (((tid - miny) % nt) + nt) % nt;
@@ -4173,8 +4467,8 @@ void gx_render(Framebuffer &fb) {
                                 uu = l0 * a.u + l1 * b.u + l2 * c.u;
                                 vv = l0 * a.v + l1 * b.v + l2 * c.v;
                             }
-                            const int ui = tex_coord(uu * tsc, t.tw, rep_s, flip_s);
-                            const int vi = tex_coord(vv * tsc, t.th, rep_t, flip_t);
+                            const int ui = ref_tex_coord(uu * tsc, t.tw, rep_s, flip_s);
+                            const int vi = ref_tex_coord(vv * tsc, t.th, rep_t, flip_t);
                             texel = t.tex[vi * t.tw + ui];
                             if ((texel >> 24) == 0) continue;
                         }
@@ -4252,11 +4546,11 @@ void gx_render(Framebuffer &fb) {
                        nearest body below is exactly the two tex_coord calls
                        and the one load it always was, with nothing added. */
                     if constexpr (FILTER == 0) {
-                        const int ui = tex_coord(uu * tsc, t.tw, rep_s, flip_s);
-                        const int vi = tex_coord(vv * tsc, t.th, rep_t, flip_t);
+                        const int ui = ref_tex_coord(uu * tsc, t.tw, rep_s, flip_s);
+                        const int vi = ref_tex_coord(vv * tsc, t.th, rep_t, flip_t);
                         texel = t.tex[vi * t.tw + ui];
                     } else {
-                        texel = sample_filtered<FILTER>(
+                        texel = ref_sample_filtered<FILTER>(
                             tt, t.tex, t.tw, t.th, uu * tsc, vv * tsc, rep_s,
                             rep_t, flip_s, flip_t);
                     }
@@ -4265,10 +4559,23 @@ void gx_render(Framebuffer &fb) {
 
                 // Round, do not truncate: barycentrics sum to 0.9999 rather than
                 // exactly 1, and a truncating cast bands a flat surface 255/254.
+                /* MODE 2: the entry this pixel's interpolated red picks. Toon
+                   modulates the ENTRY instead of the vertex colour; highlight
+                   modulates the vertex red on all three channels and adds the
+                   entry after, saturating (GBATEK DS 3D Polygon Attributes;
+                   melonDS RenderPixel, the same order). */
+                const float *te = nullptr;
+                if (toon)
+                    te = &g_toon8[toon_index(l0 * acol[0] + l1 * bcol[0] +
+                                             l2 * ccol[0]) * 3];
                 auto ch = [&](int k, int sh) {
-                    const float v = l0 * acol[k] + l1 * bcol[k] + l2 * ccol[k];
+                    const int kv = toon == 2 ? 0 : k;
+                    const float v = toon == 1
+                        ? te[k]
+                        : l0 * acol[kv] + l1 * bcol[kv] + l2 * ccol[kv];
                     const float m = inv255.v[(texel >> sh) & 0xFF];
-                    const int i = static_cast<int>(v * m + 0.5f);
+                    int i = static_cast<int>(v * m + 0.5f);
+                    if (toon == 2) i += static_cast<int>(te[k]);
                     return static_cast<uint32_t>(i < 0 ? 0 : (i > 255 ? 255 : i));
                 };
                 /* effective alpha = poly attr alpha combined with the
@@ -4319,42 +4626,883 @@ void gx_render(Framebuffer &fb) {
             }
         }
     }
+}
+
+int g_rab = -1;                        /* -1 not read yet */
+unsigned long long g_rab_frames, g_rab_runs, g_rab_cover;
+unsigned long long g_rab_bad[6];
+unsigned long long g_rab_bad_frames;
+const char *const k_rab_name[6] = {"colour", "depth", "coverage",
+                                   "stencil", "attrid", "tlattr"};
+std::vector<uint8_t> g_rab_start[6], g_rab_ref[6];
+
+void rab_planes(Framebuffer &fb, uint8_t *p[6], size_t sz[6], size_t es[6]) {
+    const size_t n = (size_t)SCREEN_W * (size_t)SCREEN_H;
+    p[0] = (uint8_t *)&fb.px[0][0];  es[0] = 4;
+    p[1] = (uint8_t *)&g_depth[0][0]; es[1] = 4;
+    p[2] = &g_cover[0][0];           es[2] = 1;
+    p[3] = &g_stencil[0][0];         es[3] = 1;
+    p[4] = &g_attrid[0][0];          es[4] = 1;
+    p[5] = &g_tlattr[0][0];          es[5] = 1;
+    for (int i = 0; i < 6; ++i) sz[i] = n * es[i];
+}
+
+void rab_save(Framebuffer &fb, std::vector<uint8_t> *dst) {
+    uint8_t *p[6]; size_t sz[6], es[6];
+    rab_planes(fb, p, sz, es);
+    for (int i = 0; i < 6; ++i) {
+        dst[i].resize(sz[i]);
+        std::memcpy(dst[i].data(), p[i], sz[i]);
+    }
+}
+
+void rab_load(Framebuffer &fb, const std::vector<uint8_t> *src) {
+    uint8_t *p[6]; size_t sz[6], es[6];
+    rab_planes(fb, p, sz, es);
+    for (int i = 0; i < 6; ++i) std::memcpy(p[i], src[i].data(), sz[i]);
+}
+
+void rab_summary() {
+    unsigned long long total = 0;
+    for (int i = 0; i < 6; ++i) total += g_rab_bad[i];
+    std::fprintf(stderr,
+                 "[raster-ab] summary over %llu frame(s), %llu pass run(s), "
+                 "%llu covered pixel(s) in the reference: mismatches colour "
+                 "%llu depth %llu coverage %llu stencil %llu attrid %llu "
+                 "tlattr %llu, frames with any %llu VERDICT=%s\n",
+                 g_rab_frames, g_rab_runs, g_rab_cover, g_rab_bad[0],
+                 g_rab_bad[1], g_rab_bad[2], g_rab_bad[3], g_rab_bad[4],
+                 g_rab_bad[5], g_rab_bad_frames,
+                 !g_rab_runs ? "NOFRAMES" : (total ? "FAIL" : "PASS"));
+    std::fflush(stderr);
+}
+
+int raster_ab() {
+    if (g_rab < 0) {
+        g_rab = env_i("SM64DS_RASTER_AB", 0) ? 1 : 0;
+        if (g_rab) std::atexit(rab_summary);
+    }
+    return g_rab;
+}
+
+/* The live planes against the reference's, element by element. */
+void rab_compare(Framebuffer &fb, int lo, int hi) {
+    uint8_t *p[6]; size_t sz[6], es[6];
+    rab_planes(fb, p, sz, es);
+    unsigned long long bad[6] = {0, 0, 0, 0, 0, 0};
+    int first_plane = -1;
+    size_t first_at = 0;
+    for (int i = 0; i < 6; ++i) {
+        const uint8_t *a = g_rab_ref[i].data(), *b = p[i];
+        if (std::memcmp(a, b, sz[i]) == 0) continue;
+        const size_t n = sz[i] / es[i];
+        for (size_t k = 0; k < n; ++k) {
+            if (std::memcmp(a + k * es[i], b + k * es[i], es[i]) == 0) continue;
+            if (!bad[i]++ && first_plane < 0) {
+                first_plane = i;
+                first_at = k;
+            }
+        }
+    }
+    {
+        const uint8_t *c = g_rab_ref[2].data();
+        for (size_t k = 0; k < sz[2]; ++k) g_rab_cover += c[k] != 0;
+    }
+    ++g_rab_runs;
+    if (hi == 1) ++g_rab_frames;
+    unsigned long long any = 0;
+    for (int i = 0; i < 6; ++i) {
+        g_rab_bad[i] += bad[i];
+        any += bad[i];
+    }
+    if (any) {
+        ++g_rab_bad_frames;
+        uint32_t rv = 0, nv = 0;
+        const size_t e = es[first_plane];
+        std::memcpy(&rv, g_rab_ref[first_plane].data() + first_at * e, e);
+        std::memcpy(&nv, p[first_plane] + first_at * e, e);
+        std::fprintf(stderr,
+                     "[raster-ab] frame %llu passes %d..%d MISMATCH colour %llu "
+                     "depth %llu coverage %llu stencil %llu attrid %llu tlattr "
+                     "%llu; first: %s at (%d,%d) reference %08x live %08x\n",
+                     g_rab_frames, lo, hi, bad[0], bad[1], bad[2], bad[3],
+                     bad[4], bad[5], k_rab_name[first_plane],
+                     (int)(first_at % SCREEN_W), (int)(first_at / SCREEN_W),
+                     rv, nv);
+        std::fflush(stderr);
+    }
+    if (hi == 1 && (g_rab_frames % 300) == 1) {
+        unsigned long long total = 0;
+        for (int i = 0; i < 6; ++i) total += g_rab_bad[i];
+        std::fprintf(stderr,
+                     "[raster-ab] frame %llu: %llu pass run(s) compared, "
+                     "%llu mismatching element(s) so far\n",
+                     g_rab_frames, g_rab_runs, total);
+        std::fflush(stderr);
+    }
+}
+
+}  // namespace
+
+void gx_render(Framebuffer &fb) {
+    /* run interp1: what reached the raster is the frame; seal its record. */
+    if (g_ip_rec) ip_rec_seal();
+    /* LAST FRAME'S PRE-SMOOTHING COPY STOPS BEING THIS FRAME'S HERE, before
+       anything is drawn. A capture that somehow ran against a frame this
+       function never finished would otherwise sample the frame before it. */
+    g_aa_pre_valid = 0;
+    const int tm = frame_ms();
+    std::chrono::steady_clock::time_point t_enter;
+    if (tm) t_enter = std::chrono::steady_clock::now();
+    tri_report();
+    texpx_report();
+    gx_mip_report();
+    mat_report();
+    mtx_report(false);
+    /* ---- THE PER-FRAME CLEARS ARE OVER THE LIVE PICTURE, NOT THE BUFFER ----
+       Every buffer here is allocated at SCREEN_W x SCREEN_H, the largest
+       extent any settings combination can ask for, and the picture is
+       active_w x active_h in its top-left corner. Clearing the whole
+       allocation was clearing rows and columns nothing reads: the raster's
+       bounding box is clamped to the present rectangle, which is inside the
+       active extent, and the 2D compositor and the display capture both loop
+       to active_w / active_h. So the clear is the active rectangle and the
+       rest of the allocation is left holding last frame's numbers, which no
+       pass can reach.
+
+       IT IS A SPEED FIX AND NOT A PIXEL ONE, and it is the fix that lets the
+       allocation grow for RenderScale 4 without making the DEFAULT run
+       slower: at 512x384 in a 1368x768 allocation this is 196 KB of coverage
+       and 768 KB of depth a frame instead of 1.05 MB and 4.2 MB. Measured
+       per-frame numbers and the byte-identical BMP proof are in the lane's
+       report.
+
+       cw/ch are clamped to the allocation rather than trusted for the reason
+       every other clamp in this path exists: a wrong extent here is a write
+       past a static array. */
+    const int cw = active_w > 0 ? (active_w < SCREEN_W ? active_w : SCREEN_W) : 0;
+    const int ch = active_h > 0 ? (active_h < SCREEN_H ? active_h : SCREEN_H) : 0;
+
+    /* Depth clear. 1e30f is not a repeating byte pattern so memset cannot do
+       it, but one row can be built scalar and the rest copied from it, which
+       is memcpy's problem rather than a scalar loop's. */
+    raster_buffers();
+    DepthRow *const depth = g_depth;
+    for (int x = 0; x < cw; ++x) depth[0][x] = 1e30f;
+    for (int y = 1; y < ch; ++y)
+        std::memcpy(depth[y], depth[0], (size_t)cw * sizeof(float));
+
+    /* THE 3D COVERAGE MASK, see gx_coverage() in ntr/gx.h. One byte per pixel,
+       set beside every store into fb.px below and cleared here. It is what
+       lets the 2D compositor tell a pixel this engine drew from a pixel the
+       frame's clear left, which is the whole of "a BG at priority 3 sits
+       BEHIND the 3D layer at priority 1".
+       It is written from the raster tiles, and that is safe for the reason
+       the framebuffer itself is: a tile owns its rows and no other tile
+       touches them. */
+    for (int y = 0; y < ch; ++y) std::memset(g_cover[y], 0, (size_t)cw);
+
+    /* --- shadow-polygon (POLYGON_ATTR mode 3) machinery -------------------
+       GBATEK's two-step protocol, and the reason a per-pixel stencil bit and
+       a per-pixel polygon ID exist at all. The game renders each drop shadow
+       as a closed VOLUME twice: first every material's attr set to mode 3 /
+       ID 0 / back faces only (func_02046120), then mode 3 / ID nonzero /
+       front faces only (func_02046088). The hardware's reading:
+
+         ID 0 (the mask):  where the depth test FAILS, set the pixel's
+                           stencil bit. No colour, no depth. A back face
+                           failing the depth test means the surface in the
+                           framebuffer is in front of the volume's far wall.
+         ID 1..63 (the draw): where the stencil bit is set, CLEAR it; then,
+                           if the depth test passes (the near wall is in
+                           front of that same surface -- so the surface is
+                           inside the volume) and the pixel's recorded
+                           polygon ID differs from the shadow's (a caster
+                           does not shadow itself), blend the shadow colour
+                           at the polygon's alpha. Depth is never written.
+
+       Rasterising those two passes as ordinary geometry is exactly the
+       wave-4 cone: the volume's own walls drawn as a column under the actor
+       (run linkw, w4a review pinned it). The buffers clear per frame and the
+       whole apparatus stays untouched -- one predictable branch -- for any
+       frame that submits no mode-3 polygon. */
+    MaskRow *const stencil = g_stencil;
+    MaskRow *const attrid = g_attrid;
+    /* The DS attribute word's OTHER half, the translucent one: bit 6 here says
+       this pixel has already taken a translucent fragment THIS FRAME and bits
+       0..5 are that fragment's polygon ID. The hardware refuses a translucent
+       fragment whose (flag, ID) already sits at the pixel, so a pixel takes one
+       blend per polygon ID and a figure's own overlapping surfaces never
+       compound against each other. melonDS's software renderer is the same
+       field and the same refusal: PlotTranslucentPixel builds
+       ((polyattr >> 8) & 0xFF0000) | (1<<22) and returns early when
+       (dstattr & 0x007F0000) == (attr & 0x007F0000), "skip if translucent
+       polygon IDs are equal". Without it the opening cutscene's Peach, 798
+       triangles under one polygon ID with a driven opacity, blends 1.4 times
+       per covered pixel and comes out solid and patchy where she crosses
+       herself. The flag is per frame (hardware clears it on the frame clear and
+       on any opaque write), so the clear below is the whole of its lifetime. */
+    MaskRow *const tlattr = g_tlattr;
+    bool have_shadow = false;
+    bool have_translucent = false;
+    for (const GxTriangle &t : g.tris) {
+        if (t.mode == 3) have_shadow = true;
+        if (t.translucent) have_translucent = true;
+        if (have_shadow && have_translucent) break;
+    }
+    /* THE TOON TABLE AND DISP3DCNT's SHADING BIT, read once for the frame and
+       only when a mode-2 polygon is in it (see gx_toon_table in ntr/gx.h). A
+       frame without one leaves g_toon_shade 0 and every band below takes the
+       plain modulation it always took. */
+    g_toon_shade = 0;
+    {
+        size_t n2 = 0;
+        for (const GxTriangle &t : g.tris)
+            if (t.mode == 2) ++n2;
+        if (n2) g_toon_shade = gx_toon_table(g_toon8);
+        static const int tprobe = std::getenv("SM64DS_TOON_PROBE") ? 1 : 0;
+        if (tprobe && n2) {
+            static unsigned long frames = 0, lines = 0;
+            static uint32_t last = 0;
+            ++frames;
+            uint32_t hsh = 2166136261u;
+            for (int i = 0; i < 96; ++i)
+                hsh = (hsh ^ (uint32_t)g_toon8[i]) * 16777619u;
+            if ((hsh != last || (frames % 60) == 1) && lines < 400) {
+                ++lines;
+                last = hsh;
+                std::fprintf(stderr,
+                             "[toon] frame-with-mode2 %lu: %u mode-2 triangles, "
+                             "shade %d (%s), table %08x, entries 0/8/16/24 "
+                             "%02x%02x%02x %02x%02x%02x %02x%02x%02x %02x%02x%02x\n",
+                             frames, (unsigned)n2, g_toon_shade,
+                             g_toon_shade == 1 ? "toon" : g_toon_shade == 2
+                                 ? "highlight" : "off",
+                             (unsigned)hsh,
+                             (unsigned)g_toon8[0], (unsigned)g_toon8[1], (unsigned)g_toon8[2],
+                             (unsigned)g_toon8[24], (unsigned)g_toon8[25], (unsigned)g_toon8[26],
+                             (unsigned)g_toon8[48], (unsigned)g_toon8[49], (unsigned)g_toon8[50],
+                             (unsigned)g_toon8[72], (unsigned)g_toon8[73], (unsigned)g_toon8[74]);
+            }
+        }
+    }
+    /* The same active-rectangle clear as the depth and coverage buffers
+       above, and these two are already conditional on the frame submitting a
+       shadow or a translucent polygon at all. */
+    /* THE POLYGON-ID BUFFER IS ALSO WHAT THE A/B COMPARES, so it is cleared
+       and filled on a frame the A/B is checking even when no shadow volume
+       asked for it. With the A/B off -- every run that is not measuring the
+       graphics-card renderer -- want_id is have_shadow and nothing about this
+       block or the write in the band below has changed. */
+    const bool want_id = have_shadow || (g_gpu_opaque && ab_mode());
+    if (have_shadow)
+        for (int y = 0; y < ch; ++y) std::memset(stencil[y], 0, (size_t)cw);
+    if (want_id) {
+        /* 0 is the clear plane's polygon ID (CLEAR_COLOR bits 24-29 reset
+           value); pixels no opaque polygon reaches keep it. */
+        for (int y = 0; y < ch; ++y) std::memset(attrid[y], 0, (size_t)cw);
+    }
+    if (have_translucent)
+        for (int y = 0; y < ch; ++y) std::memset(tlattr[y], 0, (size_t)cw);
+
+    /* SM64DS_TEX_ONLY=<hex teximage>: draw only the polygons that were
+       bound to that texture, so a material can be located on screen
+       without guessing from colour. */
+    static uint32_t only = [] {
+        const char *o = getenv("SM64DS_TEX_ONLY");
+        return o ? static_cast<uint32_t>(strtoul(o, nullptr, 16)) : 0u;
+    }();
+
+    /* SM64DS_PROBE_PX=x,y: every triangle that COVERS that pixel, with the
+       decision the raster made about it. One clear-colour pixel in a
+       finished frame is the whole question "which polygon should have been
+       here", and this answers it without guessing from the picture. */
+    static int probe_x = -1, probe_y = -1;
+    {
+        static int once = 0;
+        if (!once) {
+            once = 1;
+            if (const char *e = getenv("SM64DS_PROBE_PX"))
+                sscanf(e, "%d,%d", &probe_x, &probe_y);
+        }
+    }
+
+    /* The probe is a reporting pass of its own, on this thread: it prints, and
+       printing once per covering triangle is only meaningful in submission
+       order from one place. */
+    if (probe_x >= 0) {
+        for (const GxTriangle &t : g.tris) {
+            if (only && t.dbg_tex != only) continue;
+            const GxVertex &a = t.v[0], &b = t.v[1], &c = t.v[2];
+            const float area =
+                (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            const float px = probe_x + 0.5f, py = probe_y + 0.5f;
+            const float w0 = ((b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x));
+            const float w1 = ((c.x - b.x) * (py - b.y) - (c.y - b.y) * (px - b.x));
+            const float w2 = ((a.x - c.x) * (py - c.y) - (a.y - c.y) * (px - c.x));
+            const bool cover = (w0 >= 0 && w1 >= 0 && w2 >= 0) ||
+                               (w0 <= 0 && w1 <= 0 && w2 <= 0);
+            const bool bf = area > 0.0f;
+            const bool culled = (bf && !(t.cull & 1)) || (!bf && !(t.cull & 2));
+            if (cover)
+                printf("[probe] COVER (%.3f,%.3f,%.5f/%.4f) (%.3f,%.3f,%.5f/"
+                       "%.4f) (%.3f,%.3f,%.5f/%.4f) area %.4g cull %u%s%s "
+                       "dbg %08x\n",
+                       a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w, c.x, c.y, c.z,
+                       c.w, area, t.cull,
+                       std::fabs(area) < 1e-6f ? " DEGENERATE" : "",
+                       culled ? " CULLED" : "", t.dbg_tex);
+        }
+    }
+
+    /* ---- THE FRAME'S LEVELS OF DETAIL, ONCE, ON THIS THREAD (run hd2) -----
+       Trilinear needs to know, for each triangle, which two sizes of its
+       texture the surface sits between. That is a map lookup and a logarithm
+       per triangle; doing it inside the bands would do it once per triangle
+       PER THREAD, and doing it per pixel would put a logarithm in the fill
+       loop. So it happens here, single-threaded, before any band starts, and
+       the bands only read it. Nothing below runs at filter 0 or 1: the vector
+       is never even sized. */
+    const int filt = g_tex_filter;
+    if (filt == 2) {
+        g_tritex.assign(g.tris.size(), TriTex{nullptr, 0, 0.0f});
+        for (size_t i = 0; i < g.tris.size(); ++i) {
+            const GxTriangle &t = g.tris[i];
+            if (!t.tex || t.tw <= 0 || t.th <= 0) continue;
+            const GxVertex &a = t.v[0], &b = t.v[1], &c = t.v[2];
+            const float ar =
+                (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            g_tritex[i] = lod_for(t, ar);
+        }
+    }
+
+    /* One row tile: rows tile * tile_h up to the next tile's first.
+       TWO PASSES, the hardware's own order: every opaque polygon first,
+       then the translucent ones, submission order kept within each pass.
+       The game leans on this -- the castle moat's water submits before
+       the terrain under it, and in one pass the opaque moat bed painted
+       over the already-blended surface. Rows are disjoint across threads,
+       so each thread runs both passes over its own rows and never sees
+       another thread's pixels. */
+    /* WHICH OF THE TWO PASSES THIS BAND RUNS. 0 and 1 is both of them, which
+       is every run that draws its own opaque pass and is the same loop as
+       before these two variables existed. A frame the graphics-card renderer
+       drew sets the low bound to 1, so the band runs the translucent and
+       shadow pass alone over the buffers the card filled. */
+    int pass_lo = 0, pass_hi = 1;
+    /* the tile shape, set below once the frame's work is known */
+    int tile_h = SCREEN_H, ntiles = 1, nt = 1;
+    auto band_impl = [&](int tile, auto ftag) {
+    /* THE SAMPLER'S MODE IS A COMPILE-TIME CONSTANT IN HERE, which is the
+       whole point of the shape (run hd2). The body below is instantiated once
+       per mode and the mode is chosen once per band, so the nearest body --
+       the one every run with the key absent takes -- carries no test for a
+       filter, no branch per pixel and no call through a pointer: it is the
+       instruction stream it was before filtering existed. */
+    constexpr int FILTER = decltype(ftag)::value;
+    /* This tile's rows. */
+    const int ty0 = tile * tile_h;
+    const int ty1 = (ty0 + tile_h < SCREEN_H ? ty0 + tile_h : SCREEN_H) - 1;
+    auto clear_stencil = [&] {
+        for (int y = ty0; y <= ty1; ++y) std::memset(stencil[y], 0, SCREEN_W);
+    };
+    for (int pass = pass_lo; pass <= pass_hi; ++pass) {
+    /* The stencil clears when a NEW mask group begins -- a mask polygon
+       arriving after any non-mask polygon -- so one volume's leftover bits
+       cannot leak into the next volume's draw. Where those points fall in
+       the list is worked out once, beside the bins; this tile replays them
+       over its own rows. */
+    const bool clr_pass = have_shadow && pass == 1;
+    int clr_done = 0;
+    const int *bi = g_bin_idx[pass].data() + g_bin_off[pass][(size_t)tile];
+    const int *const be =
+        g_bin_idx[pass].data() + g_bin_off[pass][(size_t)tile + 1];
+    for (; bi != be; ++bi) {
+        const GxTriangle &t = g.tris[(size_t)*bi];
+        if (clr_pass && g_clr_cum[(size_t)*bi] != clr_done) {
+            clear_stencil();
+            clr_done = g_clr_cum[(size_t)*bi];
+        }
+        const GxVertex &a = t.v[0], &b = t.v[1], &c = t.v[2];
+        const float area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+        if (std::fabs(area) < 1e-6f) continue;
+
+        // Back-face culling per POLYGON_ATTR bits 6-7 (bit 6 renders the back
+        // surface, bit 7 the front; stage meshes use double-sided ground).
+        // Screen Y is flipped relative to DS space, so a front face is
+        // clockwise here (negative area).
+        const bool backface = area > 0.0f;
+        if (backface && !(t.cull & 1)) continue;
+        if (!backface && !(t.cull & 2)) continue;
+
+        int minx = static_cast<int>(std::floor(std::fmin(a.x, std::fmin(b.x, c.x))));
+        int maxx = static_cast<int>(std::ceil(std::fmax(a.x, std::fmax(b.x, c.x))));
+        int miny = static_cast<int>(std::floor(std::fmin(a.y, std::fmin(b.y, c.y))));
+        int maxy = static_cast<int>(std::ceil(std::fmax(a.y, std::fmax(b.y, c.y))));
+        /* CLAMPED TO THE PRESENT RECTANGLE. There is no side clip against the
+           viewport in this raster -- off-screen geometry has always been
+           bounded by the screen edge, which at every other aspect IS the
+           viewport edge. Inside a pillarbox they are different rectangles, and
+           a triangle that runs past the 4:3 edge would otherwise paint into
+           the margin. present_* is (0,0,active_w,active_h) on every other run,
+           so these are the same four compares as before. */
+        const int px0 = present_x(), py0 = present_y();
+        const int px1 = px0 + present_w() - 1, py1 = py0 + present_h() - 1;
+        if (minx < px0) minx = px0;
+        if (miny < py0) miny = py0;
+        if (maxx > px1) maxx = px1;
+        if (maxy > py1) maxy = py1;
+
+        /* EVERYTHING BELOW THAT DOES NOT DEPEND ON THE PIXEL IS COMPUTED ONCE.
+           The edge functions were three full expressions per pixel, each
+           ending in a divide by `area`; the 1/w reciprocals were three fabs,
+           three compares and three divides per pixel for values that belong
+           to the triangle; and the vertex colours were converted from bytes to
+           float per channel per pixel. The arithmetic is left in exactly the
+           order it was written -- same operands, same operations, so the same
+           floats come out -- only the loop level it happens at moves. */
+        const float eax = b.x - a.x, eay = b.y - a.y;
+        const float ebx = c.x - b.x, eby = c.y - b.y;
+        const float ecx = a.x - c.x, ecy = a.y - c.y;
+        /* THE ROW RANGE SETUP, see row_span: per triangle, the three edge
+           slopes, the three vertices they are measured from and the
+           reciprocals the crossing estimates use. */
+        const bool use_span = maxx - minx >= 8 && span_ok(a, b, c);
+        SpanTri st;
+        if (use_span) {
+            st.ey[0] = eay; st.ey[1] = eby; st.ey[2] = ecy;
+            st.vx[0] = a.x; st.vx[1] = b.x; st.vx[2] = c.x;
+            for (int k = 0; k < 3; ++k)
+                st.inv[k] = st.ey[k] != 0.0f ? 1.0 / (double)st.ey[k] : 0.0;
+        }
+        const float iwa = (std::fabs(a.w) > 1e-6f) ? 1.0f / a.w : 0.0f;
+        const float iwb = (std::fabs(b.w) > 1e-6f) ? 1.0f / b.w : 0.0f;
+        const float iwc = (std::fabs(c.w) > 1e-6f) ? 1.0f / c.w : 0.0f;
+        /* NOTE the UV terms below stay written as l0 * a.u * iwa. Folding
+           a.u * iwa out to the triangle would regroup the multiply, and float
+           multiplication does not associate -- (l0*a.u)*iwa and l0*(a.u*iwa)
+           are different numbers. Only the reciprocal itself is hoisted. */
+        const bool textured = t.tex && t.tw > 0 && t.th > 0;
+        const bool rep_s = (t.wrap & 1) != 0, rep_t = (t.wrap & 2) != 0;
+        const bool flip_s = (t.wrap & 4) != 0, flip_t = (t.wrap & 8) != 0;
+        /* Host pixels per DS texel (GxTriangle::tex_scale). The UVs the
+           geometry engine produced are in DS TEXELS, and tw/th are the bound
+           buffer's real pixel dimensions, so the sampler works in buffer
+           pixels by multiplying. 1 for everything the ROM supplies, and a
+           multiply by exactly 1.0f returns its operand bit for bit, so the
+           default run samples the texel it always sampled. */
+        const float tsc = (float)(t.tex_scale ? t.tex_scale : 1);
+        /* WHICH CHAIN LEVELS THIS TRIANGLE SITS BETWEEN, looked up rather than
+           computed: the head of gx_render already resolved it once for every
+           triangle in the frame. Nothing here runs at any other filter mode --
+           FILTER is a constant, so the whole statement folds away. */
+        TriTex tt{nullptr, 0, 0.0f};
+        if (FILTER == 2 && textured)
+            tt = g_tritex[(size_t)(&t - g.tris.data())];
+        const float acol[3] = {(float)((a.color >> 16) & 0xFF),
+                               (float)((a.color >> 8) & 0xFF),
+                               (float)(a.color & 0xFF)};
+        const float bcol[3] = {(float)((b.color >> 16) & 0xFF),
+                               (float)((b.color >> 8) & 0xFF),
+                               (float)(b.color & 0xFF)};
+        const float ccol[3] = {(float)((c.color >> 16) & 0xFF),
+                               (float)((c.color >> 8) & 0xFF),
+                               (float)(c.color & 0xFF)};
+        const uint32_t poly_a = (t.alpha >= 31 || t.alpha == 0) ? 31u : t.alpha;
+        /* MODE 2 (toon / highlight): 0 for every other polygon and for every
+           frame with no mode-2 polygon, which is the plain modulation below */
+        const int toon = (t.mode == 2) ? g_toon_shade : 0;
+
+        /* first row of this band at or after miny */
+        /* this tile's rows of the triangle */
+        const int y_lo = miny > ty0 ? miny : ty0;
+        const int y_hi = maxy < ty1 ? maxy : ty1;
+
+        if (t.mode == 3) {
+            /* Shadow polygons, the two-step protocol from the block comment
+               at the buffers above. Both loops share the standard loop's
+               coverage and barycentric arithmetic -- same expressions, same
+               order -- and neither ever writes depth. */
+            if (t.polyid == 0) {
+                /* the mask: set stencil where the depth test FAILS; no
+                   colour, no depth, no texture */
+                for (int y = y_lo; y <= y_hi; ++y) {
+                    const float py = y + 0.5f;
+                    const float r0 = eax * (py - a.y);
+                    const float r1 = ebx * (py - b.y);
+                    const float r2 = ecx * (py - c.y);
+                    const float *drow = depth[y];
+                    uint8_t *srow = stencil[y];
+                    int xs = minx, xe = maxx;
+                    if (use_span && !row_span(st, r0, r1, r2, minx, maxx, xs, xe))
+                        continue;
+                    for (int x = xs; x <= xe; ++x) {
+                        const float px = x + 0.5f;
+                        const float n0 = r0 - eay * (px - a.x);
+                        const float n1 = r1 - eby * (px - b.x);
+                        const float n2 = r2 - ecy * (px - c.x);
+                        if (!((n0 >= 0 && n1 >= 0 && n2 >= 0) ||
+                              (n0 <= 0 && n1 <= 0 && n2 <= 0)))
+                            continue;
+                        const float w0 = n0 / area, w1 = n1 / area,
+                                    w2 = n2 / area;
+                        const float l0 = w1, l1 = w2, l2 = w0;
+                        const float z = l0 * a.z + l1 * b.z + l2 * c.z;
+                        if (z >= drow[x]) srow[x] = 1;
+                    }
+                }
+            } else {
+                /* the drawn shadow: examine stencilled pixels, clear the
+                   bit whether it draws or not, blend where the depth test
+                   passes and the recorded polygon ID differs */
+                for (int y = y_lo; y <= y_hi; ++y) {
+                    const float py = y + 0.5f;
+                    const float r0 = eax * (py - a.y);
+                    const float r1 = ebx * (py - b.y);
+                    const float r2 = ecx * (py - c.y);
+                    const float *drow = depth[y];
+                    uint8_t *srow = stencil[y];
+                    const uint8_t *irow = attrid[y];
+                    uint32_t *frow = fb.px[y];
+                    int xs = minx, xe = maxx;
+                    if (use_span && !row_span(st, r0, r1, r2, minx, maxx, xs, xe))
+                        continue;
+                    for (int x = xs; x <= xe; ++x) {
+                        const float px = x + 0.5f;
+                        const float n0 = r0 - eay * (px - a.x);
+                        const float n1 = r1 - eby * (px - b.x);
+                        const float n2 = r2 - ecy * (px - c.x);
+                        if (!((n0 >= 0 && n1 >= 0 && n2 >= 0) ||
+                              (n0 <= 0 && n1 <= 0 && n2 <= 0)))
+                            continue;
+                        if (!srow[x]) continue;
+                        srow[x] = 0;
+                        const float w0 = n0 / area, w1 = n1 / area,
+                                    w2 = n2 / area;
+                        const float l0 = w1, l1 = w2, l2 = w0;
+                        const float z = l0 * a.z + l1 * b.z + l2 * c.z;
+                        if (z >= drow[x]) continue;
+                        if (irow[x] == t.polyid) continue;
+                        uint32_t texel = 0xFFFFFFFFu;
+                        if (textured) {
+                            const float iw = l0 * iwa + l1 * iwb + l2 * iwc;
+                            float uu, vv;
+                            if (iw > 1e-9f) {
+                                uu = (l0 * a.u * iwa + l1 * b.u * iwb +
+                                      l2 * c.u * iwc) / iw;
+                                vv = (l0 * a.v * iwa + l1 * b.v * iwb +
+                                      l2 * c.v * iwc) / iw;
+                            } else {
+                                uu = l0 * a.u + l1 * b.u + l2 * c.u;
+                                vv = l0 * a.v + l1 * b.v + l2 * c.v;
+                            }
+                            const int ui = tex_coord(uu * tsc, t.tw, rep_s, flip_s);
+                            const int vi = tex_coord(vv * tsc, t.th, rep_t, flip_t);
+                            texel = t.tex[vi * t.tw + ui];
+                            if ((texel >> 24) == 0) continue;
+                        }
+                        auto ch = [&](int k, int sh) {
+                            const float v = l0 * acol[k] + l1 * bcol[k] +
+                                            l2 * ccol[k];
+                            const float m = inv255.v[(texel >> sh) & 0xFF];
+                            const int i = static_cast<int>(v * m + 0.5f);
+                            return static_cast<uint32_t>(
+                                i < 0 ? 0 : (i > 255 ? 255 : i));
+                        };
+                        const uint32_t tex_a = texel >> 24;
+                        const uint32_t sa = (poly_a * tex_a + 127) / 255;
+                        const uint32_t dst = frow[x];
+                        auto bl = [&](int k, int sh) {
+                            const uint32_t s = ch(k, sh);
+                            const uint32_t d = (dst >> sh) & 0xFF;
+                            return ((s * sa + d * (31 - sa)) / 31) & 0xFF;
+                        };
+                        frow[x] = 0xFF000000u | (bl(0, 16) << 16) |
+                                  (bl(1, 8) << 8) | bl(2, 0);
+                        g_cover[y][x] = 1;
+                    }
+                }
+            }
+            continue;
+        }
+        for (int y = y_lo; y <= y_hi; ++y) {
+            const float py = y + 0.5f;
+            /* the half of each edge function that only moves with the row */
+            const float r0 = eax * (py - a.y);
+            const float r1 = ebx * (py - b.y);
+            const float r2 = ecx * (py - c.y);
+            float *drow = depth[y];
+            uint32_t *frow = fb.px[y];
+            uint8_t *irow = attrid[y];
+            uint8_t *trow = tlattr[y];
+            int xs = minx, xe = maxx;
+            if (use_span && !row_span(st, r0, r1, r2, minx, maxx, xs, xe))
+                continue;
+            for (int x = xs; x <= xe; ++x) {
+                const float px = x + 0.5f;
+                /* Coverage is decided on the undivided edge functions. The
+                   test asks whether all three share a sign, and dividing all
+                   three by the same non-zero area cannot change that whichever
+                   way the area points -- so the three divides only have to
+                   happen for pixels that are actually inside. */
+                const float n0 = r0 - eay * (px - a.x);
+                const float n1 = r1 - eby * (px - b.x);
+                const float n2 = r2 - ecy * (px - c.x);
+                // Accept either winding; back-face culling is a POLYGON_ATTR job.
+                if (!((n0 >= 0 && n1 >= 0 && n2 >= 0) || (n0 <= 0 && n1 <= 0 && n2 <= 0)))
+                    continue;
+                const float w0 = n0 / area, w1 = n1 / area, w2 = n2 / area;
+                const float l0 = w1, l1 = w2, l2 = w0;   // barycentric for a, b, c
+                const float z = l0 * a.z + l1 * b.z + l2 * c.z;
+                if (z >= drow[x]) continue;
+                // Depth is written only after the texel passes the alpha test
+                // below -- a transparent texel must not occlude what is behind it.
+                // Texture first; the vertex colour modulates it. UVs are
+                // perspective-corrected via 1/w interpolation; with w == 1
+                // everywhere (the ortho harnesses) the math reduces exactly
+                // to the old affine lerp.
+                uint32_t texel = 0xFFFFFFFFu;
+                if (textured) {
+                    const float iw = l0 * iwa + l1 * iwb + l2 * iwc;
+                    float uu, vv;
+                    if (iw > 1e-9f) {
+                        uu = (l0 * a.u * iwa + l1 * b.u * iwb + l2 * c.u * iwc) / iw;
+                        vv = (l0 * a.v * iwa + l1 * b.v * iwb + l2 * c.v * iwc) / iw;
+                    } else {
+                        uu = l0 * a.u + l1 * b.u + l2 * c.u;
+                        vv = l0 * a.v + l1 * b.v + l2 * c.v;
+                    }
+                    /* THE ONE SAMPLING DECISION IN THE WHOLE RASTER, and it
+                       is made by the compiler rather than by this pixel:
+                       FILTER is a constant in this instantiation, so the
+                       nearest body below is exactly the two tex_coord calls
+                       and the one load it always was, with nothing added. */
+                    if constexpr (FILTER == 0) {
+                        const int ui = tex_coord(uu * tsc, t.tw, rep_s, flip_s);
+                        const int vi = tex_coord(vv * tsc, t.th, rep_t, flip_t);
+                        texel = t.tex[vi * t.tw + ui];
+                    } else {
+                        texel = sample_filtered<FILTER>(
+                            tt, t.tex, t.tw, t.th, uu * tsc, vv * tsc, rep_s,
+                            rep_t, flip_s, flip_t);
+                    }
+                    if ((texel >> 24) == 0) continue;      // transparent texel
+                }
+
+                // Round, do not truncate: barycentrics sum to 0.9999 rather than
+                // exactly 1, and a truncating cast bands a flat surface 255/254.
+                /* MODE 2: the entry this pixel's interpolated red picks. Toon
+                   modulates the ENTRY instead of the vertex colour; highlight
+                   modulates the vertex red on all three channels and adds the
+                   entry after, saturating (GBATEK DS 3D Polygon Attributes;
+                   melonDS RenderPixel, the same order). */
+                const float *te = nullptr;
+                if (toon)
+                    te = &g_toon8[toon_index(l0 * acol[0] + l1 * bcol[0] +
+                                             l2 * ccol[0]) * 3];
+                auto ch = [&](int k, int sh) {
+                    const int kv = toon == 2 ? 0 : k;
+                    const float v = toon == 1
+                        ? te[k]
+                        : l0 * acol[kv] + l1 * bcol[kv] + l2 * ccol[kv];
+                    const float m = inv255.v[(texel >> sh) & 0xFF];
+                    int i = static_cast<int>(v * m + 0.5f);
+                    if (toon == 2) i += static_cast<int>(te[k]);
+                    return static_cast<uint32_t>(i < 0 ? 0 : (i > 255 ? 255 : i));
+                };
+                /* effective alpha = poly attr alpha combined with the
+                   TEXEL alpha (A3I5/A5I3 gradients -- the grass-fade
+                   strips render solid without it) */
+                const uint32_t tex_a = texel >> 24;            /* 0..255 */
+                const uint32_t sa = (poly_a * tex_a + 127) / 255; /* 0..31 */
+                if (sa >= 31) {
+                    /* opaque (the DS treats attr alpha 0 as wire/opaque
+                       depending on mode; opaque is the safe read) */
+                    drow[x] = z;
+                    frow[x] = 0xFF000000u | (ch(0, 16) << 16) | (ch(1, 8) << 8)
+                              | ch(2, 0);
+                    g_cover[y][x] = 1;
+                    /* the ID travels with the depth write so a shadow can
+                       recognise its own caster; one predictable branch on
+                       shadow-free frames, and the colour above is untouched
+                       either way */
+                    if (want_id) irow[x] = t.polyid;
+                    /* an opaque write replaces the pixel, so the translucent
+                       half of its attribute word goes with it (melonDS stores
+                       polyattr & 0x3F008000 on the opaque path, bit 22 clear).
+                       Our two passes draw every opaque polygon before any
+                       translucent one, so this only ever fires for a
+                       translucent-CLASS triangle whose per-pixel alpha came out
+                       31: an A3I5 or A5I3 texel at full opacity. */
+                    if (have_translucent) trow[x] = 0;
+                } else {
+                    /* translucent: blend over the framebuffer, keep depth
+                       (DS translucent polys depth-test but do not write).
+                       The hardware's translucent polygon-ID rule comes first: a
+                       pixel that already took a fragment of THIS polygon ID
+                       this frame refuses the next one outright. */
+                    const uint8_t tl =
+                        static_cast<uint8_t>(0x40 | t.polyid);
+                    if (trow[x] == tl) continue;
+                    trow[x] = tl;
+                    const uint32_t dst = frow[x];
+                    auto bl = [&](int k, int sh) {
+                        const uint32_t s = ch(k, sh);
+                        const uint32_t d = (dst >> sh) & 0xFF;
+                        return ((s * sa + d * (31 - sa)) / 31) & 0xFF;
+                    };
+                    frow[x] = 0xFF000000u | (bl(0, 16) << 16) | (bl(1, 8) << 8)
+                              | bl(2, 0);
+                    g_cover[y][x] = 1;
+                }
+            }
+        }
+    }
+    if (clr_pass && clr_done != g_clr_total) clear_stencil();
+    }
     };  // band_impl
 
     /* ONE BAND ENTRY, THREE BODIES BEHIND IT. The switch runs once per band
        per frame -- at most eight times a frame -- and hands the raster a body
        with the filter mode already resolved. The pool below still sees a
        plain two-argument callable, so nothing about the threading changed. */
-    auto band = [&](int tid, int nt) {
+    auto band = [&](int tile) {
         switch (filt) {
         case 1:
-            band_impl(tid, nt, std::integral_constant<int, 1>{});
+            band_impl(tile, std::integral_constant<int, 1>{});
             break;
         case 2:
-            band_impl(tid, nt, std::integral_constant<int, 2>{});
+            band_impl(tile, std::integral_constant<int, 2>{});
             break;
         default:
-            band_impl(tid, nt, std::integral_constant<int, 0>{});
+            band_impl(tile, std::integral_constant<int, 0>{});
             break;
         }
     };
 
-    /* Small scenes (the smokes, a single model) are not worth waking anyone
-       up for; the handover costs more than the fill. */
-    const int nt = (g.tris.size() < 256) ? 1 : raster_threads();
-    /* the band's own type, named out here rather than inside the lambda below:
-       decltype of a captured name inside a lambda body is a reference type and
-       there is no pointer to a reference */
-    typedef decltype(band) B;
+    /* ---- THE BINS, AND HOW MANY THREADS THE FRAME IS WORTH (run perf2) ----
+       One walk of the list on this thread: each triangle's pass and clamped
+       rows, by the same expressions and the same early outs the tile body
+       uses (a triangle left out here is one the body would have skipped
+       anyway), and the frame's work as the sum of the clamped boxes. The
+       thread decision is that work, not the triangle count: the title is a
+       handful of screen-sized triangles and ran on one thread under the old
+       "fewer than 256 triangles" rule, at about 17 ms a frame. Below the
+       threshold the handover costs more than the fill, and the frame runs
+       as ONE tile the height of the allocation, which is the old
+       single-thread walk. */
+    {
+        const int px0 = present_x(), py0 = present_y();
+        const int px1 = px0 + present_w() - 1, py1 = py0 + present_h() - 1;
+        g_bin_tmp.clear();
+        long long work = 0;
+        for (size_t i = 0; i < g.tris.size(); ++i) {
+            const GxTriangle &t = g.tris[i];
+            const int pass = static_cast<int>(t.translucent);
+            if (pass != 0 && pass != 1) continue;
+            if (only && t.dbg_tex != only) continue;
+            const GxVertex &a = t.v[0], &b = t.v[1], &c = t.v[2];
+            const float area =
+                (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            if (std::fabs(area) < 1e-6f) continue;
+            const bool backface = area > 0.0f;
+            if (backface && !(t.cull & 1)) continue;
+            if (!backface && !(t.cull & 2)) continue;
+            int minx = static_cast<int>(std::floor(std::fmin(a.x, std::fmin(b.x, c.x))));
+            int maxx = static_cast<int>(std::ceil(std::fmax(a.x, std::fmax(b.x, c.x))));
+            int miny = static_cast<int>(std::floor(std::fmin(a.y, std::fmin(b.y, c.y))));
+            int maxy = static_cast<int>(std::ceil(std::fmax(a.y, std::fmax(b.y, c.y))));
+            if (minx < px0) minx = px0;
+            if (miny < py0) miny = py0;
+            if (maxx > px1) maxx = px1;
+            if (maxy > py1) maxy = py1;
+            if (maxx < minx || maxy < miny) continue;
+            work += (long long)(maxx - minx + 1) * (long long)(maxy - miny + 1);
+            g_bin_tmp.push_back(BinTri{(int)i, pass, miny, maxy});
+        }
+        const int pool_n = raster_threads();
+        nt = (pool_n > 1 && work >= 16384) ? pool_n : 1;
+        tile_h = nt > 1 ? raster_tile_rows() : SCREEN_H;
+        ntiles = (SCREEN_H + tile_h - 1) / tile_h;
+        for (int ps = 0; ps < 2; ++ps) g_bin_off[ps].assign((size_t)ntiles + 1, 0);
+        for (BinTri &bt : g_bin_tmp) {
+            bt.k0 /= tile_h;
+            bt.k1 /= tile_h;
+            for (int k = bt.k0; k <= bt.k1; ++k) ++g_bin_off[bt.pass][(size_t)k + 1];
+        }
+        for (int ps = 0; ps < 2; ++ps) {
+            for (int k = 0; k < ntiles; ++k)
+                g_bin_off[ps][(size_t)k + 1] += g_bin_off[ps][(size_t)k];
+            g_bin_idx[ps].resize((size_t)g_bin_off[ps][(size_t)ntiles]);
+        }
+        /* filled in list order, so each tile's list is in submission order */
+        static std::vector<int> fill[2];
+        for (int ps = 0; ps < 2; ++ps)
+            fill[ps].assign(g_bin_off[ps].begin(), g_bin_off[ps].end() - 1);
+        for (const BinTri &bt : g_bin_tmp)
+            for (int k = bt.k0; k <= bt.k1; ++k)
+                g_bin_idx[bt.pass][(size_t)fill[bt.pass][(size_t)k]++] = bt.i;
+        /* the stencil clear points, replayed per tile in band_impl */
+        g_clr_total = 0;
+        if (have_shadow) {
+            g_clr_cum.assign(g.tris.size(), 0);
+            bool prev_mask = false;
+            for (size_t i = 0; i < g.tris.size(); ++i) {
+                const GxTriangle &t = g.tris[i];
+                if (static_cast<int>(t.translucent) == 1 &&
+                    !(only && t.dbg_tex != only)) {
+                    const bool is_mask = t.mode == 3 && t.polyid == 0;
+                    if (is_mask && !prev_mask) ++g_clr_total;
+                    prev_mask = is_mask;
+                }
+                g_clr_cum[i] = g_clr_total;
+            }
+        }
+    }
+    /* Each worker takes the next tile off the counter until none are left. */
+    std::atomic<int> next_tile(0);
+    auto worker = [&](int, int) {
+        for (;;) {
+            const int k = next_tile.fetch_add(1);
+            if (k >= ntiles) break;
+            band(k);
+        }
+    };
+    /* the worker's own type, named out here rather than inside the lambda
+       below: decltype of a captured name inside a lambda body is a reference
+       type and there is no pointer to a reference */
+    typedef decltype(worker) W;
     auto run_passes = [&](int lo, int hi) {
         pass_lo = lo;
         pass_hi = hi;
         if (nt <= 1) {
-            band(0, 1);
+            for (int k = 0; k < ntiles; ++k) band(k);
         } else {
-            pool(nt).run([](void *p, int tid, int n) { (*static_cast<B *>(p))(tid, n); },
-                         &band);
+            next_tile.store(0);
+            pool(nt).run([](void *p, int tid, int n) { (*static_cast<W *>(p))(tid, n); },
+                         &worker);
         }
+    };
+    /* THE SAME PASSES UNDER SM64DS_RASTER_AB, see the block above gx_render:
+       the frozen reference first, then the live code from the same buffers,
+       then the comparison. With the switch off this is run_passes. */
+    auto run_checked = [&](int lo, int hi) {
+        if (!raster_ab()) {
+            run_passes(lo, hi);
+            return;
+        }
+        rab_save(fb, g_rab_start);
+        const RefArgs ra{&fb, only, have_shadow, have_translucent, want_id,
+                         lo, hi};
+        switch (filt) {
+        case 1: raster_ref<1>(ra, 0, 1); break;
+        case 2: raster_ref<2>(ra, 0, 1); break;
+        default: raster_ref<0>(ra, 0, 1); break;
+        }
+        rab_save(fb, g_rab_ref);
+        rab_load(fb, g_rab_start);
+        run_passes(lo, hi);
+        rab_compare(fb, lo, hi);
     };
 
     /* ---- THE SEAM: THE OPAQUE PASS, MAYBE ON A GRAPHICS CARD (run hd2) ----
@@ -4398,6 +5546,9 @@ void gx_render(Framebuffer &fb) {
            picture rather than assumed: the caller clears the framebuffer
            before calling, and what it clears to is its business. */
         f.clear_argb = (cw > 0 && ch > 0) ? fb.px[f.py0][f.px0] : 0xFF000000u;
+        /* the frame's toon table, for its mode-2 polygons (0 = none) */
+        f.toon_shade = g_toon_shade;
+        f.toon_rgb = g_toon8;
 
         if (!ab_mode()) {
             gpu_drew = g_gpu_opaque(&f) ? 1 : 0;
@@ -4418,7 +5569,7 @@ void gx_render(Framebuffer &fb) {
                 std::memcpy(&g_ab_save[(size_t)y * SCREEN_W + x0],
                             &fb.px[y][x0], (size_t)w * sizeof(uint32_t));
 
-            run_passes(0, 0);                       /* arm B: this file */
+            run_checked(0, 0);                      /* arm B: this file */
             for (int y = y0; y < y0 + h; ++y) {
                 const size_t o = (size_t)y * SCREEN_W + x0;
                 std::memcpy(&g_ab_fb[o], &fb.px[y][x0], (size_t)w * sizeof(uint32_t));
@@ -4655,7 +5806,7 @@ void gx_render(Framebuffer &fb) {
 
     if (tm) t_seam1 = std::chrono::steady_clock::now();
 
-    run_passes(gpu_drew ? 1 : 0, 1);
+    run_checked(gpu_drew ? 1 : 0, 1);
 
     if (tm) t_pass1 = std::chrono::steady_clock::now();
 

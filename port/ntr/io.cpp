@@ -256,6 +256,11 @@ void run_sqrt() {
 // the difference between the two arms of a routing A/B IS the call count.
 unsigned long sqrt_runs() { return g_sqrt_runs; }
 
+// See ntr/mmio.h: the renderer reads the 3D engine's plain latches (CLEAR_COLOR,
+// DISP3DCNT, the TOON TABLE) straight out of the mapped window at draw time, the
+// way the hardware's rendering engine does, and only once the window is up.
+bool io_ready() { return g_io != nullptr; }
+
 // ---------------------------------------------------------------------------
 // CLAIMING THE DS ADDRESSES
 //

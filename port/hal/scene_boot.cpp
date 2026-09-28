@@ -616,6 +616,7 @@ void port_frame_phase2(void);
 void port_frame_phase5(void);
 extern "C" int data_0209d50c;        /* the ROM's phase word (hal/rom_frame.cpp) */
 void port_frame_clock_tick(void);    /* phase 6: data_020a0db0 (hal/fader_wipes.cpp) */
+extern "C" int data_0208ee44;        /* the ROM's vblanks-per-tick word (timer 0) */
 /* SM64DS_MG_RESULTS_PROBE (hal/scene_mg.cpp), off unless the variable is set */
 void port_mg_results_probe(int frame);
 void port_mg_results_watch(int frame);   /* lane RESULTS (mg14) lifecycle sweep */
@@ -7720,6 +7721,7 @@ extern "C" void port_scene_tick(int frame, int tick_game)
                that includes the only visual difference between a SELECTED
                Pair-a-Gone card and an idle one. */
             port_frame_clock_tick();
+            ntr::rt_timer0_advance((unsigned)data_0208ee44);   /* DS timer 0: the OS tick */
             /* PHASE 2 (the word-0 beat and the fade step) used to be called
                here, after the tick, with word 0's answer discarded on the claim
                that no scene answers 0. The title does:
@@ -7823,10 +7825,10 @@ extern "C" void port_scene_tick(int frame, int tick_game)
             if (ntr::widescreen && !ntr::present_native())
                 hal_camera_widen_frustum_scene();
             if (trace) std::fprintf(stderr, "[scene-trace] f%d clear\n", frame);
-            for (int x = 0; x < ntr::active_w; ++x) fb.px[0][x] = 0xFF101820u;
-            for (int y = 1; y < ntr::active_h; ++y)
-                std::memcpy(fb.px[y], fb.px[0],
-                            ntr::active_w * sizeof(fb.px[0][0]));
+            /* the colour the DS shows where nothing is drawn: the 3D
+               CLEAR_COLOR when it is opaque (the star select's white), else
+               engine A's backdrop; see gx_clear_fill in ntr/gx.h */
+            ntr::gx_clear_fill(fb);
             if (trace) std::fprintf(stderr, "[scene-trace] f%d gx_render\n", frame);
             ntr::gx_render(fb);
             if (trace) std::fprintf(stderr, "[scene-trace] f%d composite\n", frame);

@@ -2217,6 +2217,26 @@ int in_camera_button_zone(int dsx, int dsy)
     return dsy >= 0x8a && (dsx <= 0x58 || dsx >= 0xa7);
 }
 
+/* ---- AND ONLY WHERE THE ARROWS EXIST: A COURSE ----------------------------
+ *
+ * The zone above is the ROM's hit test for the camera arrows, and the ROM runs
+ * it from exactly one place: Stage::Behavior calls Stage::CheckCameraInput
+ * (src/_ZN5Stage8BehaviorEv.cpp), so the arrows are a thing only while a
+ * course is running. The host makes that same call once a frame from the
+ * level loop, through hal_sub_camera_input below, and from nowhere else.
+ *
+ * The press filter used to apply the zone on EVERY screen. On the file select
+ * that swallowed the Back arrow (DS x 182-248, y 140-174, wholly inside the
+ * zone's right-hand block), and it could only be seen with the improved map
+ * on, which every recorded harness forces off (host_settings.cpp). So the
+ * filter now asks the ROM's own question: did the course's camera reader run
+ * on the frame before this poll? g_tp_frame is poll_touch's own count and
+ * hal_sub_camera_input stamps it after that frame's poll, so the stamp equals
+ * the count at the next poll exactly when a course ticked in between. The
+ * title, the file select, the star select, the minigames and every other menu
+ * never make the call, so their buttons are the ROM's own again. */
+int g_cam_reader_at = -1;        /* g_tp_frame when the camera reader last ran */
+
 /* ---- AND THE OTHER HALF: THE ARROWS ARE NOT DRAWN --------------------------
  *
  * HOW THEY ARE IDENTIFIED, and it is not by position. A sprite's position is a
@@ -2761,6 +2781,7 @@ void poll_touch(void)
                hit test running. g_menu_up is the ROM's own pair, taken once a
                frame at the presentation seam. */
             if (on_surface && improved_map_on() && !g_menu_up &&
+                g_cam_reader_at == g_tp_frame &&
                 in_camera_button_zone(fx, fy)) {
                 on_surface = 0;
                 drag_own = 0;
@@ -4763,6 +4784,9 @@ unsigned hal_sub_screen_stacked_generation(void)
 void hal_sub_camera_input(void)
 {
     const char *ctrl = (const char *)data_0209f498;
+    /* a course's camera reader ran this frame: the arrow zone is live for
+       the next poll (see g_cam_reader_at) */
+    g_cam_reader_at = g_tp_frame;
     _ZN5Stage16CheckCameraInputEv();
     *(unsigned short *)data_0209f49c |= *(const unsigned short *)(ctrl + 4);
     *(unsigned short *)data_0209f49e |= *(const unsigned short *)(ctrl + 6);

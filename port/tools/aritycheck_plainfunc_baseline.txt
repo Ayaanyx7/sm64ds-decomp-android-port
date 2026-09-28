@@ -140,7 +140,6 @@ func_ov002_020d4d88|src/_ZN6Player17St_HoldLight_MainEv.cpp
 func_ov002_020d5cec|src/actors/Player.cpp
 func_ov002_020de328|src/func_ov092_02131010.cpp
 func_ov002_020e3f90|include/decl_common.h
-_ZN10StarMarker7CollectEv|src/func_ov002_020e930c.c
 func_ov002_020e8abc|src/func_ov002_020e8c34.c
 func_ov002_020e8e80|include/decl_common.h
 func_ov002_020f2630|src/func_ov002_020f26d4.c

@@ -80,6 +80,7 @@
 #include "hal/comms_seam.h"   /* run mg16 lane MP3: port::vs_player_count() */
 #include "fBase_c.h"   /* SYNC4: moved up out of an extern "C" block */
 #include "dActor_c.h"  /* SYNC4: same, and it reaches math/Fix12.h now */
+#include "SharedFilePtr.h"   /* the twelve shared preloads' Release */
 
 extern "C" {
 void port_ov009_patch(void);
@@ -2598,6 +2599,7 @@ extern unsigned char data_0209f26c;
 extern int data_0209f264[];          /* current entrance */
 extern unsigned char data_0209f268;  /* next entrance */
 extern int data_0209f220[];          /* current star filter */
+extern int data_0209f32c[];          /* water surface Y (the last water found) */
 /* next star -- the act the level change staged, which is where the star select
    leaves the player's pick. Declared as a byte for data_0209f26c's reason:
    auto_bss.cpp owns the wider host allocation and the ROM reads it as one. */
@@ -2635,6 +2637,7 @@ extern "C" void port_scene_canary(const char *where);
 extern "C" void port_particle_boot(void);   /* hal/particle_bridges.cpp */
 extern "C" void port_boot_course_sound(int level);   /* hal/star_flow.cpp:
                                             the InitResources sound-row block */
+extern "C" void port_stage_preload_shared_models(void);   /* below */
 /* The persistent actor-run mask Stage::InitResources:266 zeroes. Declared here
    as well as in the a2 seat's own block below because the per-boot body above
    that block hosts the same ROM line; both spell the host storage
@@ -2753,6 +2756,7 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn);
    src, on slice_gate26.txt:29 and already linked. */
 extern "C" void *port_stage_object(void);
 extern "C" void _ZN5Stage9LoadModelEv(char *self);
+extern "C" void port_fader_wipes_load(void);   /* hal/fader_wipes.cpp */
 
 void *port_stage_a_boot(void *mc, int spawn)
 {
@@ -3129,6 +3133,8 @@ static int port_stage_archive_idx(int level)
    declares them. Called from port_stage_boot_body below. */
 extern "C" void _ZN8dScene_c20Initialise3dGraphicsEv(void);
 extern "C" void Enable3dEngines(void);
+/* src/Initialise3dGraphics.cpp, InitResources:261's call below */
+extern "C" void Initialise3dGraphics(int arg);
 
 extern "C" void *port_stage_boot_body(void *mc, int spawn)
 {
@@ -3216,6 +3222,13 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
         if (std::getenv("SM64DS_CARDFS"))
             port_card_mount_snapshot("level boot, InitResources:258");
     }
+    /* Stage::InitResources:261, the next statement after the archive lines:
+       Initialise3dGraphics(0x1F). dScene_c::Initialise3dGraphics above left
+       the 3D clear TRANSPARENT (alpha 0, its ::Initialise3dGraphics(0)); the
+       stage's own call makes it the opaque black a course draws over, so a
+       pixel no polygon reaches is black rather than engine A's backdrop
+       (ntr/gx.h, gx_clear_argb). */
+    Initialise3dGraphics(0x1F);
     /* fx wrote this against the ov009-only mount; the lvl stream made the
        mount parameterised, and the bank load wants to happen before any level
        logic can open a text box, so it rides the new call */
@@ -3495,6 +3508,15 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
         star_knob_seated = true;
         data_0209f220[0] = data_0209f1f0;
     }
+    /* Stage::InitResources:232, `data_0209f32c = 0x80000000`, on every stage
+       boot: the new level has no known water surface until its own water
+       actors (LoadClsnAndObjects, below) or the player's water probes set
+       one. The port wrote 0 once per process instead, so a level with no
+       water kept a surface at Y 0 (or the previous level's), and
+       Player::St_Teleport_Main (src/actors/Player.cpp), which reads this
+       global, put a teleport that lands below it into the swim state in the
+       open air: Cool, Cool Mountain's summit teleport. */
+    data_0209f32c[0] = (int)0x80000000;
     /* SM64DS_EVENT_SEED=<word>:<hex>[,<word>:<hex>...] -- the level-event bits
        a loaded save file would have left in the save block, written ONCE on the
        first stage boot of the process. <word> indexes data_0209caa0 AS THE
@@ -3849,10 +3871,19 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
        A1 geometry regression has no course. */
     if (spawn)
         port_boot_course_sound((int)data_0209f2f8);
+    /* THE TWELVE SHARED PRELOADS, Stage::InitResources :353-358, on every
+       Stage boot (the block over port_stage_preload_shared_models says why). */
+    port_stage_preload_shared_models();
+
+    /* THE SEVEN FADER-WIPE MESHES, Stage::InitResources :370-377: the loop
+       between the twelve shared preloads and Stage::LoadModel below, run at
+       every level boot so each wipe's textures are uploaded into this level's
+       VRAM (hal/fader_wipes.cpp, port_fader_wipes_load, has the why). */
+    port_fader_wipes_load();
 
     /* ---- THE LEVEL MODEL, WHERE THE ROM LOADS IT (run link60, lane SL0) ---
-       Stage::InitResources calls Stage::LoadModel at its line 361 and
-       Stage::LoadClsnAndObjects at 363, in that order. The port had them the
+       Stage::InitResources calls Stage::LoadModel at its line 380 and
+       Stage::LoadClsnAndObjects at 382, in that order. The port had them the
        other way round: the boot ran the whole object pass and
        port/tests/walk_window.cpp called Stage::LoadModel afterwards. Moving
        the call here is the ROM's order restored, and it is one line.
@@ -5089,7 +5120,7 @@ extern int data_0209d70c[];            /* the message archive header pointer */
 //
 // Bob-omb Battlefield is the first level the port boots whose own logic opens
 // a TEXT BOX. func_ov002_020c44c4 is the Player's one-shot level-intro check;
-// its switch is on data_0209f2f8, the current level, and `case 7: r4val = 8` is
+// its switch is on data_0209f2f8, the current level, and `case 6: r4val = 7` is
 // Bob-omb Battlefield's tutorial message -- fired when
 // SaveData::CountStarsCollectedInLevel comes back zero, which on a port with
 // a zeroed save block it always does. That runs the message state machine in
@@ -5134,97 +5165,68 @@ extern "C" void port_message_archive_seat(void)
 // Model::AddToCommonModelDataArr, which takes a REFERENCE and hands it to
 // LoadTexAndPal -- a fault on hardware just as much as on the host.
 //
-// It is spelled by NAME rather than by mounting data_020756f0 itself. That
-// table is arm9 data holding twelve ov002 ADDRESSES, and on the host ov002's
-// symbols are separate arrays; mounting the words would hand Model::LoadFile
-// twelve DS addresses. The names are the same twelve targets, read out of the
-// arm9 relocation table, in the ROM's own order.
+// IT RUNS ON EVERY STAGE BOOT, and its undo runs on every Stage teardown,
+// which is the ROM's own pairing (run hunt2, lane GAMEOVER1). The loop above is
+// Stage::InitResources :353-358, and the first statement of
+// Stage::CleanupResources (src/_ZN5Stage16CleanupResourcesEv.cpp:68-69) is its
+// mirror:
+//
+//     for (i = 0; i < 12; i++) ((SharedFilePtr *)data_020756f0[i])->Release();
+//
+// so on the cartridge every level entry loads the twelve and every level exit
+// frees them. The port used to run the load ONCE PER PROCESS, from
+// port_a2_seat_body, and never the release, and that held only while nothing
+// ran the ROM's teardown. The Game Over crossing does: it dispatches the Stage's
+// slot 3, the ROM's own Stage::CleanupResources runs, the twelve go back to 0
+// references and their files are freed, and the new Stage the CONTINUE builds
+// never loaded them again. The first object after that to read a filePtr
+// straight out walked a null BMD_File into Model::AddToCommonModelDataArr:
+// PowerStar::InitResources reading data_ov002_0211094c in Bob-omb Battlefield,
+// measured under cdb as one Model::LoadFile at process start, one Release from
+// the slot-3 teardown, and the record at 0 references with a null file at the
+// fault.
+//
+// So the load is called from port_stage_boot_body at the ROM's position (after
+// the course sound, before the fader wipes and Stage::LoadModel), and the
+// release from hal/level_change.cpp's change teardown, which is where the port
+// hosts the rest of Stage::CleanupResources for the Stage it keeps across a
+// change (just above CleanCommonModelDataArr, the ROM body's order). A Stage
+// the ROM destroyed itself ran the release in its own body, so the change
+// teardown skips it then. There is no flag: the SharedFilePtr records (hosted
+// ov002 globals, .dsstate) are the whole state, and a save-state restore rolls
+// them back together with the arena that holds their files.
+//
+// The table is data_020756f0 itself, hosted in hal/ptr_tables.cpp (table 4)
+// with the twelve ov002 names in the ROM's order, so both loops index the table
+// the ROM's own two loops do.
 extern "C" {
 void *_ZN5Model8LoadFileER13SharedFilePtr(void *sfp);
-extern unsigned char data_ov002_0210da48[], data_ov002_0210d9b8[],
-    data_ov002_0210da50[], data_ov002_0210d9f8[], data_ov002_0210da40[],
-    data_ov002_0210d9a0[], data_ov002_0210d9c0[], data_ov002_0210e7d8[],
-    data_ov002_0210e3a0[], data_ov002_0211094c[], data_ov002_0211095c[],
-    data_ov002_0210d9a8[];
+extern void *data_020756f0[12];   /* hal/ptr_tables.cpp, table 4 */
 }
-
-/* CAPTURED, and it is g_level_mounted's argument again with a different
-   payload. What this flag says is "the twelve preloads have run", and what that
-   pass writes is the twelve SharedFilePtr records themselves: Model::LoadFile
-   fills fileID, numRefs and filePtr in each. They are hosted ov002 globals, so
-   they are .dsstate content and a restore rolls them back. A host static does
-   not roll back with them, and the two then disagree in the fatal direction --
-   the flag says done, the records read unloaded, the pass never runs again, and
-   the first type-11 mushroom walks the null BMD_File described at the top of
-   this block into Model::AddToCommonModelDataArr.
-
-   AND THE DISAGREEMENT IS REACHABLE, which is worth stating because "loaded"
-   looks like a one-way latch and is not: SharedFilePtr::Release decrements
-   numRefs and frees at zero. Counted over the tree rather than eyeballed, and
-   the count is uneven: FOUR of the twelve are released anywhere at all --
-   0210da40, 0210d9a0, 0210d9c0 and 0210d9a8 -- by fourteen classes
-   (BowserPuzzlePiece, Coin, Dorrie, InvisibleSecret, Klepto, MantaRay, Player,
-   QuestionBlock, RollingLogTtm, SnowmanBreath, StarMarker, Stump, Toad,
-   TreasureChest) plus one free function, _ZN9daSCoin_c16CleanupResourcesEv; every site but
-   that last is a CleanupResources body. The other EIGHT are released nowhere,
-   so once the seat has run they stay loaded for the life of the process. It is
-   the four that make a disagreement reachable: one of those can be back to
-   unloaded inside a session, so a state can hold it either way round.
-
-   THE SWEEP MISSED THIS ONE and the reason generalises: RELOAD2's sweep
-   enumerated callers of port_ovNNN_syms_patch and __sinit_ovNNN_*, and this
-   pass calls neither. Its callee is Model::LoadFile. A search keyed to the two
-   patch-pass names cannot see a one-shot guard whose payload is a LOADER, so
-   the family is wider than that pattern and the next audit should be keyed on
-   which side of the section the payload lands on, not on the callee's name.
-
-   THE RE-RUN IS SAFE, read out of the callees rather than assumed.
-   SharedFilePtr::LoadFile calls Load() only when numRefs is 0, and
-   Model::LoadFile does UpdateFileOffsets + AddToCommonModelDataArr +
-   ReallocateModelFile only when numRefs comes back 1, so the expensive half is
-   the first load and nothing else. The storage does not leak either: Load()
-   carves through Memory::Allocate, which comes out of the root heap arena, and
-   hal/lk6_savestate.cpp captures that arena AND its carve cursor
-   (Slot.arena/Slot.arena_cursor) and puts both back -- so a rollback un-carves
-   the block in the same motion that rolls the record back. Bracketed, flag and
-   records move together, so the one case that would drift a refcount, a re-run
-   over a record that is still loaded, cannot arise from a restore at all.
-
-   NOT IN THE SM64DS_SS_NO_ROLLGUARD STASH, and that is deliberate: it matches
-   the eighteen rather than the two. port_rollguard_stash below carries
-   g_level_mounted and ov009's sinit flag, the pair RELOAD2's A/B actually
-   measured; the bracketed level-path guards are not in it. Adding this one
-   would WIDEN the knob rather than keep it the before/after switch the soak
-   reads, so the knob's scope stays what it was.
-
-   tbl stays host-side on purpose: it is const, nothing writes it, and it holds
-   host addresses that are fixed for the process lifetime. */
-DSSTATE_BEGIN
-static int g_preload_shared_models_done;
-DSSTATE_END
 
 extern "C" void port_stage_preload_shared_models(void)
 {
-    static void *const tbl[12] = {
-        data_ov002_0210da48, data_ov002_0210d9b8, data_ov002_0210da50,
-        data_ov002_0210d9f8, data_ov002_0210da40, data_ov002_0210d9a0,
-        data_ov002_0210d9c0, data_ov002_0210e7d8, data_ov002_0210e3a0,
-        data_ov002_0211094c, data_ov002_0211095c, data_ov002_0210d9a8,
-    };
     int loaded = 0;
-    if (g_preload_shared_models_done)
-        return;
-    g_preload_shared_models_done = 1;
     for (int i = 0; i < 12; ++i) {
-        _ZN5Model8LoadFileER13SharedFilePtr(tbl[i]);
+        _ZN5Model8LoadFileER13SharedFilePtr(data_020756f0[i]);
         /* SharedFilePtr is {u16 fileID; u8 numRefs; u8 pad; char *filePtr} */
-        if (*(void *const *)((const char *)tbl[i] + 4))
+        if (*(void *const *)((const char *)data_020756f0[i] + 4))
             ++loaded;
         else
             std::fprintf(stderr, "  [preload] shared model %d (handle %u) did "
-                         "not load\n", i, *(const unsigned short *)tbl[i]);
+                         "not load\n", i,
+                         *(const unsigned short *)data_020756f0[i]);
     }
     std::printf("[preload] %d/12 shared models seated\n", loaded);
+}
+
+/* Stage::CleanupResources:68-69, for the port's change teardown. The Release is
+   the ROM's own SharedFilePtr::Release (src/_ZN13SharedFilePtr7ReleaseEv.cpp),
+   the body the ROM's CleanupResources calls. */
+extern "C" void port_stage_release_shared_models(void)
+{
+    for (int i = 0; i < 12; ++i)
+        ((SharedFilePtr *)data_020756f0[i])->Release();
 }
 
 extern "C" void port_level_mounts_install(void);
@@ -5357,7 +5359,8 @@ static void port_a2_seat_body(int make_stage)
         stage_done = 1;
 
     port_message_archive_seat();
-    port_stage_preload_shared_models();
+    /* The twelve shared preloads are not bring-up: they are per Stage boot
+       (port_stage_boot_body) and freed per teardown, as on the cartridge. */
 
     /* Which levels this build can mount. Registered before anything can ask,
        which is here rather than in main: the handoff seam is boot state like
