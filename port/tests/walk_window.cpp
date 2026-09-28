@@ -7594,8 +7594,11 @@ static int ip_fit_commit(void)
     static int slow, nofit, since, ready_prev;
     static unsigned late_bits;
     static int w_ticks, w_ready, w_blend, w_slow, w_refused, w_blends, w_late;
-    /* the tick that just ended: was it ready to blend, and did it? */
-    if (ready_prev && g_ip_tick_ok && g_ip_rate_ok) {
+    /* the tick that just ended: was it ready to blend, and did it? Only a
+       tick the pacer gave a start can have drawn a blend at all; an unpaced
+       run (a selftest, the SM64DS_INTERP_PROBE instrument) has none, and its
+       ticks say nothing about whether a blend fits */
+    if (ready_prev && g_ip_tick_ok && g_ip_rate_ok && g_ip_tick_t0 > 0) {
         const int late = g_ip_tick_late;
         ++w_ready;
         w_blends += g_ip_tick_blends;
