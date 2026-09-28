@@ -15306,8 +15306,10 @@ int main(void)
            makes. hal/scene_boot.cpp's port_scene_tick calls it at the matching
            point on the scene path. Read that file's banner before moving it:
            every blink in the game hangs off this one counter. */
-        if (game_ticked)
+        if (game_ticked) {
             port_frame_clock_tick();
+            ntr::rt_timer0_advance((unsigned)data_0208ee44);   /* DS timer 0: the OS tick */
+        }
         /* PHASE 2 (the graphics block's word 0 and the fade steps) used to be
            called here, after the actor tick. It is the ROM's func_02019390 now,
            at the ROM's point before the tick: see PHASE 2, THE FRAME'S RESET,
