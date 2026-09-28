@@ -26,6 +26,15 @@
 //     -- an opaque-class polygon always lands on exactly 31, which makes the
 //     blend below an exact replacement.
 //
+//  4. MODE 2 IS THE SAME TABLE LOOKUP (run hunt2, lane RENDER2). A toon or
+//     highlight polygon (POLYGON_ATTR mode 2) takes its colour through the
+//     frame's TOON TABLE, picked per pixel by the interpolated vertex red:
+//     toon modulates the entry instead of the vertex colour, highlight
+//     modulates the vertex red on all three channels and adds the entry after.
+//     gx.cpp's band loop does the same arithmetic; the mode rides in the
+//     polygon-ID attribute as id + 64 * mode (1 toon, 2 highlight), so the
+//     vertex layout did not change.
+//
 // COVERAGE TRAVELS IN THE POLYGON-ID TARGET, not in the colour target's alpha,
 // because the colour target's alpha has to drive the blend. Bit 7 of the R8
 // target says "this engine wrote this pixel" and bits 0..5 are the polygon ID
@@ -36,6 +45,7 @@ struct VSIn {
     float2 uv   : TEXCOORD0;   // already divided by the bound buffer's size
     float3 col  : COLOR0;      // vertex colour, 0..255 per channel
     float2 attr : TEXCOORD1;   // x = polygon alpha 0..31, y = polygon ID 0..63
+                               //     + 64 * toon mode (0 none, 1 toon, 2 highlight)
 };
 
 struct VSOut {
@@ -58,6 +68,12 @@ VSOut vs_main(VSIn i)
 Texture2D tex0 : register(t0);
 SamplerState smp0 : register(s0);
 
+// the frame's toon table, 32 entries, rgb in 0..255 (gx.cpp's g_toon8)
+cbuffer ToonTable : register(b0)
+{
+    float4 toon[32];
+};
+
 struct PSOut {
     float4 col : SV_TARGET0;
     uint id : SV_TARGET1;
@@ -73,9 +89,21 @@ PSOut ps_main(VSOut i)
     float ta = floor(t.a * 255.0 + 0.5);
     clip(ta - 0.5);                       // alpha-0 texel: not a pixel
     float sa = floor((i.attr.x * ta + 127.0) / 255.0);
-    float3 c = clamp(floor(i.col * t.rgb + 0.5), 0.0, 255.0) * (1.0 / 255.0);
+    uint a = (uint)(i.attr.y + 0.5);
+    uint m = a >> 6;
+    float3 v = i.col;
+    float3 e = float3(0.0, 0.0, 0.0);
+    if (m != 0u) {
+        // gx.cpp's toon_index: round(red * 31 / 255), 0..31
+        int k = clamp((int)(i.col.r * (31.0f / 255.0f) + 0.5f), 0, 31);
+        e = toon[k].rgb;
+        v = (m == 1u) ? e : i.col.rrr;
+    }
+    float3 f = floor(v * t.rgb + 0.5);
+    if (m == 2u) f += e;
+    float3 c = clamp(f, 0.0, 255.0) * (1.0 / 255.0);
     o.col = float4(c, min(sa, 31.0) * (1.0 / 31.0));
-    o.id = 0x80u | (uint)(i.attr.y + 0.5);
+    o.id = 0x80u | (a & 63u);
     return o;
 }
 

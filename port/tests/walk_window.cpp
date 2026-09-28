@@ -7332,9 +7332,7 @@ static int ip_build(double alpha)
     g_ip_sum_replay += ip_ms_since(t0);
     const long long t1 = ip_qpc();
     ntr::Framebuffer &o = *g_ip_fb;
-    for (int x = 0; x < ntr::active_w; ++x) o.px[0][x] = 0xFF101820u;
-    for (int y = 1; y < ntr::active_h; ++y)
-        memcpy(o.px[y], o.px[0], ntr::active_w * sizeof(o.px[0][0]));
+    ntr::gx_clear_fill(o);     /* the frame's own clear, as the tick's */
     ntr::gx_render(o);
     ntr::gx_interp_end();
     g_ip_sum_raster += ip_ms_since(t1);
@@ -16894,17 +16892,14 @@ int main(void)
         port_fader_wipe_render();
         pt_mark(PS_RASTER);
         ph_begin(&t_phase);
-        /* clear: build one row, memcpy the rest (0xFF101820 is not a
-           repeating byte pattern, so memset cannot do it directly) */
+        /* clear: the colour the DS shows where nothing is drawn -- the
+           3D CLEAR_COLOR when it is opaque, else engine A's backdrop (see
+           gx_clear_fill in ntr/gx.h; one row built, the rest copied) */
         /* port/rollback: a replayed frame presents nothing, so the clear, the
            raster, the engine-A composite, the fade and the overlays below
            all stand down with it (rb_skip_render); they write host pixels
            only, and they were a third of a replayed frame's cost */
-        if (!rb_skip_render()) {
-        for (int x = 0; x < ntr::active_w; ++x) fb.px[0][x] = 0xFF101820u;
-        for (int y = 1; y < ntr::active_h; ++y)
-            memcpy(fb.px[y], fb.px[0], ntr::active_w * sizeof(fb.px[0][0]));
-        }
+        if (!rb_skip_render()) ntr::gx_clear_fill(fb);
         /* the rollback probe's re-run skips the rasteriser (SM64DS_ROLLBACK_DET_SKIP) */
         if (!rb_resim_skip_render() && !rb_skip_render())
         ntr::gx_render(fb);
