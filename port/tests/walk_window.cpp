@@ -2643,6 +2643,7 @@ static double g_ip_plain_ms = 1.0;  /* running average cost of a plain present *
 static int g_ip_cost_stale;         /* g_ip_cost_ms predates the slow fallback */
 static double g_ip_work_ms;         /* running average of a tick's own work */
 static int g_ip_tick_probe;         /* the slow fallback's retry tick */
+static int g_ip_tick_late;          /* a blend of this tick ran past its end */
 static int ip_present_slot(long long t, long long deadline);
 static void ip_flush_deferred(void);
 
@@ -7411,6 +7412,9 @@ static void ip_present_alpha(double alpha)
     ++g_ip_tick_blends;
     const double cost = (q2.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart;
     ip_cost_sample(cost);
+    /* finished past the tick's end: this blend made the game late */
+    if (g_ip_tick_len > 0 && q2.QuadPart > g_ip_tick_t0 + g_ip_tick_len)
+        g_ip_tick_late = 1;
     ip_note((q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart,
             (q2.QuadPart - q1.QuadPart) * 1000.0 / (double)qf.QuadPart);
 }
@@ -7468,10 +7472,13 @@ static double ip_left_ms(long long deadline)
     const long long end = tick_end > deadline ? tick_end : deadline;
     return (end - ip_qpc()) * 1000.0 / (double)f.QuadPart;
 }
+/* The margin is a fifth of the cost plus half a millisecond: a blend runs on
+   a machine that is doing other things too, and one that overruns the tick's
+   end makes the game itself late. */
 static int ip_fits(long long deadline)
 {
-    return ip_left_ms(deadline) >=
-           (g_ip_tick_probe ? g_ip_cost_min : g_ip_cost_ms) + 0.25;
+    const double c = g_ip_tick_probe ? g_ip_cost_min : g_ip_cost_ms;
+    return ip_left_ms(deadline) >= c * 1.2 + 0.5;
 }
 
 /* The pacer's extra picture, due at slot time t (QPC), to be finished before
@@ -7523,12 +7530,26 @@ static void ip_present_tick(void)
 
 /* The clock had no slack this turn (an overrun, or under a millisecond left):
    the tick is already late, so it gets its own finished picture, which costs
-   nothing, rather than a blend that would make it later still. */
+   nothing, rather than a blend that would make it later still.
+
+   run hunt2 lane SMFIT1: UNLESS THE TICK IS NOT LATE AT ALL. While the ROM
+   loop's halt pumps the pacer once per VBLANK, a tick is two turns (three in
+   a 20-tick scene), and a tick whose work runs past its FIRST turn has
+   overrun that turn only: the tick's own end is a turn or two away. Showing
+   tick N itself here used to leave the rest of the tick either repeating it
+   or, worse, blending after it (a blend is behind tick N, so the picture
+   stepped back). Measured on the ending at Thunder's settings: work of 15 to
+   20 ms against a 16.65 ms turn inside a 50 ms tick, and most ticks drew no
+   blend. So when a blend still fits before the tick's end the hand-off is
+   kept for the next turn's clock, which takes it exactly as it takes a
+   hand-off made in its own turn; the picture already up stays until then. */
 static void ip_flush_deferred(void)
 {
+    if (ip_owns_picture() && !g_ip_tick_shown && ip_fits(0)) return;
     g_ip_deferred = 0;
     if (!ip_owns_picture()) { present(); return; }
     int shown = 0;
+    g_ip_tick_refused = 1;
     ip_present_plain_or_skip(&shown, 0);
 }
 
@@ -7554,38 +7575,60 @@ static void ip_flush_deferred(void)
    While it is on, one tick in 32 (about a second) is ready to blend again
    and asks whether the cheapest of the last measured blends fits (see
    ip_cost_sample); if a blend is drawn the fallback is off, and that
-   blend's cost refills the window. Both edges are counted in ticks, so it does not
-   flap from one tick to the next. SM64DS_INTERP_TRACE prints a summary line
-   every 240 ticks; each switch prints one line either way. */
-enum { IP_FIT_ENTER = 16, IP_FIT_PROBE = 32, IP_FIT_WIN = 240 };
+   blend's cost refills the window. A blend that ran past the tick's end
+   made the game itself late, so it counts against the machine too: three
+   such ticks among the last 32 that were ready to blend and the fallback
+   is on, and a retry blend that ran late does not turn it off. Both edges
+   are counted in ticks, so it does not flap from one tick to the next.
+   SM64DS_INTERP_TRACE prints a summary line every 240 ticks; each switch
+   prints one line either way. */
+enum { IP_FIT_ENTER = 16, IP_FIT_PROBE = 32, IP_FIT_WIN = 240, IP_FIT_LATE = 3 };
+static int ip_bits(unsigned v)
+{
+    int n = 0;
+    for (; v; v &= v - 1) ++n;
+    return n;
+}
 static int ip_fit_commit(void)
 {
     static int slow, nofit, since, ready_prev;
-    static int w_ticks, w_ready, w_blend, w_slow, w_refused, w_blends;
+    static unsigned late_bits;
+    static int w_ticks, w_ready, w_blend, w_slow, w_refused, w_blends, w_late;
     /* the tick that just ended: was it ready to blend, and did it? */
     if (ready_prev && g_ip_tick_ok && g_ip_rate_ok) {
+        const int late = g_ip_tick_late;
         ++w_ready;
         w_blends += g_ip_tick_blends;
         if (g_ip_tick_refused) ++w_refused;
-        if (g_ip_tick_blends > 0) {
-            ++w_blend;
+        if (late) ++w_late;
+        late_bits = (late_bits << 1) | (late ? 1u : 0u);
+        if (g_ip_tick_blends > 0) ++w_blend;
+        if (g_ip_tick_blends > 0 && !late) {
             nofit = 0;
             if (slow) {
                 slow = 0;
+                late_bits = 0;
                 fprintf(stderr, "[interp] fit: a blend fits again (%.2f ms "
                         "beside %.2f ms of tick work in %.2f ms): smooth "
                         "motion is back on\n", g_ip_cost_ms, g_ip_work_ms,
                         PORT_VBLANK_MS * port_frame_divider());
             }
-        } else if (!slow && ++nofit >= IP_FIT_ENTER) {
+        }
+        if (!slow && ((g_ip_tick_blends == 0 && ++nofit >= IP_FIT_ENTER) ||
+                      ip_bits(late_bits) >= IP_FIT_LATE)) {
             slow = 1;
             since = 0;
             g_ip_cost_stale = 1;
-            fprintf(stderr, "[interp] fit: no blend fitted in %d ticks in a "
-                    "row (a blend %.2f ms, the tick's own work %.2f ms, the "
-                    "tick %.2f ms): pictures repeat, and one tick in %d tries "
-                    "again\n", IP_FIT_ENTER, g_ip_cost_ms, g_ip_work_ms,
+            fprintf(stderr, "[interp] fit: %s (a blend %.2f ms, the tick's "
+                    "own work %.2f ms, the tick %.2f ms): pictures repeat, "
+                    "and one tick in %d tries again\n",
+                    nofit >= IP_FIT_ENTER
+                        ? "no blend fitted in 16 ticks in a row"
+                        : "blends ran past the tick's end 3 times in 32 ticks",
+                    g_ip_cost_ms, g_ip_work_ms,
                     PORT_VBLANK_MS * port_frame_divider(), IP_FIT_PROBE);
+            late_bits = 0;
+            nofit = 0;
         }
     }
     int this_slow = 0;
@@ -7598,11 +7641,11 @@ static int ip_fit_commit(void)
         if (ip_trace())
             fprintf(stderr, "[interp] fit: %d ticks: %d ready to blend, %d "
                     "drew a blend (%d blends), %d had a slot with no room, %d "
-                    "in the slow fallback | blend %.2f ms, tick work %.2f ms, "
-                    "plain present %.2f ms\n", w_ticks, w_ready, w_blend,
-                    w_blends, w_refused, w_slow, g_ip_cost_ms, g_ip_work_ms,
-                    g_ip_plain_ms);
-        w_ticks = w_ready = w_blend = w_slow = w_refused = w_blends = 0;
+                    "in the slow fallback, %d ran late | blend %.2f ms, tick "
+                    "work %.2f ms, plain present %.2f ms\n", w_ticks, w_ready,
+                    w_blend, w_blends, w_refused, w_slow, w_late, g_ip_cost_ms,
+                    g_ip_work_ms, g_ip_plain_ms);
+        w_ticks = w_ready = w_blend = w_slow = w_refused = w_blends = w_late = 0;
     }
     return this_slow;
 }
@@ -17026,6 +17069,7 @@ int main(void)
             g_ip_tick_final = 0;
             g_ip_tick_blends = 0;
             g_ip_tick_refused = 0;
+            g_ip_tick_late = 0;
             g_ip_rate_ok = port_frame_rate_target() * port_frame_divider() > 60;
             {
                 LARGE_INTEGER qf;
