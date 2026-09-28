@@ -14,9 +14,9 @@ void _ZN6Player11ChangeStateERNS_5StateE(char* player, void* state);
 extern char data_ov002_02110034;
 extern char data_ov002_0211013c;
 
-void func_ov002_020d7430(char* c)
+void func_ov002_020d7430(Player& player)
 {
-    Player& player = *reinterpret_cast<Player*>(c);
+    char* c = reinterpret_cast<char*>(&player);
     dActor_c* mouthActor = reinterpret_cast<dActor_c*>(player.mObjInMouth);
     if (mouthActor->OnYoshiTryEat() == 2) {
         Vector3 pos;
