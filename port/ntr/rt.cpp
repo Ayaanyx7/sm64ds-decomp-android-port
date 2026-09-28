@@ -220,6 +220,112 @@ void rt_vblank_wait() {
 
 uint64_t rt_frame() { return g.frame; }
 
+// ---- DS TIMER 0, THE OS TICK (run hunt2, lane HUD2) -------------------------
+//
+// WHAT THE ROM DOES WITH IT. src/func_02059788.c (called by main() at boot,
+// hal/boot_os.cpp port_boot_rom_main_head) zeroes TM0CNT_L, writes TM0CNT_H =
+// 0xc1 (bit 7 run, bit 6 IRQ on overflow, prescaler 1 = F/64) and registers
+// func_02059700 on IRQ mask 8, which bumps the 48-bit overflow count at
+// data_020a6438 and re-arms itself. src/func_02059650.c reads the tick as
+// (overflows << 16) | TM0CNT_L, and everything that measures time reads that:
+// Timer::GetTime (the course timer on the HUD, src/_ZN3HUD15RenderTimeTimerEv.cpp,
+// and the Princess's Secret Slide's under-21-second star, src/actors/Player.cpp
+// case 16), the tick-to-ms helpers, the alarm list.
+//
+// WHAT THE PORT DID. Nothing moved the counter and nothing raised mask 8, so
+// the tick read 0 for the whole run: every Timer read 0, the course timer sat
+// at 00'00"00 and the slide's time test always passed.
+//
+// THE MODEL. The counter lives where the ROM reads it, the mapped I/O word at
+// 0x04000100, and moves by the DS's own clock: a frame is 263 lines of 2130
+// cycles of the 33.51 MHz bus, and the game tick is data_0208ee44 frames (the
+// ROM's vblanks-per-tick word; 2 on a course). The frame loops call this once
+// per game tick, beside the frame clock (func_020197b8 phase 6), and not on a
+// frame the host froze (its menu, a level re-seat), because no DS time passes
+// in a frame the DS never ran. A start edge (bit 7 going up) starts the count
+// at the value the ROM just wrote to TM0CNT_L, which is the reload the DS
+// latches from that write; each overflow reloads it and sets IF bit 3, and
+// when IE bit 3, IME and the CPSR I bit let it through the ROM's own vector
+// runs (runtime.cpp rt_timer0_dispatch), acknowledged first the way the DS
+// dispatcher acknowledges IF. A masked overflow stays pending in IF, as on
+// the DS, and func_02059650 already counts a pending one.
+//
+// DETERMINISTIC: the count is a function of the ticks run, never of the host
+// clock, so a selftest's pictures and traces do not move between runs.
+namespace {
+uint16_t g_t0_ctl_was;
+uint16_t g_t0_reload;
+uint32_t g_t0_frac;
+unsigned long long g_t0_irqs;
+int g_t0_band = -1;
+struct Timer0CensusReg {
+    Timer0CensusReg() {
+        if (std::getenv("SM64DS_IRQ_CENSUS")) std::atexit(report);
+    }
+    static void report() {
+        std::fprintf(stderr, "[timer0] census: overflow irqs delivered=%llu "
+                     "TM0CNT_L=%04x TM0CNT_H=%04x\n", g_t0_irqs,
+                     static_cast<unsigned>(reg16(0x04000100)),
+                     static_cast<unsigned>(reg16(0x04000102)));
+        std::fflush(stderr);
+    }
+} g_t0_census_reg;
+}  // namespace
+
+extern "C" int port_irqcb_band_ok(void);
+
+void rt_timer0_advance(unsigned vblanks) {
+    static int off = -1;
+    if (off < 0) off = std::getenv("SM64DS_TIMER0_OFF") ? 1 : 0;
+    if (off) return;
+    if (g_t0_band < 0) {
+        g_t0_band = port_irqcb_band_ok() ? 1 : 0;
+        if (!g_t0_band) {
+            std::fprintf(stderr, "[timer0] the IRQ callback band came apart "
+                         "(data_020a60f4 != data_020a60c4 + 0x30): timer 0 "
+                         "stays frozen rather than run the tick's re-arm "
+                         "into the wrong words\n");
+            std::fflush(stderr);
+        }
+    }
+    if (!g_t0_band) return;
+    if (vblanks < 1 || vblanks > 4) vblanks = 2;   // port_frame_divider's reading
+
+    const uint16_t ctl = reg16(0x04000102);
+    const bool was_running = (g_t0_ctl_was & 0x80) != 0;
+    g_t0_ctl_was = ctl;
+    if (!(ctl & 0x80)) return;
+    if (!was_running) {
+        g_t0_reload = reg16(0x04000100);
+        g_t0_frac = 0;
+    }
+
+    static const unsigned kShift[4] = {0, 6, 8, 10};   // F/1, /64, /256, /1024
+    const unsigned sh = kShift[ctl & 3];
+    const uint64_t cycles = static_cast<uint64_t>(vblanks) * 560190u + g_t0_frac;
+    g_t0_frac = static_cast<uint32_t>(cycles & ((1u << sh) - 1u));
+    uint64_t cnt = reg16(0x04000100) + (cycles >> sh);
+    unsigned overflows = 0;
+    while (cnt >= 0x10000u) {
+        cnt = cnt - 0x10000u + g_t0_reload;
+        ++overflows;
+    }
+    reg16(0x04000100) = static_cast<uint16_t>(cnt);
+
+    if (overflows && (ctl & 0x40)) reg32(REG_IF) |= 0x8u;
+    // One edge per delivery; the IF bit is a latch, so overflows that land
+    // while the gates are shut collapse into the one pending bit, as on the DS.
+    for (unsigned i = 0; i < (overflows ? overflows : 1u); ++i) {
+        if (!(reg32(REG_IF) & 0x8u) || !rt_timer0_irq_gates_open()) break;
+        reg32(REG_IF) &= ~0x8u;
+        if (g_irq_mode_enter) g_irq_mode_enter();
+        rt_timer0_dispatch();
+        if (g_irq_mode_exit) g_irq_mode_exit();
+        ++g_t0_irqs;
+        if (i + 1 < overflows) reg32(REG_IF) |= 0x8u;
+    }
+}
+
 uint32_t rt_irq_disable() {
     const uint32_t prev = g.cpsr_i;
     g.cpsr_i = 0x80;

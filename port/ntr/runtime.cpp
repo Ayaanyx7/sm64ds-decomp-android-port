@@ -171,8 +171,43 @@ extern "C" {
 // See hal/dsstate_seg.h.
 DSSTATE_BEGIN
 int data_020a6460[8];                                   /* GX-DMA state */
-struct { unsigned handler, active, arg; } data_020a60c4[8]; /* per-channel cbs */
 DSSTATE_END
+
+/* THE CALLBACK TABLE IS A BAND OF TWO DS SYMBOLS (run hunt2, lane HUD2).
+ *
+ * On the DS the eight {handler, enabled, arg} entries start at 0x020a60c4:
+ * DMA 0..3 then timer 0..3, the order data_02099fd4 lists (8, 9, 10, 11,
+ * 3, 4, 5, 6). config/arm9/symbols.txt names the fifth entry separately,
+ * data_020a60f4 = 0x020a60c4 + 0x30, and src/func_02056e4c.c (the timer arm:
+ * `data_020a60f4[idx] = {handler, 1, arg}; EnableIRQs(1 << (idx + 3))`)
+ * writes through that name while IRQ::SetIRQHandler and IRQ::DmaTimHandler
+ * write and read the same words as data_020a60c4[4 + idx]. The port hosted the
+ * two names as two objects (this 8-entry table here, and an unrelated int[4]
+ * in hal/player_bridges.cpp), so the timer arm wrote words nothing read, and
+ * func_02059c18's timer-1 arm wrote 8 bytes past the end of that int[4].
+ *
+ * It mattered the moment timer 0 was modelled: the tick's overflow handler
+ * func_02059700 re-arms itself through func_02056e4c(0, ...) after every
+ * overflow, and DmaTimHandler clears the handler word before the call, so with
+ * the two objects apart the tick advanced ONCE and then stopped for good.
+ *
+ * The fix is the GX bank band's mechanism (hal/cxx_aliases.cpp, GXBANK):
+ * two grouped sections that sort adjacent inside .dsstate, 0x30 bytes each, so
+ * data_020a60f4 IS data_020a60c4 + 0x30 again. port_irqcb_band_ok() reads the
+ * layout back and the timer model refuses to run on a band that came apart. */
+struct PortIrqCbEnt { unsigned handler, active, arg; };
+__pragma(section(".dsstate$irqcb00", read, write))
+__pragma(section(".dsstate$irqcb01", read, write))
+__declspec(allocate(".dsstate$irqcb00")) __declspec(align(4))
+PortIrqCbEnt data_020a60c4[4] = {};          /* DMA 0..3 callbacks          */
+__declspec(allocate(".dsstate$irqcb01")) __declspec(align(4))
+PortIrqCbEnt data_020a60f4[4] = {};          /* timer 0..3 callbacks        */
+}
+
+extern "C" int port_irqcb_band_ok(void)
+{
+    return reinterpret_cast<const char *>(data_020a60f4) -
+               reinterpret_cast<const char *>(data_020a60c4) == 0x30;
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +415,25 @@ bool rt_hblank_armed() { return rt_hblank_gates() == HBLANK_GATE_ALL; }
 
 void rt_hblank_dispatch() { hblank_handler()(); }
 
+// TIMER 0'S OVERFLOW INTERRUPT, the vector half (run hunt2, lane HUD2). The
+// count itself is ntr/rt.cpp's rt_timer0_advance; this is what it delivers to.
+// The DS dispatcher reads the vector table at the IRQ bit number, bit 3 for
+// timer 0, and on the game libraries that slot holds the ROM's own
+// IRQ::Tim0OverflowHandler (hal/arm9_tables_link100.cpp), which forwards to
+// IRQ::DmaTimHandler(4) and so to whatever the game registered in the
+// callback table above: func_02059700, the OS tick's high word. The smoke
+// probes link no vector table and get no delivery.
+bool rt_timer0_irq_gates_open() {
+    return (ie_word() & 0x8u) && !rt_irq_masked() &&
+           (*reinterpret_cast<volatile uint16_t *>(REG_IME) & 1u);
+}
+
+void rt_timer0_dispatch() {
+#if defined(NTR_ROM_IRQ_TABLE)
+    if (void *v = data_02099fe4[3]) reinterpret_cast<IrqHandler>(v)();
+#endif
+}
+
 }  // namespace ntr
 #if !defined(NTR_ROM_IRQ_TABLE)
 // THE SMOKE PROBES' COPIES of the IE pair. The game libraries link
@@ -458,10 +512,12 @@ extern "C" void DMAStartTransfer(int ch, int src, int dst, int ctrl) {
     }
     if (static_cast<uintptr_t>(dst) == 0x04000400u) {
         if (ctrl & 0x40000000) {
-            const unsigned h = data_020a60c4[ch & 7].handler;
+            /* DMA channels are 0..3; entries 4..7 are the timers', hosted
+               as data_020a60f4 (the band above) */
+            const unsigned h = data_020a60c4[ch & 3].handler;
             if (h) {
                 ++g_census_dmadone;
-                reinterpret_cast<void (*)(unsigned)>(h)(data_020a60c4[ch & 7].arg);
+                reinterpret_cast<void (*)(unsigned)>(h)(data_020a60c4[ch & 3].arg);
             }
         } else if (ie_word() & 0x200000u) {
             if (const IrqHandler h = gxfifo_handler()) {

@@ -616,6 +616,7 @@ void port_frame_phase2(void);
 void port_frame_phase5(void);
 extern "C" int data_0209d50c;        /* the ROM's phase word (hal/rom_frame.cpp) */
 void port_frame_clock_tick(void);    /* phase 6: data_020a0db0 (hal/fader_wipes.cpp) */
+extern "C" int data_0208ee44;        /* the ROM's vblanks-per-tick word (timer 0) */
 /* SM64DS_MG_RESULTS_PROBE (hal/scene_mg.cpp), off unless the variable is set */
 void port_mg_results_probe(int frame);
 void port_mg_results_watch(int frame);   /* lane RESULTS (mg14) lifecycle sweep */
@@ -7720,6 +7721,7 @@ extern "C" void port_scene_tick(int frame, int tick_game)
                that includes the only visual difference between a SELECTED
                Pair-a-Gone card and an idle one. */
             port_frame_clock_tick();
+            ntr::rt_timer0_advance((unsigned)data_0208ee44);   /* DS timer 0: the OS tick */
             /* PHASE 2 (the word-0 beat and the fade step) used to be called
                here, after the tick, with word 0's answer discarded on the claim
                that no scene answers 0. The title does:

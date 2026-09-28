@@ -2511,7 +2511,9 @@ int data_020a0f1c[4], data_020a4d54[4], data_020a6440[4], data_020a6444[4];
 int data_020a6484[4], data_020a6494[4], data_020a6498[4];
 int data_0209cdd0, data_0209cdd4, data_0209cdd8, data_0209cddc, data_0209cde0;
 int data_0209f220[8], data_0209f264[8], data_020a0d90[8], data_020a0f38[8];
-int data_020a4b58[4], data_020a4b68[4], data_020a60f4[4];
+int data_020a4b58[4], data_020a4b68[4];
+/* data_020a60f4 is not here: it is data_020a60c4 + 0x30 on the DS and
+   ntr/runtime.cpp hosts the two as one band (the timer callbacks). */
 /* DTCM, AND IT IS 16 KB AND NOT 64 BYTES. This used to read "DTCM scratch the
    timer list walker anchors at" and be sized for that one reader, which is the
    undersized-hosted-global shape: a span decided by the first caller found
