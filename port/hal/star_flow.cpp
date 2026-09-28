@@ -66,9 +66,14 @@ int  func_ov002_020d82f0(void *player);   /* Player::Hurt's own entry gate */
 void sdat_host_tick(void);
 int  IsLevelInsideCastle(int level);           /* seat_course_sound's two   */
 int  IsLevelTinyHugeIslandOutside(int level);  /* same-area music guards    */
+void _ZN5Sound22StopLoadedMusic_Layer1Ej(unsigned int frames);
+void _ZN5Sound8SetMusicEjj(unsigned int player, unsigned int seqId);
 
 // ---- the globals it reads and seats ----------------------------------------
 extern int          data_0209fc48;    /* the running cutscene script, 0 = none */
+extern int          data_0209b4ac;    /* layer 1's current song (in .dsstate)   */
+extern int          data_0208e43c;    /* layer 1's loaded base song (romdata,
+                                         outside .dsstate)                      */
 extern signed char  data_0209f2f8;    /* current sublevel */
 extern signed char  data_0209f2f4[];  /* lives */
 extern short        data_02092144[];  /* per-player health: HP<<8 | fraction */
@@ -693,6 +698,69 @@ void port_boot_course_sound(int level)
        that puts the VS scoreboard and the match clock on screen; see its own
        block above for why it is the mask and not the HUD that was missing */
     seat_engine_a_layers();
+}
+
+/* THE MUSIC AFTER A SAVE-STATE RESTORE (a port feature, run hunt3 lane MUSIC1).
+ *
+ * lk6_savestate_load silences the sequencer and the mixer and re-seeds the
+ * hosted ARM7's command pool, because a live sequencer cannot be copied back
+ * a few frames out of phase. Sound effects come back on their own: the game
+ * asks for them again. The level's song does not: the cartridge asks for it
+ * once, at the stage boot (seat_course_sound above), so after an F9 the world
+ * ran on in silence until something else started a song.
+ *
+ * So the restore asks for it here, through the same ROM calls the boot and
+ * the game use, and it asks for the song the SNAPSHOT was playing:
+ *
+ *   base     the restored sublevel's layer-1 row, the song a fresh boot of
+ *            that level picks (every castle room is 57, so this is also what
+ *            a carried castle song was)
+ *   current  data_0209b4ac, layer 1's current song, which lives in .dsstate
+ *            and so came back with the snapshot. Sound::SetMusic moves it
+ *            off the base for a temporary song and Sound::EndMusic puts the
+ *            base back; StopLoadedMusic_Layer1 sets it to -1 (silence).
+ *
+ * LoadAndSetMusic_Layer1(base) seats the base and starts it. If the snapshot
+ * was on a different song, SetMusic(player, current) puts that one on over
+ * the base, as the game did, so its own EndMusic later returns to the base;
+ * if the snapshot had layer 1 stopped, StopLoadedMusic_Layer1 stops it again.
+ * Songs start from their beginning.
+ *
+ * data_0208e43c (layer 1's loaded base) is romdata, outside .dsstate, so it
+ * still describes the world before the restore, and LoadAndSetMusic_Layer1
+ * can skip its start when that value equals the song asked for. The
+ * sequencer that value described has just been reset, so nothing is loaded:
+ * -1 is written first so the call starts the song. Layer 2, layer 3 and the
+ * sub-song player are not captured either; LoadAndSetMusic_Layer1 clears them
+ * itself (func_02011b7c), the state a fresh boot leaves them in.
+ *
+ * Also re-seats seat_course_sound's previous-level record: after a restore
+ * the world is in the snapshot's level, which is what data_0209f2f8 (restored
+ * with .dsstate) says. VS mode is left alone: the ROM does not read the row
+ * there and the arena's song belongs to its countdown. */
+void port_course_music_after_restore(void)
+{
+    const int level = data_0209f2f8;
+    g_music_prev_level = level;
+    if (level < 0 || level >= 0x34 || data_0209f2d8 == 1)
+        return;
+    const int base = (signed char)data_02075768[level * 3 + 2];
+    const int current = data_0209b4ac;
+    data_0208e43c = -1;
+    _ZN5Sound22LoadAndSetMusic_Layer1Ei(base);
+    if (current != base) {
+        if (current < 0)
+            _ZN5Sound22StopLoadedMusic_Layer1Ej(0);
+        else
+            _ZN5Sound8SetMusicEjj(data_0209f250, (unsigned)current);
+    }
+    g_course_music = current;
+    fprintf(stderr, "[course] restore: sublevel %d, base song %d, song %d "
+            "(%s)\n", level, base, current,
+            current == base ? (current < 0 ? "no layer-1 track" : "restarted")
+            : current < 0 ? "layer 1 was stopped in the snapshot"
+                          : "the snapshot's own song over the base");
+    sdat_host_tick();
 }
 
 /* ---- THE ARENA'S OWN MUSIC ------------------------------------------------
