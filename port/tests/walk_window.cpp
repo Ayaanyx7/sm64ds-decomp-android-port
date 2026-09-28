@@ -2711,6 +2711,11 @@ static double g_ip_work_ms;         /* running average of a tick's own work */
 static int g_ip_tick_probe;         /* the slow fallback's retry tick */
 static int g_ip_tick_measure;       /* ...that draws one blend to measure */
 static int g_ip_tick_late;          /* a blend of this tick ran past its end */
+/* SM64DS_INTERP_TRACE's 240-tick summary (run hunt3 lane POLISH1): blends
+   STARTED after their tick had already ended, by where they were drawn (the
+   presentation clock's slot, the tick's own no-pacer picture). Such a blend
+   is clamped to tick N itself, so it is a raster that shows nothing new. */
+static int g_ip_w_after_slot, g_ip_w_after_tick;
 static int ip_present_slot(long long t, long long deadline);
 static void ip_flush_deferred(void);
 
@@ -7574,7 +7579,9 @@ static int ip_present_slot(long long t, long long deadline)
         ip_present_plain_or_skip(&shown, deadline);
         return shown;
     }
-    ip_present_alpha((double)(ip_qpc() - g_ip_tick_t0) / (double)g_ip_tick_len);
+    const double alpha = (double)(ip_qpc() - g_ip_tick_t0) / (double)g_ip_tick_len;
+    if (alpha >= 1.0) ++g_ip_w_after_slot;
+    ip_present_alpha(alpha);
     g_ip_tick_shown = 1;
     return 1;
 }
@@ -7599,8 +7606,10 @@ static void ip_present_tick(void)
         g_ip_deferred = 1;
         return;
     }
-    ip_present_alpha((double)(now.QuadPart - g_ip_tick_t0) /
-                     (double)g_ip_tick_len);
+    const double alpha = (double)(now.QuadPart - g_ip_tick_t0) /
+                         (double)g_ip_tick_len;
+    if (alpha >= 1.0) ++g_ip_w_after_tick;
+    ip_present_alpha(alpha);
     g_ip_tick_shown = 1;
 }
 
@@ -7674,6 +7683,7 @@ static int ip_fit_commit(void)
     static int slow, nofit, since, ready_prev, retries;
     static unsigned late_bits;
     static int w_ticks, w_ready, w_blend, w_slow, w_refused, w_blends, w_late;
+    static int w_unshown, w_meas, w_meas_drawn;
     /* the tick that just ended: was it ready to blend, and did it? Only a
        tick the pacer gave a start can have drawn a blend at all; an unpaced
        run (a selftest, the SM64DS_INTERP_PROBE instrument) has none, and its
@@ -7684,6 +7694,13 @@ static int ip_fit_commit(void)
         w_blends += g_ip_tick_blends;
         if (g_ip_tick_refused) ++w_refused;
         if (late) ++w_late;
+        /* the tick put no picture of its own up at all, so the picture before
+           it stayed on screen for one more tick */
+        if (!g_ip_tick_shown && ip_owns_picture()) ++w_unshown;
+        if (g_ip_tick_measure) {
+            ++w_meas;
+            if (g_ip_tick_blends > 0) ++w_meas_drawn;
+        }
         late_bits = (late_bits << 1) | (late ? 1u : 0u);
         if (g_ip_tick_blends > 0) ++w_blend;
         if (g_ip_tick_blends > 0 && !late) {
@@ -7726,10 +7743,15 @@ static int ip_fit_commit(void)
             fprintf(stderr, "[interp] fit: %d ticks: %d ready to blend, %d "
                     "drew a blend (%d blends), %d had a slot with no room, %d "
                     "in the slow fallback, %d ran late | blend %.2f ms, tick "
-                    "work %.2f ms, plain present %.2f ms\n", w_ticks, w_ready,
+                    "work %.2f ms, plain present %.2f ms | %d showed no "
+                    "picture, %d measuring (%d drew), blends started after "
+                    "the tick's end: %d slot %d tick\n", w_ticks, w_ready,
                     w_blend, w_blends, w_refused, w_slow, w_late, g_ip_cost_ms,
-                    g_ip_work_ms, g_ip_plain_ms);
+                    g_ip_work_ms, g_ip_plain_ms, w_unshown, w_meas,
+                    w_meas_drawn, g_ip_w_after_slot, g_ip_w_after_tick);
         w_ticks = w_ready = w_blend = w_slow = w_refused = w_blends = w_late = 0;
+        w_unshown = w_meas = w_meas_drawn = 0;
+        g_ip_w_after_slot = g_ip_w_after_tick = 0;
     }
     return this_slow;
 }
