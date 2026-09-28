@@ -303,7 +303,17 @@ void func_ov004_020b1b08(int c);
 void func_ov004_020b1b40(int c);
 void func_ov004_020b1bc8(char *, int, int, int);
 void func_ov004_020b2220(int, int, int, int, int, int, int);
+#ifdef _MSC_VER
+/* THE PAYOUT IS PASSED, AS THE ROM PASSES IT. func_ov004_020b56c8 stores its
+   argument as the coin shower's count (src/func_ov004_020b56c8.c). The ROM
+   calls it from OnTurnIntoEgg case 7 (0x021097a8) straight after
+   ldrsh r0,[r1,#0xf2], the payout sum at +0x53f2, still in r0, so the matched
+   source calls it with no argument. On x86 nothing was pushed and the callee
+   stored the stack word above its return address instead of the payout. */
+void func_ov004_020b56c8(int coins);
+#else
 void func_ov004_020b56c8(void);
+#endif
 void func_ov004_020b65e4(void);
 void func_ov004_020b66d4(void);
 void func_ov006_020c0aa8(char *c);
@@ -865,7 +875,11 @@ int dScMgRoulette_c::OnTurnIntoEgg(int /* mode */)
         (*(s16 *)(self + 0x53e8))--;
         if (*(s16 *)(self + 0x53e8) == 0) {
             if (*(s16 *)(self + 0x53f2) != 0)
+#ifdef _MSC_VER
+                func_ov004_020b56c8(*(s16 *)(self + 0x53f2));
+#else
                 func_ov004_020b56c8();
+#endif
             (*(s16 *)(self + 0x53e6))++;
         }
         break;

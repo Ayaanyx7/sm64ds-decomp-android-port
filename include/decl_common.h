@@ -1289,7 +1289,16 @@ extern int func_0203d7b8(void);
 extern int func_0203d8fc(void);
 extern int func_0203da3c(void);
 extern int func_0203da9c(void);
+#ifdef _MSC_VER
+/* THE COMMS SLOT INDEX. src/func_0203dae4.c and src/func_0203dabc.c both take
+   it. The ROM's caller, dScDSMT_c::Behavior (0x020cc310..0x020cc320), leaves
+   func_0203da9c()'s result in r0 across each call, so on ARM the (void)
+   spelling is exact; on x86 the callee reads an unwritten stack slot. The
+   host passes the index; see src/_ZN9dScDSMT_c8BehaviorEv.cpp. */
+extern int func_0203dae4(int slot);
+#else
 extern int func_0203dae4(void);
+#endif
 extern int func_020431c4(void*);
 extern int func_0204424c(int);
 extern int func_0204531c(char*, int);
@@ -1694,7 +1703,12 @@ extern u16 data_ov091_02134504[];
 extern u16 data_ov091_02134514[];
 extern u16 gSkyboxFileTable[];
 extern u16*data_0209f334;
+#ifdef _MSC_VER
+/* THE COMMS SLOT INDEX, RECORD HALF. See func_0203dae4 above. */
+extern u16*func_0203dabc(int slot);
+#else
 extern u16*func_0203dabc(void);
+#endif
 extern u32 VRAM_Tex_Size;
 extern u32 _ZTV4View;
 extern u32 _ZTV6Camera;
