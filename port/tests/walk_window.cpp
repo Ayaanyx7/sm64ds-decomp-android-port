@@ -2640,9 +2640,9 @@ static int g_ip_tick_final;
 static int g_ip_tick_blends;        /* blended pictures this tick drew */
 static int g_ip_tick_refused;       /* a slot of this tick had no room for one */
 static double g_ip_plain_ms = 1.0;  /* running average cost of a plain present */
-static int g_ip_cost_stale;         /* g_ip_cost_ms predates the slow fallback */
 static double g_ip_work_ms;         /* running average of a tick's own work */
 static int g_ip_tick_probe;         /* the slow fallback's retry tick */
+static int g_ip_tick_measure;       /* ...that draws one blend to measure */
 static int g_ip_tick_late;          /* a blend of this tick ran past its end */
 static int ip_present_slot(long long t, long long deadline);
 static void ip_flush_deferred(void);
@@ -7354,21 +7354,29 @@ static void ip_note(double build_ms, double pres_ms)
    stall) took it from 9.5 to 30 ms, and every slot after that was refused.
    A median steps over a lone outlier and still follows a real change within
    half a window. g_ip_cost_min is the smallest of the same window: the slow
-   fallback's probe asks whether the cheapest recent blend fits, so a window
-   filled while the machine was busier than it is now cannot keep the probe
-   from ever trying. A sample after the fallback (g_ip_cost_stale) refills the
-   whole window, since the old samples describe another moment. */
+   fallback's retry asks whether the cheapest recent blend fits. A retry's
+   sample replaces the LARGEST slot, one slot and never the window: a retry
+   drawn while the machine is still busy then only replaces another busy
+   sample, and the samples from before the hitch keep saying what a blend
+   costs on a healthy machine. (Refilling the whole window from one retry
+   was a way to stay off for good: one busy retry made every slot, and so
+   the cheapest, the busy cost, and no retry fitted again. REVSMFIT1: 1300
+   ticks after a 6 s squeeze onto one core, 4 of 4.) */
 enum { IP_COST_N = 9 };
 static double g_ip_cost_win[IP_COST_N];
 static int g_ip_cost_n, g_ip_cost_at;
 static double g_ip_cost_min = 4.0;
 static void ip_cost_sample(double ms)
 {
-    if (g_ip_cost_stale || !g_ip_cost_n) {
+    if (!g_ip_cost_n) {
         for (int i = 0; i < IP_COST_N; ++i) g_ip_cost_win[i] = ms;
         g_ip_cost_n = IP_COST_N;
         g_ip_cost_at = 0;
-        g_ip_cost_stale = 0;
+    } else if (g_ip_tick_probe) {
+        int big = 0;
+        for (int i = 1; i < IP_COST_N; ++i)
+            if (g_ip_cost_win[i] > g_ip_cost_win[big]) big = i;
+        g_ip_cost_win[big] = ms;
     } else {
         g_ip_cost_win[g_ip_cost_at] = ms;
         g_ip_cost_at = (g_ip_cost_at + 1) % IP_COST_N;
@@ -7477,6 +7485,9 @@ static double ip_left_ms(long long deadline)
    end makes the game itself late. */
 static int ip_fits(long long deadline)
 {
+    /* the fallback's measuring retry: its first blend is drawn whatever the
+       test says, so the cost is always measured again (see ip_fit_commit) */
+    if (g_ip_tick_measure && !g_ip_tick_blends) return 1;
     const double c = g_ip_tick_probe ? g_ip_cost_min : g_ip_cost_ms;
     return ip_left_ms(deadline) >= c * 1.2 + 0.5;
 }
@@ -7574,15 +7585,19 @@ static void ip_flush_deferred(void)
    fit one blend at this setting: the fallback is on and the snapshots stop.
    While it is on, one tick in 32 (about a second) is ready to blend again
    and asks whether the cheapest of the last measured blends fits (see
-   ip_cost_sample); if a blend is drawn the fallback is off, and that
-   blend's cost refills the window. A blend that ran past the tick's end
+   ip_cost_sample); if a blend is drawn and ends inside the tick the
+   fallback is off. Every fourth retry (about four seconds) draws one blend
+   whatever the test says, so the cost is measured again even when every
+   recent sample is a busy one: a machine that has recovered is seen to
+   have recovered. A blend that ran past the tick's end
    made the game itself late, so it counts against the machine too: three
    such ticks among the last 32 that were ready to blend and the fallback
    is on, and a retry blend that ran late does not turn it off. Both edges
    are counted in ticks, so it does not flap from one tick to the next.
    SM64DS_INTERP_TRACE prints a summary line every 240 ticks; each switch
    prints one line either way. */
-enum { IP_FIT_ENTER = 16, IP_FIT_PROBE = 32, IP_FIT_WIN = 240, IP_FIT_LATE = 3 };
+enum { IP_FIT_ENTER = 16, IP_FIT_PROBE = 32, IP_FIT_WIN = 240, IP_FIT_LATE = 3,
+       IP_FIT_MEASURE = 4 };
 static int ip_bits(unsigned v)
 {
     int n = 0;
@@ -7591,7 +7606,7 @@ static int ip_bits(unsigned v)
 }
 static int ip_fit_commit(void)
 {
-    static int slow, nofit, since, ready_prev;
+    static int slow, nofit, since, ready_prev, retries;
     static unsigned late_bits;
     static int w_ticks, w_ready, w_blend, w_slow, w_refused, w_blends, w_late;
     /* the tick that just ended: was it ready to blend, and did it? Only a
@@ -7621,7 +7636,7 @@ static int ip_fit_commit(void)
                       ip_bits(late_bits) >= IP_FIT_LATE)) {
             slow = 1;
             since = 0;
-            g_ip_cost_stale = 1;
+            retries = 0;
             fprintf(stderr, "[interp] fit: %s (a blend %.2f ms, the tick's "
                     "own work %.2f ms, the tick %.2f ms): pictures repeat, "
                     "and one tick in %d tries again\n",
@@ -7637,6 +7652,7 @@ static int ip_fit_commit(void)
     int this_slow = 0;
     if (slow) this_slow = (++since % IP_FIT_PROBE) != 0;
     g_ip_tick_probe = slow && !this_slow;
+    g_ip_tick_measure = g_ip_tick_probe && (++retries % IP_FIT_MEASURE) == 0;
     ready_prev = !this_slow;
     ++w_ticks;
     if (this_slow) ++w_slow;
