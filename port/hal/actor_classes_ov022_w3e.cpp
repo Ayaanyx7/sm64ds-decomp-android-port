@@ -115,16 +115,16 @@
 // hal/actor_classes_ov063.cpp, same order, same reason. Deltas are ROM ZERO on
 // both records and are written back as zero.
 //
-// ---- ONE TU HELD OUT, AND IT IS NOT A REFUSAL OF THE BODY ----------------
+// ---- SLOT 16 IS THE MATCHED D1, REACHED THROUGH A FACE --------------------
 //
 // src/_ZN21daObj_volcanoCannon_cD1Ev.cpp (243's slot 16) is a real MSVC-synthesised
-// destructor over a shadow class with no vtable store of its own; MSVC mangles
-// it ??1RollingLogLll@@UAE@XZ and never as the Itanium name the slot needs.
-// That is the MotherPenguin / OneUpLogo / BabyPenguin shape gate 191, gate 193
-// and slice_ov030cast.txt (for this class's ov030 twin) all keep out. The
-// chain is spelled in vf_d1 below, HIGH ADDRESS FIRST, from the ROM body at
-// 0x021125e0: MovingCylinderClsn at +0xd4 then Actor::D2, with the vptr
-// restore the ROM does first.
+// destructor; MSVC mangles it ??1daObj_volcanoCannon_c@@QAE@XZ and never as the
+// Itanium name the slot needs, so vf_d1 below reaches it through the face
+// hal/actorport_dtor_bridge.cpp aliases onto it (run hunt2, lane ABI2). The ROM
+// body at 0x021125e0 is the chain it runs: the vptr restore the ROM does
+// first, then MovingCylinderClsn at +0xd4, then Actor::D2, HIGH ADDRESS FIRST.
+// Before that, slot 16 reached ROLLING_LOG_LLL (70)'s D1 through the shifted
+// dsd naming (the VOLCANO_FIRE block below).
 //
 // ---- LANE OWNERSHIP -------------------------------------------------------
 //
@@ -199,7 +199,7 @@ void __sinit_ov022_02112e58(void);   /* 77's                       */
 void __sinit_ov022_02113050(void);   /* 70's                       */
 void __sinit_ov022_021130bc(void);   /* 243's two PMF state records */
 
-/* the destructor chain vf_d1 spells out (243's held-out slot 16) */
+/* the destructor chain 243's slot 16 body runs (the src D1 vf_d1 reaches) */
 void _ZN7dCcAc_cD1Ev(void *self);
 void _ZN8dActor_cD2Ev(void *self);
 }
@@ -574,8 +574,8 @@ extern "C" void hal_fill_rolling_log_lll_vtable(void)
 }
 
 // ============================================================================
-// VOLCANO_FIRE (243) -- table 0x0211447c, THIRTY-ONE slots, bodies spelled
-// _ZN13RollingLogLll* (THE SHIFT)
+// VOLCANO_FIRE (243) -- table 0x0211447c, THIRTY-ONE slots, its own bodies
+// (dsd's shifted spelling of them was _ZN13RollingLogLll*, THE SHIFT)
 // ============================================================================
 //
 // 284-byte object and the only ACTOR in this file -- MovingCylinderClsn at

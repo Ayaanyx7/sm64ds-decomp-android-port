@@ -1000,7 +1000,7 @@ void port_fader_wipes_reset(void)
 
 /* ---- THE SEVEN WIPE MESHES, LOADED AT EVERY LEVEL BOOT --------------------
  *
- * Stage::InitResources :360-375, after the twelve shared preloads and before
+ * Stage::InitResources :360-377, after the twelve shared preloads and before
  * Stage::LoadModel:
  *
  *     faderTbl = VS ? data_02075600 : level 5 ? data_020755f0 : data_020755e0;
@@ -1025,7 +1025,7 @@ void port_fader_wipes_reset(void)
  * death, a level exit and the cannon. The ROM never keeps one: the load here
  * uploads into this level's VRAM, and the release frees it with the level.
  *
- * The VS arm of the table choice is omitted (VS is not run by this port). The
+ * The VS arm of the table choice (data_02075600) is left out, as 0.5.1 did. The
  * pool is this file's static array rather than a heap array (see
  * hal/stage_bridges.cpp's st_wipes_withdraw for why), so the constructor half
  * is the embedded Model's own, which is the only part of FaderWipe's

@@ -3875,15 +3875,15 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
        Stage boot (the block over port_stage_preload_shared_models says why). */
     port_stage_preload_shared_models();
 
-    /* THE SEVEN FADER-WIPE MESHES, Stage::InitResources :369-376: the loop
+    /* THE SEVEN FADER-WIPE MESHES, Stage::InitResources :370-377: the loop
        between the twelve shared preloads and Stage::LoadModel below, run at
        every level boot so each wipe's textures are uploaded into this level's
        VRAM (hal/fader_wipes.cpp, port_fader_wipes_load, has the why). */
     port_fader_wipes_load();
 
     /* ---- THE LEVEL MODEL, WHERE THE ROM LOADS IT (run link60, lane SL0) ---
-       Stage::InitResources calls Stage::LoadModel at its line 361 and
-       Stage::LoadClsnAndObjects at 363, in that order. The port had them the
+       Stage::InitResources calls Stage::LoadModel at its line 380 and
+       Stage::LoadClsnAndObjects at 382, in that order. The port had them the
        other way round: the boot ran the whole object pass and
        port/tests/walk_window.cpp called Stage::LoadModel afterwards. Moving
        the call here is the ROM's order restored, and it is one line.

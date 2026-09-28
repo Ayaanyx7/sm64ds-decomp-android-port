@@ -1226,9 +1226,9 @@ static int ss_save_state(const char *how, int to_disk)
    save object is carried across the restore: the world goes back to the
    snapshot, the file stays as the player left it. The five pieces are copied
    by their own names and sizes (hal/level_boot.cpp hosts them as one grouped
-   run; nothing here depends on that grouping). Only this, the player's path
-   -- F9 and the menu's load row -- does it; the scripted SM64DS_SS_LOAD
-   reproducer and the savestate soaks still restore the whole span. */
+   run; nothing here depends on that grouping). Every load through
+   ss_load_state does it -- F9, the menu's load row and the scripted
+   SM64DS_SS_LOAD the soaks drive; only SM64DS_SS_DISKLOAD's boot read does not. */
 extern "C" unsigned char data_0209cab4[];   /* the save object's five pieces,  */
 extern "C" unsigned char data_0209cad2[];   /* hal/level_boot.cpp's SAVEBLK    */
 extern "C" unsigned char data_0209cae4[];   /* run: caa0 0x14, cab4 0x1e,      */
