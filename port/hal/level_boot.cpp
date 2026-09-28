@@ -2598,6 +2598,7 @@ extern unsigned char data_0209f26c;
 extern int data_0209f264[];          /* current entrance */
 extern unsigned char data_0209f268;  /* next entrance */
 extern int data_0209f220[];          /* current star filter */
+extern int data_0209f32c[];          /* water surface Y (the last water found) */
 /* next star -- the act the level change staged, which is where the star select
    leaves the player's pick. Declared as a byte for data_0209f26c's reason:
    auto_bss.cpp owns the wider host allocation and the ROM reads it as one. */
@@ -3495,6 +3496,15 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
         star_knob_seated = true;
         data_0209f220[0] = data_0209f1f0;
     }
+    /* Stage::InitResources:232, `data_0209f32c = 0x80000000`, on every stage
+       boot: the new level has no known water surface until its own water
+       actors (LoadClsnAndObjects, below) or the player's water probes set
+       one. The port wrote 0 once per process instead, so a level with no
+       water kept a surface at Y 0 (or the previous level's), and
+       Player::St_Teleport_Main (src/actors/Player.cpp), which reads this
+       global, put a teleport that lands below it into the swim state in the
+       open air: Cool, Cool Mountain's summit teleport. */
+    data_0209f32c[0] = (int)0x80000000;
     /* SM64DS_EVENT_SEED=<word>:<hex>[,<word>:<hex>...] -- the level-event bits
        a loaded save file would have left in the save block, written ONCE on the
        first stage boot of the process. <word> indexes data_0209caa0 AS THE
