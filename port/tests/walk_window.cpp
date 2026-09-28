@@ -7626,7 +7626,17 @@ static void ip_present_tick(void)
     }
     const double alpha = (double)(now.QuadPart - g_ip_tick_t0) /
                          (double)g_ip_tick_len;
-    if (alpha >= 1.0) ++g_ip_w_after_tick;
+    /* A TICK WHOSE WORK OUTLASTED THE TICK ITSELF (run hunt3 lane POLISH1,
+       REVSMFIT1's note on this branch): a blend at alpha 1 or more is
+       clamped by gx_interp_begin to tick N's own picture, so drawing one
+       was a whole raster that showed nothing the tick's own finished
+       picture does not, on a tick that is already late. Show that picture
+       as it is. */
+    if (alpha >= 1.0) {
+        int shown = 0;
+        ip_present_plain_or_skip(&shown, 0);
+        return;
+    }
     ip_present_alpha(alpha);
     g_ip_tick_shown = 1;
 }
