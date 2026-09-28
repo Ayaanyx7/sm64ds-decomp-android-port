@@ -3859,12 +3859,12 @@ static int  __fastcall ti_clean(void *, void *)
  * So verdict 6 is swapped for 2, the ROM's own "back to the title" verdict
  * (Behavior: StartSceneFade(1, 0, 0x7fff)), before Behavior reads it. The
  * swap is exact everywhere else: every other reader of +0x10 in ov007
- * (func_ov007_020af4dc, 020b0834, 020b155c, 020b1604) tests it only for 0,
- * 8, 9, 10 or 11, so 2 and 6 take the same branch in each, and the one read
- * that tells them apart is the verdict in src/func_ov007_020b7090.c. The
- * fade-out plays as the ROM's, and the scene restarts on the title instead
- * of starting VS. Nothing of VS is entered: no heap, no archive, no overlay
- * 64 / 66.
+ * (func_ov007_020af4dc, 020b0834, 020b155c, 020b1604, 020b6f4c) tests it
+ * only for 0, 8, 9, 10 or 11, so 2 and 6 take the same branch in each, and
+ * the one read that tells them apart is the verdict in
+ * src/func_ov007_020b7090.c. The fade-out plays as the ROM's, and the scene
+ * restarts on the title instead of starting VS. Nothing of VS is entered: no
+ * heap, no archive, no overlay 64 / 66.
  *
  * ti_beh MUST NOT TOUCH A CALLEE-SAVED REGISTER. Behavior calls
  * func_0203dabc and func_0203dae4 with no argument where the ARM passes
@@ -3875,7 +3875,9 @@ static int  __fastcall ti_clean(void *, void *)
  * (loads, a compare, a store: no call), and the one rare call parks `s` in a
  * volatile static rather than in a register. The disassembly of ti_beh is
  * checked for push esi / edi / ebx / ebp after every build (run hunt3, lane
- * VSOFF1). */
+ * VSOFF1). Since lane ARITY31 (include/decl_common.h and the _MSC_VER arm in
+ * Behavior) the host Behavior pushes func_0203da9c()'s result for both
+ * calls, so the saved-esi read is gone; the rule stays as a guard. */
 extern "C" char *data_ov007_0210342c;
 static void *volatile g_ti_vs_self;
 static __declspec(noinline) void ti_vs_refused_say(void)

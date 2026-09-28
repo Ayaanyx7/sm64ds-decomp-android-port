@@ -47,7 +47,11 @@
 #       form=call, not a jump, so no RIDE exclusion applies and the row is
 #       genuinely short. It has been a known, documented seam since that
 #       guard existed; it stays here rather than being re-discovered.
-#   func_0203dabc|include/decl_common.h   -- FIXED AND REMOVED, run mg15 MP1.
+#   func_0203dabc|include/decl_common.h   -- FIXED BY run mg15 MP1, LOST, BACK.
+#       MP1's fix below was dropped by the 09-13 re-parent merge (4462caf688);
+#       lane ARITY31 (run hunt3) restored it as an _MSC_VER arm, so the row
+#       is baselined again in the _MSC_VER section at the end of this file.
+#       The history as MP1 left it:
 #       It was a header prototype: decl_common.h spelled it (void), both
 #       definitions take the comms slot index, and src/_ZN9dScDSMT_c8BehaviorEv.cpp
 #       called it with nothing through the include. mg15 lane MP1 gave the
