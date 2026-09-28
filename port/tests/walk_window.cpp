@@ -7555,11 +7555,21 @@ static double ip_left_ms(long long deadline)
    end makes the game itself late. */
 static int ip_fits(long long deadline)
 {
-    /* the fallback's measuring retry: its first blend is drawn whatever the
-       test says, so the cost is always measured again (see ip_fit_commit) */
-    if (g_ip_tick_measure && !g_ip_tick_blends) return 1;
     const double c = g_ip_tick_probe ? g_ip_cost_min : g_ip_cost_ms;
     return ip_left_ms(deadline) >= c * 1.2 + 0.5;
+}
+/* The fallback's measuring retry: its first blend is drawn whatever the cost
+   window says, so the cost is always measured again (see ip_fit_commit).
+   ASKED ONLY WHERE A BLEND IS DRAWN, ip_present_slot (run hunt3 lane
+   POLISH1). ip_flush_deferred's question is a different one -- is holding
+   the tick's own picture for the next turn worth it -- and the forced answer
+   there held it on a turn with no slack after it, so the next tick committed
+   first and tick N's own picture was never shown (the one before it stayed
+   up a tick longer). */
+static int ip_measure_now(long long deadline)
+{
+    (void)deadline;
+    return g_ip_tick_measure && !g_ip_tick_blends;
 }
 
 /* The pacer's extra picture, due at slot time t (QPC), to be finished before
@@ -7573,7 +7583,7 @@ static int ip_present_slot(long long t, long long deadline)
     (void)t;
     if (!ip_owns_picture()) { present(); return 1; }
     if (g_ip_tick_final) return 0;   /* tick N is up; a blend would step back */
-    if (!ip_fits(deadline)) {
+    if (!ip_measure_now(deadline) && !ip_fits(deadline)) {
         int shown = 0;
         g_ip_tick_refused = 1;
         ip_present_plain_or_skip(&shown, deadline);
