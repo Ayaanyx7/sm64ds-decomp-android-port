@@ -386,6 +386,67 @@ bool flush()
     return true;
 }
 
+// THE FILE IS THE CHIP, NOT THIS PROCESS'S COPY OF IT (run hunt2, lane
+// SAVELOSS1). g_image is loaded once, at the first card access -- for a
+// title boot that is the file select's read of all three files -- and
+// flush() writes all 8192 bytes of it. Two game processes on one save file
+// (a second window, or a copy left running) therefore undid each other:
+// whichever wrote LAST put back every slot as it stood when THAT process
+// started. Measured on the 0.5.1 exe: A opens file A, B opens file B and
+// saves a Lethal Lava Land star, then A saves file A -- and file B's star is
+// gone, although A never touched file B. A 64 Kbit EEPROM programs exactly
+// the bytes it is sent (command 8 carries an address and a length, section 3
+// above) and every other cell keeps what is in it.
+// So every command re-reads the file first: a program changes only its own
+// span of what is on disk now, and a read sees what is on disk now, the way
+// the chip would answer. A file that is not a whole image (absent, or not
+// exactly kSize bytes: open_once's foreign-file rule) is left alone and the
+// image in memory stands, as before. One named mutex per save path keeps a
+// read-modify-write from interleaving with another process's.
+void refresh_from_disk()
+{
+    std::FILE *f = std::fopen(g_path, "rb");
+    if (!f) return;
+    unsigned char buf[kSize];
+    size_t got = std::fread(buf, 1, sizeof buf, f);
+    int extra = (std::fgetc(f) != EOF);
+    std::fclose(f);
+    if (got != (size_t)kSize || extra) return;
+    if (std::memcmp(g_image, buf, sizeof g_image) != 0) {
+        std::memcpy(g_image, buf, sizeof g_image);
+        if (trace_on())
+            std::fprintf(stderr, "[backup] the file changed on disk since this "
+                                 "process last touched it; reading it again\n");
+    }
+    g_fresh = false;
+}
+
+#ifdef _WIN32
+struct MediumLock {
+    HANDLE h;
+    MediumLock() : h(NULL) {
+        /* the name is the save path, folded to a hash: one lock per file,
+           whatever spelling or case each process resolved it to */
+        unsigned hsh = 2166136261u;
+        for (const char *p = g_path; *p; ++p) {
+            char c = *p;
+            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            if (c == '\\') c = '/';
+            hsh = (hsh ^ (unsigned char)c) * 16777619u;
+        }
+        char name[64];
+        std::snprintf(name, sizeof name, "Local\\sm64ds-save-%08x", hsh);
+        h = CreateMutexA(NULL, FALSE, name);
+        if (h) WaitForSingleObject(h, 5000);
+    }
+    ~MediumLock() {
+        if (h) { ReleaseMutex(h); CloseHandle(h); }
+    }
+};
+#else
+struct MediumLock {};
+#endif
+
 // A span the chip actually has. No clamping: a chip without those cells says
 // no, and the ROM's own retry-then-fail path is what handles the answer.
 bool span_ok(unsigned addr, unsigned len)
@@ -413,6 +474,8 @@ bool read(unsigned addr, void *dst, unsigned len)
 {
     open_once();
     if (!dst || !span_ok(addr, len)) return false;
+    MediumLock lock;
+    refresh_from_disk();
     std::memcpy(dst, g_image + addr, len);
     ++g_stats.reads;
     if (trace_on())
@@ -424,6 +487,8 @@ bool write(unsigned addr, const void *src, unsigned len)
 {
     open_once();
     if (!src || !span_ok(addr, len)) return false;
+    MediumLock lock;
+    refresh_from_disk();
     std::memcpy(g_image + addr, src, len);
     ++g_stats.writes;
     if (trace_on())

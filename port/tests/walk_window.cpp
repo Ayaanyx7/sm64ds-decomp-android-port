@@ -1204,18 +1204,85 @@ static int ss_save_state(const char *how, int to_disk)
    its way through, so the second F9 is a plain slot load.
 
    Returns 1 if the world was restored. The caller owns the census and the
-   reseat, because only it knows which pointers it holds. */
+   reseat, because only it knows which pointers it holds.
+
+   THE SAVE FILE IS NOT ROLLED BACK (run hunt2, lane SAVELOSS1). The game's
+   copy of the open save file -- the 0x32c-byte save object at 0x0209caa0:
+   the 0x44-byte file record (stars, coin records, keys, flags), the
+   minigame records at +0x44 and the open slot at +0x328 -- sits inside the
+   captured .dsstate span, so a restore used to put back the copy from the
+   moment of the snapshot. Nothing was lost on disk yet, but the next time the
+   game saved (the star menu's Save, the pause menu's Save), the ROM's own
+   SaveData::SaveCurrentFile wrote that OLD copy over the file: every star and
+   coin record saved after the snapshot was gone. Measured on the 0.5.1 exe:
+   F8 in the castle, a later session saves a Lethal Lava Land star, a later
+   session presses F9 (the disk state) and saves a Shifting Sand Land star --
+   the file ends with SSL's star and without LLL's. A player's report of 79
+   stars becoming 65, Lethal Lava Land and Shifting Sand Land emptied down to
+   their coin records, is that shape.
+   On the cartridge the game's copy of the file never goes backwards during a
+   session: stars, coin records and flags are only ever added to it, and what
+   SaveCurrentFile writes is always at least what was written before. So the
+   save object is carried across the restore: the world goes back to the
+   snapshot, the file stays as the player left it. The five pieces are copied
+   by their own names and sizes (hal/level_boot.cpp hosts them as one grouped
+   run; nothing here depends on that grouping). Only this, the player's path
+   -- F9 and the menu's load row -- does it; the scripted SM64DS_SS_LOAD
+   reproducer and the savestate soaks still restore the whole span. */
+extern "C" unsigned char data_0209cab4[];   /* the save object's five pieces,  */
+extern "C" unsigned char data_0209cad2[];   /* hal/level_boot.cpp's SAVEBLK    */
+extern "C" unsigned char data_0209cae4[];   /* run: caa0 0x14, cab4 0x1e,      */
+extern "C" unsigned char data_0209caf4[];   /* cad2 0x12, cae4 0x10, caf4 728  */
+struct SsFileKeep {
+    unsigned char caa0[0x14], cab4[0x1e], cad2[0x12], cae4[0x10], caf4[728];
+};
+static void ss_file_keep(SsFileKeep *k)
+{
+    memcpy(k->caa0, data_0209caa0, sizeof k->caa0);
+    memcpy(k->cab4, data_0209cab4, sizeof k->cab4);
+    memcpy(k->cad2, data_0209cad2, sizeof k->cad2);
+    memcpy(k->cae4, data_0209cae4, sizeof k->cae4);
+    memcpy(k->caf4, data_0209caf4, sizeof k->caf4);
+}
+static void ss_file_put_back(const SsFileKeep *k)
+{
+    const int moved =
+        memcmp(data_0209caa0, k->caa0, sizeof k->caa0) ||
+        memcmp(data_0209cab4, k->cab4, sizeof k->cab4) ||
+        memcmp(data_0209cad2, k->cad2, sizeof k->cad2) ||
+        memcmp(data_0209cae4, k->cae4, sizeof k->cae4) ||
+        memcmp(data_0209caf4, k->caf4, sizeof k->caf4);
+    memcpy(data_0209caa0, k->caa0, sizeof k->caa0);
+    memcpy(data_0209cab4, k->cab4, sizeof k->cab4);
+    memcpy(data_0209cad2, k->cad2, sizeof k->cad2);
+    memcpy(data_0209cae4, k->cae4, sizeof k->cae4);
+    memcpy(data_0209caf4, k->caf4, sizeof k->caf4);
+    fprintf(stderr, "[savestate] the open save file was kept as it was before "
+                    "the load (%s)\n",
+            moved ? "the snapshot held an older copy of it"
+                  : "the snapshot's copy was the same");
+}
 static int ss_load_state(void)
 {
+    static SsFileKeep keep;
+    ss_file_keep(&keep);
     if (lk6_savestate_has()) {
-        if (lk6_savestate_load()) { ss_note("state loaded"); return 1; }
+        if (lk6_savestate_load()) {
+            ss_file_put_back(&keep);
+            ss_note("state loaded");
+            return 1;
+        }
         ss_note("state NOT loaded (see log)");
         return 0;
     }
     if (lk7_persist_present()) {
         fprintf(stderr, "[savestate] the slot was empty, so the disk state was "
                         "read instead\n");
-        if (lk7_persist_read()) { ss_note("state loaded from disk"); return 1; }
+        if (lk7_persist_read()) {
+            ss_file_put_back(&keep);
+            ss_note("state loaded from disk");
+            return 1;
+        }
         /* the header refusals -- another build's on-disk layout, a damaged
            file, a world that is not runnable -- used to be reported at boot,
            because that is where the read was. They belong wherever the read
