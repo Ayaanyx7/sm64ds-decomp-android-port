@@ -64,8 +64,11 @@ void _ZN8dActor_c15GivePlayerCoinsER6Playerhj(void *actor, void *player,
                                            unsigned int kind);
 int  func_ov002_020d82f0(void *player);   /* Player::Hurt's own entry gate */
 void sdat_host_tick(void);
+int  IsLevelInsideCastle(int level);           /* seat_course_sound's two   */
+int  IsLevelTinyHugeIslandOutside(int level);  /* same-area music guards    */
 
 // ---- the globals it reads and seats ----------------------------------------
+extern int          data_0209fc48;    /* the running cutscene script, 0 = none */
 extern signed char  data_0209f2f8;    /* current sublevel */
 extern signed char  data_0209f2f4[];  /* lives */
 extern short        data_02092144[];  /* per-player health: HP<<8 | fraction */
@@ -160,6 +163,10 @@ namespace {
 
 int g_seated;
 int g_course_music = -1;
+/* seat_course_sound's prevLevel: the sublevel the previous stage boot seated
+   (data_0209f2f8 as it stood before this boot's latch). -1 before the first
+   boot; the cartridge's bss zero is not a castle level either. */
+int g_music_prev_level = -1;
 
 /* THE QUEUED SWAP TRAP. data_02092114 is the in-level character swap request
    and -1 means "nothing queued"; SetPlayerGlobals is the only thing that ever
@@ -332,23 +339,60 @@ void seat_course_sound(int level)
      *                             which the DS never plays in a match.
      *
      * The arena's real music is Stage::Behavior's, at the end of the 3-2-1 --
-     * see port_vs_countdown_tick below. Only the ROM's VS guard is added here:
-     * the other four preconditions (the cutscene flag, the two same-area
-     * transitions and the level-2 event bit) are separate port gaps and
-     * changing them would move adventure levels, which this does not. */
+     * see port_vs_countdown_tick below.
+     *
+     * THE OTHER FOUR PRECONDITIONS are what keeps the castle theme playing
+     * from room to room (src/_ZN5Stage13InitResourcesEv.cpp:386-391):
+     *
+     *     if (data_0209fc48 == 0)                               no cutscene
+     *     if (!IsLevelInsideCastle(level) || !IsLevelInsideCastle(prevLevel))
+     *     if (!IsLevelTinyHugeIslandOutside(level) ||
+     *         !IsLevelTinyHugeIslandOutside(prevLevel))
+     *     if (level != 2 || (data_0209caa0[2] & 0x200))         castle 1F seen
+     *         Sound::LoadAndSetMusic_Layer1(data_0207576a[level * 3]);
+     *
+     * So walking between two castle rooms (sublevels 2, 4, 5 and 0x32, all
+     * row 57) or between the two Tiny-Huge Island outsides makes NO music
+     * call and the song already playing carries on. Without them the port
+     * restarted the castle theme at every door. Level 2 before event bit
+     * 0x200 is the first castle entry: Player::St_Talk_Cleanup starts 0x39
+     * itself once the welcome message closes. prevLevel is data_0209f2f8
+     * before InitResources re-latches it (:226); the port's latch runs in
+     * hal/level_change.cpp before this boot, so the value is kept here as the
+     * sublevel the previous boot seated (g_music_prev_level), which is what
+     * that global held on the cartridge between the two boots. */
     const int vs_mode = (data_0209f2d8 == 1);
+    const int prev = g_music_prev_level;
+    g_music_prev_level = level;
+    const char *skip = 0;
+    if (vs_mode)
+        skip = "VS: the ROM does not read this column";
+    else if (data_0209fc48 != 0)
+        skip = "a cutscene script is running: no call";
+    else if (IsLevelInsideCastle(level) && IsLevelInsideCastle(prev))
+        skip = "castle room to castle room: no call, the song carries on";
+    else if (IsLevelTinyHugeIslandOutside(level) &&
+             IsLevelTinyHugeIslandOutside(prev))
+        skip = "Tiny-Huge Island outside to outside: no call, the song "
+               "carries on";
+    else if (level == 2 && !(((const int *)data_0209caa0)[2] & 0x200))
+        skip = "first castle entry: no call, the welcome message starts it";
 
     /* g_course_music is only read by port_course_sound_probe, and it means
        "what this file last asked layer 1 for". In a match nothing is asked for
        here, and func_ov075_02116c8c's StopLoadedMusic_Layer1 has already run,
-       so -1 is the true state until the countdown starts 0x4d. */
-    g_course_music = vs_mode ? -1 : bgm;
+       so -1 is the true state until the countdown starts 0x4d. A skipped
+       adventure call asks for nothing, so the value stays as it was. */
+    if (vs_mode)
+        g_course_music = -1;
+    else if (!skip)
+        g_course_music = bgm;
     fprintf(stderr, "[course] sublevel %d sound row: group=%d bank=0x%02x "
-            "bgm=%d (%s) [%s branch, star=%d]\n", level, group, bank, bgm,
-            vs_mode ? "VS: the ROM does not read this column"
-                    : bgm < 0 ? "no layer-1 track" : "start",
-            vs ? "VS arena" : "adventure table", (int)data_0209f220);
-    if (!vs_mode)
+            "bgm=%d (%s) [%s branch, star=%d, from sublevel %d]\n", level,
+            group, bank, bgm,
+            skip ? skip : bgm < 0 ? "no layer-1 track" : "start",
+            vs ? "VS arena" : "adventure table", (int)data_0209f220, prev);
+    if (!skip)
         _ZN5Sound22LoadAndSetMusic_Layer1Ei(bgm);
     /* Push the START the music call just queued at the ARM9 half through the
        hosted ARM7, so the first frame already has voices allocated rather
