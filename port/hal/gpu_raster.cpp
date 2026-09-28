@@ -181,6 +181,12 @@ ID3D11DepthStencilState *g_dss;
 ID3D11BlendState     *g_blend;
 ID3D11Buffer         *g_vb;
 UINT                  g_vb_verts;
+/* THE TOON TABLE the pixel shader reads for a mode-2 polygon (the
+   ToonTable constant buffer, 32 float4, rgb 0..255): ntr/gx.cpp's frame table,
+   uploaded only on a frame that has one and only when it changed */
+ID3D11Buffer         *g_toon_cb;
+float                 g_toon_seen[32 * 3];
+bool                  g_toon_valid;
 
 /* [filter][addressU][addressV]; address 0 clamp, 1 wrap, 2 mirror */
 ID3D11SamplerState   *g_smp[3][3][3];
@@ -277,6 +283,18 @@ bool make_pipeline()
     hr = g_dev->CreateInputLayout(el, 4, kGpuRasterVS, sizeof kGpuRasterVS,
                                   &g_layout);
     if (FAILED(hr)) { fall_back("the vertex layout was refused", hr); return false; }
+
+    {
+        D3D11_BUFFER_DESC cb;
+        memset(&cb, 0, sizeof cb);
+        cb.ByteWidth = 32 * 4 * sizeof(float);
+        cb.Usage = D3D11_USAGE_DYNAMIC;
+        cb.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+        cb.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        hr = g_dev->CreateBuffer(&cb, 0, &g_toon_cb);
+        if (FAILED(hr) || !g_toon_cb) { fall_back("no toon table buffer", hr); return false; }
+        g_toon_valid = false;
+    }
 
     /* CULL_NONE: the cull test is done on the CPU from the same signed screen
        area and the same POLYGON_ATTR bits gx.cpp uses, so by the time a
@@ -628,6 +646,8 @@ void at_exit()
             for (int c = 0; c < 3; ++c)
                 if (g_smp[a][b][c]) { g_smp[a][b][c]->Release(); g_smp[a][b][c] = 0; }
     if (g_layout) { g_layout->Release(); g_layout = 0; }
+    if (g_toon_cb) { g_toon_cb->Release(); g_toon_cb = 0; }
+    g_toon_valid = false;
     if (g_ps) { g_ps->Release(); g_ps = 0; }
     if (g_vs) { g_vs->Release(); g_vs = 0; }
     /* the device itself belongs to hal/gpu_device.cpp and is released there */
@@ -1321,7 +1341,10 @@ int draw_frame(const ntr::GxGpuFrame *f)
         const float iw = textured ? 1.0f / (float)t.tw : 0.0f;
         const float ih = textured ? 1.0f / (float)t.th : 0.0f;
         const float pa = (float)((t.alpha >= 31 || t.alpha == 0) ? 31u : t.alpha);
-        const float pid = (float)t.polyid;
+        /* the polygon ID, and above it the toon mode for a mode-2 polygon
+           (1 toon, 2 highlight; the shader's attr.y is id + 64 * mode) */
+        const float pid = (float)(t.polyid +
+            ((t.mode == 2 && f->toon_shade) ? 64 * f->toon_shade : 0));
 
         for (int k = 0; k < 3; ++k) {
             const ntr::GxVertex &v = t.v[k];
@@ -1421,6 +1444,25 @@ int draw_frame(const ntr::GxGpuFrame *f)
         g_ctx->IASetVertexBuffers(0, 1, &g_vb, &stride, &offset);
         g_ctx->VSSetShader(g_vs, 0, 0);
         g_ctx->PSSetShader(g_ps, 0, 0);
+        if (f->toon_shade && f->toon_rgb &&
+            (!g_toon_valid ||
+             memcmp(g_toon_seen, f->toon_rgb, sizeof g_toon_seen) != 0)) {
+            D3D11_MAPPED_SUBRESOURCE tm;
+            memset(&tm, 0, sizeof tm);
+            HRESULT thr = g_ctx->Map(g_toon_cb, 0, D3D11_MAP_WRITE_DISCARD, 0, &tm);
+            if (FAILED(thr)) { fall_back("the toon table would not open", thr); return 0; }
+            float *dst = (float *)tm.pData;
+            for (int i = 0; i < 32; ++i) {
+                dst[i * 4 + 0] = f->toon_rgb[i * 3 + 0];
+                dst[i * 4 + 1] = f->toon_rgb[i * 3 + 1];
+                dst[i * 4 + 2] = f->toon_rgb[i * 3 + 2];
+                dst[i * 4 + 3] = 0.0f;
+            }
+            g_ctx->Unmap(g_toon_cb, 0);
+            memcpy(g_toon_seen, f->toon_rgb, sizeof g_toon_seen);
+            g_toon_valid = true;
+        }
+        g_ctx->PSSetConstantBuffers(0, 1, &g_toon_cb);
 
         for (size_t bi = 0; bi < g_batch.size(); ++bi) {
             const Batch &bt = g_batch[bi];

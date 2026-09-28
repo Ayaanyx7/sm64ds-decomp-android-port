@@ -88,8 +88,9 @@ struct GxTriangle {
     // their stencil protocol needs the depth buffer already final.
     uint8_t translucent;
     // POLYGON_ATTR bits 4-5: 0 modulation, 1 decal, 2 toon/highlight,
-    // 3 shadow. Only 3 changes the raster's behaviour (GBATEK shadow
-    // polygons); 1 and 2 draw as modulation, same as before they existed.
+    // 3 shadow. 3 is the shadow-volume protocol (GBATEK shadow polygons);
+    // 2 takes its vertex colour through the TOON TABLE, see gx_toon_table
+    // below; 1 draws as modulation, same as before it existed.
     uint8_t mode;
     // POLYGON_ATTR bits 24-29. For mode-3 polygons the ID selects the role:
     // 0 is the stencil mask, nonzero is the drawn shadow. For everything
@@ -233,6 +234,12 @@ struct GxGpuFrame {
     int tex_filter;        // 0 nearest, 1 bilinear, 2 trilinear
     uint32_t tex_generation;
     uint32_t clear_argb;   // what the framebuffer held when gx_render started
+    // THE TOON TABLE for this frame's mode-2 polygons (see gx_toon_table):
+    // toon_shade 0 = the frame has none, 1 = toon, 2 = highlight
+    // (DISP3DCNT bit 1), and toon_rgb the 32 entries as 0..255 floats, three
+    // per entry, in the units the vertex colour travels in.
+    int toon_shade;
+    const float *toon_rgb;
 };
 typedef int (*GxGpuOpaqueFn)(const GxGpuFrame *);
 void gx_set_gpu_opaque(GxGpuOpaqueFn fn);
@@ -285,6 +292,19 @@ void gx_render(Framebuffer &fb);
 // prints every change of the registers the answer is made from.
 uint32_t gx_clear_argb();
 void gx_clear_fill(Framebuffer &fb);
+
+// THE TOON TABLE (GBATEK, DS 3D Toon/Edge/Fog: TOON_TABLE 0x04000380, 32
+// BGR555 halfwords; DS 3D Polygon Attributes: mode 2). A mode-2 polygon's
+// vertex RED picks one of the 32 entries, per pixel, from the interpolated
+// colour. With DISP3DCNT bit 1 clear (toon) the entry REPLACES the vertex
+// colour and the texture modulates it as usual; with it set (highlight) the
+// vertex colour's green and blue take its red, it modulates as usual and the
+// entry is ADDED after, saturating. The cap and power-flower morph
+// (src/actors/Player.cpp, func_ov002_020be3b0) strips the textures, sets mode 2
+// and rotates a rainbow into the table every tick. gx_render reads the table
+// and DISP3DCNT once per frame, only on a frame that submits a mode-2 polygon.
+// SM64DS_TOON_OFF=1 draws mode 2 as modulation again (the old picture).
+int gx_toon_table(float rgb[32 * 3]);
 
 // THE 3D COVERAGE MASK: one byte per host framebuffer pixel, 1 where the LAST
 // gx_render actually wrote a pixel (opaque, translucent or shadow), 0 where it

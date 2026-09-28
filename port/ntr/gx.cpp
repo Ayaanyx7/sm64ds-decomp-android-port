@@ -3273,10 +3273,11 @@ const float *gx_depth()
     return &g_depth[0][0];
 }
 
-/* ---- THE FRAME'S CLEAR (run hunt2, lane RENDER2) ---------------------------
-   CLEAR_COLOR is a plain latch of the 3D engine that the game stores straight
-   into the mapped I/O window and the hardware's rendering engine reads at draw
-   time; see the block over gx_clear_argb in ntr/gx.h for the GBATEK rules. Everything here reads the window only once io_ready() says it
+/* ---- THE FRAME'S CLEAR AND THE TOON TABLE (run hunt2, lane RENDER2) --------
+   Both are plain latches of the 3D engine that the game stores straight into
+   the mapped I/O window and the hardware's rendering engine reads at draw time;
+   see the two blocks over gx_clear_argb and gx_toon_table in ntr/gx.h for the
+   GBATEK rules. Everything here reads the window only once io_ready() says it
    is mapped, so a harness that draws without io_init keeps the old answers. */
 namespace {
 
@@ -3284,7 +3285,52 @@ namespace {
    the pillarbox margins, the unmapped case and SM64DS_CLEAR_FILL_OLD */
 constexpr uint32_t kOldClear = 0xFF101820u;
 
+/* THIS FRAME'S TOON TABLE, as 0..255 floats in the units the vertex colour
+   travels in (bgr555_to_argb's expansion, so an entry reads exactly as the
+   same BGR555 value would as a vertex colour), and the shading it is for:
+   0 no mode-2 polygon this frame (or SM64DS_TOON_OFF), 1 toon, 2 highlight.
+   Written once at the head of gx_render, on the calling thread, before any
+   band starts; the bands only read it. */
+float g_toon8[32 * 3];
+int g_toon_shade = 0;
+
+/* THE ENTRY A PIXEL TAKES, from its interpolated vertex red (0..255). The
+   hardware interpolates the colour at six bits and indexes with the top five
+   (melonDS RenderPixel: RenderToonTable[vr >> 1]), so a vertex whose red is
+   the 5-bit value r lands on entry r, and between two vertices the step falls
+   half way. Rounding red * 31 / 255 is that: bgr555_to_argb's expansion of r
+   is within 0.06 of r * 255 / 31, so every vertex value reads back as its own
+   r with room to spare, and the boundary between r and r + 1 is their
+   midpoint. */
+inline int toon_index(float vr)
+{
+    const int i = static_cast<int>(vr * (31.0f / 255.0f) + 0.5f);
+    return i < 0 ? 0 : (i > 31 ? 31 : i);
+}
+
+int toon_off_env()
+{
+    static const int v = std::getenv("SM64DS_TOON_OFF") ? 1 : 0;
+    return v;
+}
+
 }  // namespace
+
+int gx_toon_table(float rgb[32 * 3])
+{
+    if (toon_off_env() || !io_ready()) return 0;
+    const volatile uint16_t *tt =
+        reinterpret_cast<const volatile uint16_t *>(0x04000380u);
+    for (int i = 0; i < 32; ++i) {
+        const uint32_t c = bgr555_to_argb(static_cast<uint16_t>(tt[i] & 0x7FFF));
+        rgb[i * 3 + 0] = (float)((c >> 16) & 0xFF);
+        rgb[i * 3 + 1] = (float)((c >> 8) & 0xFF);
+        rgb[i * 3 + 2] = (float)(c & 0xFF);
+    }
+    /* DISP3DCNT bit 1: 0 toon, 1 highlight */
+    const uint16_t d3 = *reinterpret_cast<const volatile uint16_t *>(0x04000060u);
+    return (d3 & 2u) ? 2 : 1;
+}
 
 uint32_t gx_clear_argb()
 {
@@ -4334,6 +4380,9 @@ void raster_ref(const RefArgs &ra, int tid, int nt) {
                                (float)((c.color >> 8) & 0xFF),
                                (float)(c.color & 0xFF)};
         const uint32_t poly_a = (t.alpha >= 31 || t.alpha == 0) ? 31u : t.alpha;
+        /* MODE 2 (toon / highlight): 0 for every other polygon and for every
+           frame with no mode-2 polygon, which is the plain modulation below */
+        const int toon = (t.mode == 2) ? g_toon_shade : 0;
 
         /* first row of this band at or after miny */
         const int y_first = miny + (((tid - miny) % nt) + nt) % nt;
@@ -4502,10 +4551,23 @@ void raster_ref(const RefArgs &ra, int tid, int nt) {
 
                 // Round, do not truncate: barycentrics sum to 0.9999 rather than
                 // exactly 1, and a truncating cast bands a flat surface 255/254.
+                /* MODE 2: the entry this pixel's interpolated red picks. Toon
+                   modulates the ENTRY instead of the vertex colour; highlight
+                   modulates the vertex red on all three channels and adds the
+                   entry after, saturating (GBATEK DS 3D Polygon Attributes;
+                   melonDS RenderPixel, the same order). */
+                const float *te = nullptr;
+                if (toon)
+                    te = &g_toon8[toon_index(l0 * acol[0] + l1 * bcol[0] +
+                                             l2 * ccol[0]) * 3];
                 auto ch = [&](int k, int sh) {
-                    const float v = l0 * acol[k] + l1 * bcol[k] + l2 * ccol[k];
+                    const int kv = toon == 2 ? 0 : k;
+                    const float v = toon == 1
+                        ? te[k]
+                        : l0 * acol[kv] + l1 * bcol[kv] + l2 * ccol[kv];
                     const float m = inv255.v[(texel >> sh) & 0xFF];
-                    const int i = static_cast<int>(v * m + 0.5f);
+                    int i = static_cast<int>(v * m + 0.5f);
+                    if (toon == 2) i += static_cast<int>(te[k]);
                     return static_cast<uint32_t>(i < 0 ? 0 : (i > 255 ? 255 : i));
                 };
                 /* effective alpha = poly attr alpha combined with the
@@ -4780,6 +4842,42 @@ void gx_render(Framebuffer &fb) {
         if (t.translucent) have_translucent = true;
         if (have_shadow && have_translucent) break;
     }
+    /* THE TOON TABLE AND DISP3DCNT's SHADING BIT, read once for the frame and
+       only when a mode-2 polygon is in it (see gx_toon_table in ntr/gx.h). A
+       frame without one leaves g_toon_shade 0 and every band below takes the
+       plain modulation it always took. */
+    g_toon_shade = 0;
+    {
+        size_t n2 = 0;
+        for (const GxTriangle &t : g.tris)
+            if (t.mode == 2) ++n2;
+        if (n2) g_toon_shade = gx_toon_table(g_toon8);
+        static const int tprobe = std::getenv("SM64DS_TOON_PROBE") ? 1 : 0;
+        if (tprobe && n2) {
+            static unsigned long frames = 0, lines = 0;
+            static uint32_t last = 0;
+            ++frames;
+            uint32_t hsh = 2166136261u;
+            for (int i = 0; i < 96; ++i)
+                hsh = (hsh ^ (uint32_t)g_toon8[i]) * 16777619u;
+            if ((hsh != last || (frames % 60) == 1) && lines < 400) {
+                ++lines;
+                last = hsh;
+                std::fprintf(stderr,
+                             "[toon] frame-with-mode2 %lu: %u mode-2 triangles, "
+                             "shade %d (%s), table %08x, entries 0/8/16/24 "
+                             "%02x%02x%02x %02x%02x%02x %02x%02x%02x %02x%02x%02x\n",
+                             frames, (unsigned)n2, g_toon_shade,
+                             g_toon_shade == 1 ? "toon" : g_toon_shade == 2
+                                 ? "highlight" : "off",
+                             (unsigned)hsh,
+                             (unsigned)g_toon8[0], (unsigned)g_toon8[1], (unsigned)g_toon8[2],
+                             (unsigned)g_toon8[24], (unsigned)g_toon8[25], (unsigned)g_toon8[26],
+                             (unsigned)g_toon8[48], (unsigned)g_toon8[49], (unsigned)g_toon8[50],
+                             (unsigned)g_toon8[72], (unsigned)g_toon8[73], (unsigned)g_toon8[74]);
+            }
+        }
+    }
     /* The same active-rectangle clear as the depth and coverage buffers
        above, and these two are already conditional on the frame submitting a
        shadow or a translucent polygon at all. */
@@ -5003,6 +5101,9 @@ void gx_render(Framebuffer &fb) {
                                (float)((c.color >> 8) & 0xFF),
                                (float)(c.color & 0xFF)};
         const uint32_t poly_a = (t.alpha >= 31 || t.alpha == 0) ? 31u : t.alpha;
+        /* MODE 2 (toon / highlight): 0 for every other polygon and for every
+           frame with no mode-2 polygon, which is the plain modulation below */
+        const int toon = (t.mode == 2) ? g_toon_shade : 0;
 
         /* first row of this band at or after miny */
         /* this tile's rows of the triangle */
@@ -5182,10 +5283,23 @@ void gx_render(Framebuffer &fb) {
 
                 // Round, do not truncate: barycentrics sum to 0.9999 rather than
                 // exactly 1, and a truncating cast bands a flat surface 255/254.
+                /* MODE 2: the entry this pixel's interpolated red picks. Toon
+                   modulates the ENTRY instead of the vertex colour; highlight
+                   modulates the vertex red on all three channels and adds the
+                   entry after, saturating (GBATEK DS 3D Polygon Attributes;
+                   melonDS RenderPixel, the same order). */
+                const float *te = nullptr;
+                if (toon)
+                    te = &g_toon8[toon_index(l0 * acol[0] + l1 * bcol[0] +
+                                             l2 * ccol[0]) * 3];
                 auto ch = [&](int k, int sh) {
-                    const float v = l0 * acol[k] + l1 * bcol[k] + l2 * ccol[k];
+                    const int kv = toon == 2 ? 0 : k;
+                    const float v = toon == 1
+                        ? te[k]
+                        : l0 * acol[kv] + l1 * bcol[kv] + l2 * ccol[kv];
                     const float m = inv255.v[(texel >> sh) & 0xFF];
-                    const int i = static_cast<int>(v * m + 0.5f);
+                    int i = static_cast<int>(v * m + 0.5f);
+                    if (toon == 2) i += static_cast<int>(te[k]);
                     return static_cast<uint32_t>(i < 0 ? 0 : (i > 255 ? 255 : i));
                 };
                 /* effective alpha = poly attr alpha combined with the
@@ -5424,6 +5538,9 @@ void gx_render(Framebuffer &fb) {
            picture rather than assumed: the caller clears the framebuffer
            before calling, and what it clears to is its business. */
         f.clear_argb = (cw > 0 && ch > 0) ? fb.px[f.py0][f.px0] : 0xFF000000u;
+        /* the frame's toon table, for its mode-2 polygons (0 = none) */
+        f.toon_shade = g_toon_shade;
+        f.toon_rgb = g_toon8;
 
         if (!ab_mode()) {
             gpu_drew = g_gpu_opaque(&f) ? 1 : 0;
