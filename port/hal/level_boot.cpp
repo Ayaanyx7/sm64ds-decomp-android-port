@@ -80,6 +80,7 @@
 #include "hal/comms_seam.h"   /* run mg16 lane MP3: port::vs_player_count() */
 #include "fBase_c.h"   /* SYNC4: moved up out of an extern "C" block */
 #include "dActor_c.h"  /* SYNC4: same, and it reaches math/Fix12.h now */
+#include "SharedFilePtr.h"   /* the twelve shared preloads' Release */
 
 extern "C" {
 void port_ov009_patch(void);
@@ -2636,6 +2637,7 @@ extern "C" void port_scene_canary(const char *where);
 extern "C" void port_particle_boot(void);   /* hal/particle_bridges.cpp */
 extern "C" void port_boot_course_sound(int level);   /* hal/star_flow.cpp:
                                             the InitResources sound-row block */
+extern "C" void port_stage_preload_shared_models(void);   /* below */
 /* The persistent actor-run mask Stage::InitResources:266 zeroes. Declared here
    as well as in the a2 seat's own block below because the per-boot body above
    that block hosts the same ROM line; both spell the host storage
@@ -3869,6 +3871,9 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
        A1 geometry regression has no course. */
     if (spawn)
         port_boot_course_sound((int)data_0209f2f8);
+    /* THE TWELVE SHARED PRELOADS, Stage::InitResources :353-358, on every
+       Stage boot (the block over port_stage_preload_shared_models says why). */
+    port_stage_preload_shared_models();
 
     /* THE SEVEN FADER-WIPE MESHES, Stage::InitResources :369-376: the loop
        between the twelve shared preloads and Stage::LoadModel below, run at
@@ -5160,97 +5165,68 @@ extern "C" void port_message_archive_seat(void)
 // Model::AddToCommonModelDataArr, which takes a REFERENCE and hands it to
 // LoadTexAndPal -- a fault on hardware just as much as on the host.
 //
-// It is spelled by NAME rather than by mounting data_020756f0 itself. That
-// table is arm9 data holding twelve ov002 ADDRESSES, and on the host ov002's
-// symbols are separate arrays; mounting the words would hand Model::LoadFile
-// twelve DS addresses. The names are the same twelve targets, read out of the
-// arm9 relocation table, in the ROM's own order.
+// IT RUNS ON EVERY STAGE BOOT, and its undo runs on every Stage teardown,
+// which is the ROM's own pairing (run hunt2, lane GAMEOVER1). The loop above is
+// Stage::InitResources :353-358, and the first statement of
+// Stage::CleanupResources (src/_ZN5Stage16CleanupResourcesEv.cpp:68-69) is its
+// mirror:
+//
+//     for (i = 0; i < 12; i++) ((SharedFilePtr *)data_020756f0[i])->Release();
+//
+// so on the cartridge every level entry loads the twelve and every level exit
+// frees them. The port used to run the load ONCE PER PROCESS, from
+// port_a2_seat_body, and never the release, and that held only while nothing
+// ran the ROM's teardown. The Game Over crossing does: it dispatches the Stage's
+// slot 3, the ROM's own Stage::CleanupResources runs, the twelve go back to 0
+// references and their files are freed, and the new Stage the CONTINUE builds
+// never loaded them again. The first object after that to read a filePtr
+// straight out walked a null BMD_File into Model::AddToCommonModelDataArr:
+// PowerStar::InitResources reading data_ov002_0211094c in Bob-omb Battlefield,
+// measured under cdb as one Model::LoadFile at process start, one Release from
+// the slot-3 teardown, and the record at 0 references with a null file at the
+// fault.
+//
+// So the load is called from port_stage_boot_body at the ROM's position (after
+// the course sound, before the fader wipes and Stage::LoadModel), and the
+// release from hal/level_change.cpp's change teardown, which is where the port
+// hosts the rest of Stage::CleanupResources for the Stage it keeps across a
+// change (just above CleanCommonModelDataArr, the ROM body's order). A Stage
+// the ROM destroyed itself ran the release in its own body, so the change
+// teardown skips it then. There is no flag: the SharedFilePtr records (hosted
+// ov002 globals, .dsstate) are the whole state, and a save-state restore rolls
+// them back together with the arena that holds their files.
+//
+// The table is data_020756f0 itself, hosted in hal/ptr_tables.cpp (table 4)
+// with the twelve ov002 names in the ROM's order, so both loops index the table
+// the ROM's own two loops do.
 extern "C" {
 void *_ZN5Model8LoadFileER13SharedFilePtr(void *sfp);
-extern unsigned char data_ov002_0210da48[], data_ov002_0210d9b8[],
-    data_ov002_0210da50[], data_ov002_0210d9f8[], data_ov002_0210da40[],
-    data_ov002_0210d9a0[], data_ov002_0210d9c0[], data_ov002_0210e7d8[],
-    data_ov002_0210e3a0[], data_ov002_0211094c[], data_ov002_0211095c[],
-    data_ov002_0210d9a8[];
+extern void *data_020756f0[12];   /* hal/ptr_tables.cpp, table 4 */
 }
-
-/* CAPTURED, and it is g_level_mounted's argument again with a different
-   payload. What this flag says is "the twelve preloads have run", and what that
-   pass writes is the twelve SharedFilePtr records themselves: Model::LoadFile
-   fills fileID, numRefs and filePtr in each. They are hosted ov002 globals, so
-   they are .dsstate content and a restore rolls them back. A host static does
-   not roll back with them, and the two then disagree in the fatal direction --
-   the flag says done, the records read unloaded, the pass never runs again, and
-   the first type-11 mushroom walks the null BMD_File described at the top of
-   this block into Model::AddToCommonModelDataArr.
-
-   AND THE DISAGREEMENT IS REACHABLE, which is worth stating because "loaded"
-   looks like a one-way latch and is not: SharedFilePtr::Release decrements
-   numRefs and frees at zero. Counted over the tree rather than eyeballed, and
-   the count is uneven: FOUR of the twelve are released anywhere at all --
-   0210da40, 0210d9a0, 0210d9c0 and 0210d9a8 -- by fourteen classes
-   (BowserPuzzlePiece, Coin, Dorrie, InvisibleSecret, Klepto, MantaRay, Player,
-   QuestionBlock, RollingLogTtm, SnowmanBreath, StarMarker, Stump, Toad,
-   TreasureChest) plus one free function, _ZN9daSCoin_c16CleanupResourcesEv; every site but
-   that last is a CleanupResources body. The other EIGHT are released nowhere,
-   so once the seat has run they stay loaded for the life of the process. It is
-   the four that make a disagreement reachable: one of those can be back to
-   unloaded inside a session, so a state can hold it either way round.
-
-   THE SWEEP MISSED THIS ONE and the reason generalises: RELOAD2's sweep
-   enumerated callers of port_ovNNN_syms_patch and __sinit_ovNNN_*, and this
-   pass calls neither. Its callee is Model::LoadFile. A search keyed to the two
-   patch-pass names cannot see a one-shot guard whose payload is a LOADER, so
-   the family is wider than that pattern and the next audit should be keyed on
-   which side of the section the payload lands on, not on the callee's name.
-
-   THE RE-RUN IS SAFE, read out of the callees rather than assumed.
-   SharedFilePtr::LoadFile calls Load() only when numRefs is 0, and
-   Model::LoadFile does UpdateFileOffsets + AddToCommonModelDataArr +
-   ReallocateModelFile only when numRefs comes back 1, so the expensive half is
-   the first load and nothing else. The storage does not leak either: Load()
-   carves through Memory::Allocate, which comes out of the root heap arena, and
-   hal/lk6_savestate.cpp captures that arena AND its carve cursor
-   (Slot.arena/Slot.arena_cursor) and puts both back -- so a rollback un-carves
-   the block in the same motion that rolls the record back. Bracketed, flag and
-   records move together, so the one case that would drift a refcount, a re-run
-   over a record that is still loaded, cannot arise from a restore at all.
-
-   NOT IN THE SM64DS_SS_NO_ROLLGUARD STASH, and that is deliberate: it matches
-   the eighteen rather than the two. port_rollguard_stash below carries
-   g_level_mounted and ov009's sinit flag, the pair RELOAD2's A/B actually
-   measured; the bracketed level-path guards are not in it. Adding this one
-   would WIDEN the knob rather than keep it the before/after switch the soak
-   reads, so the knob's scope stays what it was.
-
-   tbl stays host-side on purpose: it is const, nothing writes it, and it holds
-   host addresses that are fixed for the process lifetime. */
-DSSTATE_BEGIN
-static int g_preload_shared_models_done;
-DSSTATE_END
 
 extern "C" void port_stage_preload_shared_models(void)
 {
-    static void *const tbl[12] = {
-        data_ov002_0210da48, data_ov002_0210d9b8, data_ov002_0210da50,
-        data_ov002_0210d9f8, data_ov002_0210da40, data_ov002_0210d9a0,
-        data_ov002_0210d9c0, data_ov002_0210e7d8, data_ov002_0210e3a0,
-        data_ov002_0211094c, data_ov002_0211095c, data_ov002_0210d9a8,
-    };
     int loaded = 0;
-    if (g_preload_shared_models_done)
-        return;
-    g_preload_shared_models_done = 1;
     for (int i = 0; i < 12; ++i) {
-        _ZN5Model8LoadFileER13SharedFilePtr(tbl[i]);
+        _ZN5Model8LoadFileER13SharedFilePtr(data_020756f0[i]);
         /* SharedFilePtr is {u16 fileID; u8 numRefs; u8 pad; char *filePtr} */
-        if (*(void *const *)((const char *)tbl[i] + 4))
+        if (*(void *const *)((const char *)data_020756f0[i] + 4))
             ++loaded;
         else
             std::fprintf(stderr, "  [preload] shared model %d (handle %u) did "
-                         "not load\n", i, *(const unsigned short *)tbl[i]);
+                         "not load\n", i,
+                         *(const unsigned short *)data_020756f0[i]);
     }
     std::printf("[preload] %d/12 shared models seated\n", loaded);
+}
+
+/* Stage::CleanupResources:68-69, for the port's change teardown. The Release is
+   the ROM's own SharedFilePtr::Release (src/_ZN13SharedFilePtr7ReleaseEv.cpp),
+   the body the ROM's CleanupResources calls. */
+extern "C" void port_stage_release_shared_models(void)
+{
+    for (int i = 0; i < 12; ++i)
+        ((SharedFilePtr *)data_020756f0[i])->Release();
 }
 
 extern "C" void port_level_mounts_install(void);
@@ -5383,7 +5359,8 @@ static void port_a2_seat_body(int make_stage)
         stage_done = 1;
 
     port_message_archive_seat();
-    port_stage_preload_shared_models();
+    /* The twelve shared preloads are not bring-up: they are per Stage boot
+       (port_stage_boot_body) and freed per teardown, as on the cartridge. */
 
     /* Which levels this build can mount. Registered before anything can ask,
        which is here rather than in main: the handoff seam is boot state like
