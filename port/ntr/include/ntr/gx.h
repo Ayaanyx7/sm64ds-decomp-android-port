@@ -283,7 +283,10 @@ void gx_render(Framebuffer &fb);
 //   BG0 shown as the 3D layer (DISPCNT bits 3 and 8) and the clear alpha
 //   nonzero: the clear colour (the star select's white, SetClearColor(0x7FFF,
 //   0x1F, ...) in src/_ZN12dScStarSel_c13InitResourcesEv.cpp);
-//   otherwise: the backdrop.
+//   BG0 shown as the 3D layer with the clear alpha 0: the old constant
+//   0xFF101820, because the raster blends translucent polygons onto this fill
+//   where the DS lets the 2D engine blend them onto the layer below BG0;
+//   BG0 not shown as the 3D layer: the backdrop.
 // The 2D compositor then paints its layers over this exactly as before. The
 // fill covers the PRESENT rectangle; a pillarbox margin outside it keeps the
 // old constant 0xFF101820, which is also the whole answer before the I/O
@@ -299,9 +302,12 @@ void gx_clear_fill(Framebuffer &fb);
 // colour. With DISP3DCNT bit 1 clear (toon) the entry REPLACES the vertex
 // colour and the texture modulates it as usual; with it set (highlight) the
 // vertex colour's green and blue take its red, it modulates as usual and the
-// entry is ADDED after, saturating. The cap and power-flower morph
+// entry is ADDED after, saturating. The mode-2 users: the cap morph
 // (src/actors/Player.cpp, func_ov002_020be3b0) strips the textures, sets mode 2
-// and rotates a rainbow into the table every tick. gx_render reads the table
+// and rotates a rainbow into the table every tick; func_ov002_020beabc (a level
+// entered with a changed character, morph state 5); and ov007, the title menu's
+// Mario head and the file select's vortex (func_ov007_020b2bd4, the table from
+// func_ov007_020c93b4; the vortex runs in highlight mode). gx_render reads the table
 // and DISP3DCNT once per frame, only on a frame that submits a mode-2 polygon.
 // SM64DS_TOON_OFF=1 draws mode 2 as modulation again (the old picture).
 int gx_toon_table(float rgb[32 * 3]);

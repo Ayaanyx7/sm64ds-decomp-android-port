@@ -3343,7 +3343,15 @@ uint32_t gx_clear_argb()
        bg0_3d_shown uses for the same question */
     const bool shown3d = (dc & 0x8u) != 0 && ((dc >> 8) & 1u) != 0;
     const bool opaque = shown3d && ((cc >> 16) & 0x1Fu) != 0;
-    const uint32_t out = bgr555_to_argb(
+    /* BG0 IS THE 3D LAYER AND ITS CLEAR IS TRANSPARENT: keep the old constant.
+       On the DS a translucent polygon over an alpha-0 rear plane is stored
+       unblended and the 2D engine blends it, by its 3D alpha, onto the layer
+       under BG0 (MG_TRAMPOLINE2's shooting-star trails onto the starfield,
+       G2x::SetBlendAlpha(1, 0x2e, 16, 16)). The raster here blends it onto
+       this fill instead, so filling with the backdrop turned those trails into
+       white rings. Until the compositor blends the 3D alpha onto the layers
+       below, this arm keeps the picture it always had. */
+    const uint32_t out = (shown3d && !opaque) ? kOldClear : bgr555_to_argb(
         static_cast<uint16_t>((opaque ? cc : (uint32_t)bd) & 0x7FFFu));
     static const int probe = std::getenv("SM64DS_CLEAR_PROBE") ? 1 : 0;
     if (probe) {
@@ -3362,7 +3370,7 @@ uint32_t gx_clear_argb()
                              0x04000060u),
                          (unsigned)out,
                          opaque ? "the clear colour, alpha nonzero"
-                                : (shown3d ? "the backdrop, clear alpha 0"
+                                : (shown3d ? "the old constant, clear alpha 0"
                                            : "the backdrop, no 3D layer"));
         }
     }
