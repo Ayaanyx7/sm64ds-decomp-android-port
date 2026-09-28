@@ -7560,12 +7560,7 @@ static int ip_fits(long long deadline)
     return ip_left_ms(deadline) >= c * 1.2 + 0.5;
 }
 /* The fallback's measuring retry: its first blend is drawn whatever the cost
-   window says, so the cost is always measured again (see ip_fit_commit) --
-   but only while at least HALF THE TICK is still left (run hunt3 lane
-   POLISH1). Forced with less than that, on a machine that cannot fit one it
-   started after the tick was over, redrew tick N itself (alpha above 1,
-   clamped) and made that tick late by a whole raster. A measuring tick that
-   never gets the room hands the measurement on to the next retry tick.
+   window says, so the cost is always measured again (see ip_fit_commit).
    ASKED ONLY WHERE A BLEND IS DRAWN, ip_present_slot (run hunt3 lane
    POLISH1). ip_flush_deferred's question is a different one -- is holding
    the tick's own picture for the next turn worth it -- and the forced answer
@@ -7574,11 +7569,8 @@ static int ip_fits(long long deadline)
    up a tick longer). */
 static int ip_measure_now(long long deadline)
 {
-    if (!g_ip_tick_measure || g_ip_tick_blends) return 0;
-    LARGE_INTEGER f;
-    QueryPerformanceFrequency(&f);
-    return ip_left_ms(deadline) * 2.0 >=
-           g_ip_tick_len * 1000.0 / (double)f.QuadPart;
+    (void)deadline;
+    return g_ip_tick_measure && !g_ip_tick_blends;
 }
 
 /* The pacer's extra picture, due at slot time t (QPC), to be finished before
@@ -7692,9 +7684,7 @@ static void ip_flush_deferred(void)
    fallback is off. Every fourth retry (about four seconds) draws one blend
    whatever the test says, so the cost is measured again even when every
    recent sample is a busy one: a machine that has recovered is seen to
-   have recovered. That measuring blend still waits for half the tick to be
-   left, and a retry that never had it passes the measurement to the next
-   retry (run hunt3 lane POLISH1). A blend that ran past the tick's end
+   have recovered. A blend that ran past the tick's end
    made the game itself late, so it counts against the machine too: three
    such ticks among the last 32 that were ready to blend and the fallback
    is on, and a retry blend that ran late does not turn it off. Both edges
@@ -7711,7 +7701,7 @@ static int ip_bits(unsigned v)
 }
 static int ip_fit_commit(void)
 {
-    static int slow, nofit, since, ready_prev, retries, measure_owed;
+    static int slow, nofit, since, ready_prev, retries;
     static unsigned late_bits;
     static int w_ticks, w_ready, w_blend, w_slow, w_refused, w_blends, w_late;
     static int w_unshown, w_meas, w_meas_drawn;
@@ -7739,7 +7729,6 @@ static int ip_fit_commit(void)
             if (slow) {
                 slow = 0;
                 late_bits = 0;
-                measure_owed = 0;
                 fprintf(stderr, "[interp] fit: a blend fits again (%.2f ms "
                         "beside %.2f ms of tick work in %.2f ms): smooth "
                         "motion is back on\n", g_ip_cost_ms, g_ip_work_ms,
@@ -7751,7 +7740,6 @@ static int ip_fit_commit(void)
             slow = 1;
             since = 0;
             retries = 0;
-            measure_owed = 0;
             fprintf(stderr, "[interp] fit: %s (a blend %.2f ms, the tick's "
                     "own work %.2f ms, the tick %.2f ms): pictures repeat, "
                     "and one tick in %d tries again\n",
@@ -7767,13 +7755,7 @@ static int ip_fit_commit(void)
     int this_slow = 0;
     if (slow) this_slow = (++since % IP_FIT_PROBE) != 0;
     g_ip_tick_probe = slow && !this_slow;
-    /* every fourth retry owes a measuring blend, and the debt stands until a
-       retry tick actually draws one: a measuring tick whose slots never had
-       half the tick left (ip_measure_now) passes it to the next retry, about
-       a second on, rather than skipping a whole round of four */
-    if (g_ip_tick_measure && g_ip_tick_blends > 0) measure_owed = 0;
-    if (g_ip_tick_probe && (++retries % IP_FIT_MEASURE) == 0) measure_owed = 1;
-    g_ip_tick_measure = g_ip_tick_probe && measure_owed;
+    g_ip_tick_measure = g_ip_tick_probe && (++retries % IP_FIT_MEASURE) == 0;
     ready_prev = !this_slow;
     ++w_ticks;
     if (this_slow) ++w_slow;
