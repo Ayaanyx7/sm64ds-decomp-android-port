@@ -267,6 +267,25 @@ void gx_set_gpu_aa(GxGpuAaFn fn);
 // composites over whatever the 2D engine already drew.
 void gx_render(Framebuffer &fb);
 
+// THE FRAME'S CLEAR, which is the colour the DS shows at a top-screen pixel
+// that neither a polygon nor a 2D layer covers. GBATEK, DS 3D Rear-Plane: the
+// rendering engine starts every frame from CLEAR_COLOR (0x04000350: bits 0-14
+// the colour, 16-20 the alpha); DS Video: the 3D picture is BG0, and a BG0
+// pixel whose alpha is 0 is transparent, so the layers under it and then the
+// BACKDROP (engine A's palette entry 0, 0x05000000) show there instead.
+//   BG0 shown as the 3D layer (DISPCNT bits 3 and 8) and the clear alpha
+//   nonzero: the clear colour (the star select's white, SetClearColor(0x7FFF,
+//   0x1F, ...) in src/_ZN12dScStarSel_c13InitResourcesEv.cpp);
+//   otherwise: the backdrop.
+// The 2D compositor then paints its layers over this exactly as before. The
+// fill covers the PRESENT rectangle; a pillarbox margin outside it keeps the
+// old constant 0xFF101820, which is also the whole answer before the I/O
+// window is mapped (a harness with no io_init). SM64DS_CLEAR_FILL_OLD=1 puts
+// the old constant back everywhere for A/B on one binary; SM64DS_CLEAR_PROBE=1
+// prints every change of the registers the answer is made from.
+uint32_t gx_clear_argb();
+void gx_clear_fill(Framebuffer &fb);
+
 // THE 3D COVERAGE MASK: one byte per host framebuffer pixel, 1 where the LAST
 // gx_render actually wrote a pixel (opaque, translucent or shadow), 0 where it
 // left the framebuffer alone. SCREEN_W stride, SCREEN_H rows.

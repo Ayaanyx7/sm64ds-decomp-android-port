@@ -3273,6 +3273,87 @@ const float *gx_depth()
     return &g_depth[0][0];
 }
 
+/* ---- THE FRAME'S CLEAR (run hunt2, lane RENDER2) ---------------------------
+   CLEAR_COLOR is a plain latch of the 3D engine that the game stores straight
+   into the mapped I/O window and the hardware's rendering engine reads at draw
+   time; see the block over gx_clear_argb in ntr/gx.h for the GBATEK rules. Everything here reads the window only once io_ready() says it
+   is mapped, so a harness that draws without io_init keeps the old answers. */
+namespace {
+
+/* the constant the port cleared to before the clear colour was read, kept for
+   the pillarbox margins, the unmapped case and SM64DS_CLEAR_FILL_OLD */
+constexpr uint32_t kOldClear = 0xFF101820u;
+
+}  // namespace
+
+uint32_t gx_clear_argb()
+{
+    static const int old = std::getenv("SM64DS_CLEAR_FILL_OLD") ? 1 : 0;
+    if (old || !io_ready()) return kOldClear;
+    const uint32_t cc = *reinterpret_cast<const volatile uint32_t *>(0x04000350u);
+    const uint32_t dc = *reinterpret_cast<const volatile uint32_t *>(0x04000000u);
+    const uint16_t bd = *reinterpret_cast<const volatile uint16_t *>(0x05000000u);
+    /* BG0 is the 3D layer and it is on: the rule message_compositor.cpp's
+       bg0_3d_shown uses for the same question */
+    const bool shown3d = (dc & 0x8u) != 0 && ((dc >> 8) & 1u) != 0;
+    const bool opaque = shown3d && ((cc >> 16) & 0x1Fu) != 0;
+    const uint32_t out = bgr555_to_argb(
+        static_cast<uint16_t>((opaque ? cc : (uint32_t)bd) & 0x7FFFu));
+    static const int probe = std::getenv("SM64DS_CLEAR_PROBE") ? 1 : 0;
+    if (probe) {
+        static uint32_t last_cc = ~0u, last_dc = ~0u;
+        static uint32_t last_bd = ~0u, n = 0;
+        static unsigned long calls = 0;
+        ++calls;
+        if ((cc != last_cc || dc != last_dc || bd != last_bd) && n < 64) {
+            ++n;
+            last_cc = cc; last_dc = dc; last_bd = bd;
+            std::fprintf(stderr,
+                         "[clear] call %lu CLEAR_COLOR %08x DISPCNT %08x "
+                         "backdrop %04x DISP3DCNT %04x -> fill %08x (%s)\n",
+                         calls, (unsigned)cc, (unsigned)dc, (unsigned)bd,
+                         (unsigned)*reinterpret_cast<const volatile uint16_t *>(
+                             0x04000060u),
+                         (unsigned)out,
+                         opaque ? "the clear colour, alpha nonzero"
+                                : (shown3d ? "the backdrop, clear alpha 0"
+                                           : "the backdrop, no 3D layer"));
+        }
+    }
+    return out;
+}
+
+void gx_clear_fill(Framebuffer &fb)
+{
+    const uint32_t c = gx_clear_argb();
+    const int w = active_w, h = active_h;
+    if (w <= 0 || h <= 0) return;
+    const int x0 = present_x(), y0 = present_y();
+    const int x1 = x0 + present_w(), y1 = y0 + present_h();
+    /* row 0 carries the present rectangle's columns if row 0 is inside it;
+       the rest are copies of one of two template rows, built once */
+    for (int x = 0; x < w; ++x)
+        fb.px[0][x] = (x >= x0 && x < x1 && 0 >= y0 && 0 < y1) ? c : kOldClear;
+    if (c == kOldClear || (x0 <= 0 && x1 >= w && y0 <= 0 && y1 >= h)) {
+        for (int y = 1; y < h; ++y)
+            std::memcpy(fb.px[y], fb.px[0], (size_t)w * sizeof(fb.px[0][0]));
+        return;
+    }
+    int in_row = -1, out_row = -1;
+    for (int y = 0; y < h; ++y) {
+        const bool in = y >= y0 && y < y1;
+        int &src = in ? in_row : out_row;
+        if (src < 0) {
+            if (y != 0)
+                for (int x = 0; x < w; ++x)
+                    fb.px[y][x] = (in && x >= x0 && x < x1) ? c : kOldClear;
+            src = y;
+        } else {
+            std::memcpy(fb.px[y], fb.px[src], (size_t)w * sizeof(fb.px[0][0]));
+        }
+    }
+}
+
 void gx_configure_anti_aliasing(int mode) {
     g_aa_mode = mode < 0 ? 0 : (mode > 1 ? 1 : mode);
 }

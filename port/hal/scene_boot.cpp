@@ -7823,10 +7823,10 @@ extern "C" void port_scene_tick(int frame, int tick_game)
             if (ntr::widescreen && !ntr::present_native())
                 hal_camera_widen_frustum_scene();
             if (trace) std::fprintf(stderr, "[scene-trace] f%d clear\n", frame);
-            for (int x = 0; x < ntr::active_w; ++x) fb.px[0][x] = 0xFF101820u;
-            for (int y = 1; y < ntr::active_h; ++y)
-                std::memcpy(fb.px[y], fb.px[0],
-                            ntr::active_w * sizeof(fb.px[0][0]));
+            /* the colour the DS shows where nothing is drawn: the 3D
+               CLEAR_COLOR when it is opaque (the star select's white), else
+               engine A's backdrop; see gx_clear_fill in ntr/gx.h */
+            ntr::gx_clear_fill(fb);
             if (trace) std::fprintf(stderr, "[scene-trace] f%d gx_render\n", frame);
             ntr::gx_render(fb);
             if (trace) std::fprintf(stderr, "[scene-trace] f%d composite\n", frame);
