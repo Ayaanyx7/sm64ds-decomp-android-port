@@ -64,7 +64,7 @@ int func_ov002_020b10a0(char* c){
     extern int _ZN8dActor_c18GetBitInDeathTableEv(void*);
     extern void* func_ov002_020b1328(void*);
     extern void _ZN10StarMarker27SpawnRedCoinStarIfNecessaryEv(void* self);
-    extern int _ZN8dActor_c24KillAndTrackInDeathTableEv(void*);
+    extern void _ZN8dActor_c24KillAndTrackInDeathTableEv(void*);
 
   void* marker;
   if(_ZN8dActor_c18GetBitInDeathTableEv(c)==0) return 0;
@@ -429,7 +429,7 @@ void func_ov002_020b16c4(void *cc, void *pp)
 // @symbol func_ov002_020b1884
 extern "C" {
 void func_ov002_020b1884(char* c, char* r4){
-    extern int _ZN8dActor_c24KillAndTrackInDeathTableEv(char*);
+    extern void _ZN8dActor_c24KillAndTrackInDeathTableEv(char*);
     extern int _ZN5Sound9PlayBank3EjRK7Vector3(unsigned int, void*);
     extern void GiveCoins(int idx, int amount);
     extern int _ZN6Player4HealEi(char*, int);
@@ -519,7 +519,7 @@ int func_ov002_020b19dc(char *self)
 // @symbol func_ov002_020b1a60
 extern "C" {
 void func_ov002_020b1a60(void* c) {
-    extern int _ZN7fBase_c18MarkForDestructionEv(void*);
+    extern void _ZN7fBase_c18MarkForDestructionEv(void*);
 
   {
     unsigned short* n = (unsigned short*)(((int)c + 0x3a8));
