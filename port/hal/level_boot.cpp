@@ -3129,6 +3129,8 @@ static int port_stage_archive_idx(int level)
    declares them. Called from port_stage_boot_body below. */
 extern "C" void _ZN8dScene_c20Initialise3dGraphicsEv(void);
 extern "C" void Enable3dEngines(void);
+/* src/Initialise3dGraphics.cpp, InitResources:261's call below */
+extern "C" void Initialise3dGraphics(int arg);
 
 extern "C" void *port_stage_boot_body(void *mc, int spawn)
 {
@@ -3216,6 +3218,13 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
         if (std::getenv("SM64DS_CARDFS"))
             port_card_mount_snapshot("level boot, InitResources:258");
     }
+    /* Stage::InitResources:261, the next statement after the archive lines:
+       Initialise3dGraphics(0x1F). dScene_c::Initialise3dGraphics above left
+       the 3D clear TRANSPARENT (alpha 0, its ::Initialise3dGraphics(0)); the
+       stage's own call makes it the opaque black a course draws over, so a
+       pixel no polygon reaches is black rather than engine A's backdrop
+       (ntr/gx.h, gx_clear_argb). */
+    Initialise3dGraphics(0x1F);
     /* fx wrote this against the ov009-only mount; the lvl stream made the
        mount parameterised, and the bank load wants to happen before any level
        logic can open a text box, so it rides the new call */
