@@ -6052,6 +6052,8 @@
     "src/actors/daObjFl_Amilift_c.cpp#_ZN17daObjFl_Amilift_c13InitResourcesEv": "tangosdev",
     "src/actors/daKing_Donketu_c.cpp#_ZN16daKing_Donketu_c8BehaviorEv": "lunavyqo",
     "src/actors/daKing_Donketu_c.cpp#_ZN16daKing_Donketu_c13InitResourcesEv": "tangosdev",
-    "src/actors/daKing_Donketu_c.cpp#_ZN16daKing_Donketu_c16OnAimedAtWithEggEv": "tangosdev"
+    "src/actors/daKing_Donketu_c.cpp#_ZN16daKing_Donketu_c16OnAimedAtWithEggEv": "tangosdev",
+    "src/actors/dScStarSel_c.cpp#_ZN12dScStarSel_cD1Ev": "tangosdev",
+    "src/actors/dScStarSel_c.cpp#_ZN12dScStarSel_cD0Ev": "tangosdev"
   }
 }
