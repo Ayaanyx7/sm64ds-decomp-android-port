@@ -1755,17 +1755,17 @@
         "param:#3 short",
         "param:#4 short"
       ],
+      "src/actors/daSnowball_c.cpp": [
+        "param:#2 short",
+        "param:#3 short",
+        "param:#4 short"
+      ],
       "src/func_ov002_020fed7c.c": [
         "param:#2 short",
         "param:#3 short",
         "param:#4 short"
       ],
       "src/actors/daGrock_c.cpp": [
-        "param:#2 short",
-        "param:#3 short",
-        "param:#4 short"
-      ],
-      "src/func_ov081_02126224.c": [
         "param:#2 short",
         "param:#3 short",
         "param:#4 short"
@@ -11670,6 +11670,12 @@
         "param:#7 unsigned int",
         "return:void"
       ],
+      "src/actors/daSnowball_c.cpp": [
+        "param:#5 unsigned int",
+        "param:#6 unsigned int",
+        "param:#7 unsigned int",
+        "return:void"
+      ],
       "src/actors/daTrs_c.cpp": [
         "param:#5 unsigned int",
         "param:#6 unsigned int",
@@ -11753,12 +11759,6 @@
         "return:void"
       ],
       "src/func_ov080_02124208.c": [
-        "param:#5 unsigned int",
-        "param:#6 unsigned int",
-        "param:#7 unsigned int",
-        "return:void"
-      ],
-      "src/func_ov081_02125fb8.c": [
         "param:#5 unsigned int",
         "param:#6 unsigned int",
         "param:#7 unsigned int",
@@ -13098,6 +13098,9 @@
       "src/actors/daSnmBth_c.cpp": [
         "return:void"
       ],
+      "src/actors/daSnowball_c.cpp": [
+        "return:void"
+      ],
       "src/actors/daTrs_c.cpp": [
         "return:void"
       ],
@@ -13156,12 +13159,6 @@
         "return:void"
       ],
       "src/func_ov080_02123860.c": [
-        "return:void"
-      ],
-      "src/func_ov081_02125fb8.c": [
-        "return:void"
-      ],
-      "src/func_ov081_021260fc.cpp": [
         "return:void"
       ],
       "src/func_ov100_02141fb0.cpp": [
@@ -13395,6 +13392,9 @@
       "src/_ZN9PowerStar13InitResourcesEv.cpp": [
         "return:char *"
       ],
+      "src/actors/daSnowball_c.cpp": [
+        "return:void *"
+      ],
       "src/actors/daTrs_c.cpp": [
         "return:char *"
       ],
@@ -13564,9 +13564,6 @@
         "return:void *"
       ],
       "src/func_ov080_02124360.c": [
-        "return:void *"
-      ],
-      "src/func_ov081_02125fb8.c": [
         "return:void *"
       ],
       "src/func_ov089_021311c0.c": [
@@ -28353,6 +28350,9 @@
       "src/actors/daPopoi_c.cpp": [
         "arity:3"
       ],
+      "src/actors/daSnowball_c.cpp": [
+        "param:#1 int"
+      ],
       "src/actors/daTrs_c.cpp": [
         "arity:3",
         "return:int"
@@ -28446,12 +28446,6 @@
         "param:#1 int"
       ],
       "src/func_ov080_02124208.c": [
-        "param:#1 int"
-      ],
-      "src/func_ov081_02125fb8.c": [
-        "param:#1 int"
-      ],
-      "src/func_ov081_021260fc.cpp": [
         "param:#1 int"
       ],
       "src/func_ov089_0213162c.c": [
