@@ -6049,6 +6049,16 @@
     "src/actors/daObjFl_Amilift_c.cpp#_ZN17daObjFl_Amilift_c16CleanupResourcesEv": "tangosdev",
     "src/actors/daObjFl_Amilift_c.cpp#_ZN17daObjFl_Amilift_c6RenderEv": "tangosdev",
     "src/actors/daObjFl_Amilift_c.cpp#_ZN17daObjFl_Amilift_c8BehaviorEv": "lunavyqo",
-    "src/actors/daObjFl_Amilift_c.cpp#_ZN17daObjFl_Amilift_c13InitResourcesEv": "tangosdev"
+    "src/actors/daObjFl_Amilift_c.cpp#_ZN17daObjFl_Amilift_c13InitResourcesEv": "tangosdev",
+    "src/actors/dScDSMT_c.cpp#_ZN9dScDSMT_cD1Ev": "tangosdev",
+    "src/actors/dScDSMT_c.cpp#_ZN9dScDSMT_cD0Ev": "andrewboudreau",
+    "src/actors/dScDSMT_c.cpp#func_ov007_020cc0cc": "tangosdev",
+    "src/actors/dScDSMT_c.cpp#func_ov007_020cc0e4": "tangosdev",
+    "src/actors/dScDSMT_c.cpp#_ZN9dScDSMT_c15graphCallback_c14GraphCallback2Ev": "tangosdev",
+    "src/actors/dScDSMT_c.cpp#_ZN9dScDSMT_c15graphCallback_c14GraphCallback0Ev": "andrewboudreau",
+    "src/actors/dScDSMT_c.cpp#func_ov007_020cc118": "tangosdev",
+    "src/actors/dScDSMT_c.cpp#func_ov007_020cc168": "tangosdev",
+    "src/actors/dScDSMT_c.cpp#_ZN9dScDSMT_c16OnPendingDestroyEv": "tangosdev",
+    "src/actors/dScDSMT_c.cpp#_ZN9dScDSMT_c6RenderEv": "tangosdev"
   }
 }
