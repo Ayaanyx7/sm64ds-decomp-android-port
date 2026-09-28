@@ -6030,7 +6030,7 @@
     "src/actors/daObjFl_Amilift_c.cpp#_ZN17daObjFl_Amilift_c6RenderEv": "tangosdev",
     "src/actors/daObjFl_Amilift_c.cpp#_ZN17daObjFl_Amilift_c8BehaviorEv": "lunavyqo",
     "src/actors/daObjFl_Amilift_c.cpp#_ZN17daObjFl_Amilift_c13InitResourcesEv": "tangosdev",
-    "src/actors/dEntObj_c.cpp#_ZN9dEntObj_cD1Ev": "andrewboudreau",
+    "src/actors/dEntObj_c.cpp#_ZN9dEntObj_cD1Ev": "tangosdev",
     "src/actors/dEntObj_c.cpp#_ZN9dEntObj_cD0Ev": "andrewboudreau",
     "src/actors/dEntObj_c.cpp#_ZN15UnknownVsPlayerD1Ev": "tangosdev",
     "src/actors/dEntObj_c.cpp#func_ov075_02114010": "tangosdev",
