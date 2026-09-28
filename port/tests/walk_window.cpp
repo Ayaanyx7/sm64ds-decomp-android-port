@@ -1752,6 +1752,7 @@ void hal_lc_menu_pad(void);
    record the panel fills (hal/sub_screen.cpp wraps Stage::CheckCameraInput
    with the split-symbol bridge the host Ctrl block needs) */
 void hal_sub_camera_input(void);
+void hal_sub_camera_zone_live(void);
 }
 
 /* The frame's cylinder-overlap pass. The host copy in port/unmatched/ rather
@@ -2711,6 +2712,11 @@ static double g_ip_work_ms;         /* running average of a tick's own work */
 static int g_ip_tick_probe;         /* the slow fallback's retry tick */
 static int g_ip_tick_measure;       /* ...that draws one blend to measure */
 static int g_ip_tick_late;          /* a blend of this tick ran past its end */
+/* SM64DS_INTERP_TRACE's 240-tick summary (run hunt3 lane POLISH1): blends
+   STARTED after their tick had already ended, by where they were drawn (the
+   presentation clock's slot, the tick's own no-pacer picture). Such a blend
+   is clamped to tick N itself, so it is a raster that shows nothing new. */
+static int g_ip_w_after_slot, g_ip_w_after_tick;
 static int ip_present_slot(long long t, long long deadline);
 static void ip_flush_deferred(void);
 
@@ -7550,11 +7556,29 @@ static double ip_left_ms(long long deadline)
    end makes the game itself late. */
 static int ip_fits(long long deadline)
 {
-    /* the fallback's measuring retry: its first blend is drawn whatever the
-       test says, so the cost is always measured again (see ip_fit_commit) */
-    if (g_ip_tick_measure && !g_ip_tick_blends) return 1;
     const double c = g_ip_tick_probe ? g_ip_cost_min : g_ip_cost_ms;
     return ip_left_ms(deadline) >= c * 1.2 + 0.5;
+}
+/* The fallback's measuring retry: its first blend is drawn whatever the cost
+   window says, so the cost is always measured again (see ip_fit_commit) --
+   but only while at least HALF THE TICK is still left (run hunt3 lane
+   POLISH1). Forced with less than that, on a machine that cannot fit one it
+   started after the tick was over, redrew tick N itself (alpha above 1,
+   clamped) and made that tick late by a whole raster. A measuring tick that
+   never gets the room hands the measurement on to the next retry tick.
+   ASKED ONLY WHERE A BLEND IS DRAWN, ip_present_slot (run hunt3 lane
+   POLISH1). ip_flush_deferred's question is a different one -- is holding
+   the tick's own picture for the next turn worth it -- and the forced answer
+   there held it on a turn with no slack after it, so the next tick committed
+   first and tick N's own picture was never shown (the one before it stayed
+   up a tick longer). */
+static int ip_measure_now(long long deadline)
+{
+    if (!g_ip_tick_measure || g_ip_tick_blends) return 0;
+    LARGE_INTEGER f;
+    QueryPerformanceFrequency(&f);
+    return ip_left_ms(deadline) * 2.0 >=
+           g_ip_tick_len * 1000.0 / (double)f.QuadPart;
 }
 
 /* The pacer's extra picture, due at slot time t (QPC), to be finished before
@@ -7568,13 +7592,15 @@ static int ip_present_slot(long long t, long long deadline)
     (void)t;
     if (!ip_owns_picture()) { present(); return 1; }
     if (g_ip_tick_final) return 0;   /* tick N is up; a blend would step back */
-    if (!ip_fits(deadline)) {
+    if (!ip_measure_now(deadline) && !ip_fits(deadline)) {
         int shown = 0;
         g_ip_tick_refused = 1;
         ip_present_plain_or_skip(&shown, deadline);
         return shown;
     }
-    ip_present_alpha((double)(ip_qpc() - g_ip_tick_t0) / (double)g_ip_tick_len);
+    const double alpha = (double)(ip_qpc() - g_ip_tick_t0) / (double)g_ip_tick_len;
+    if (alpha >= 1.0) ++g_ip_w_after_slot;
+    ip_present_alpha(alpha);
     g_ip_tick_shown = 1;
     return 1;
 }
@@ -7599,8 +7625,20 @@ static void ip_present_tick(void)
         g_ip_deferred = 1;
         return;
     }
-    ip_present_alpha((double)(now.QuadPart - g_ip_tick_t0) /
-                     (double)g_ip_tick_len);
+    const double alpha = (double)(now.QuadPart - g_ip_tick_t0) /
+                         (double)g_ip_tick_len;
+    /* A TICK WHOSE WORK OUTLASTED THE TICK ITSELF (run hunt3 lane POLISH1,
+       REVSMFIT1's note on this branch): a blend at alpha 1 or more is
+       clamped by gx_interp_begin to tick N's own picture, so drawing one
+       was a whole raster that showed nothing the tick's own finished
+       picture does not, on a tick that is already late. Show that picture
+       as it is. */
+    if (alpha >= 1.0) {
+        int shown = 0;
+        ip_present_plain_or_skip(&shown, 0);
+        return;
+    }
+    ip_present_alpha(alpha);
     g_ip_tick_shown = 1;
 }
 
@@ -7654,7 +7692,9 @@ static void ip_flush_deferred(void)
    fallback is off. Every fourth retry (about four seconds) draws one blend
    whatever the test says, so the cost is measured again even when every
    recent sample is a busy one: a machine that has recovered is seen to
-   have recovered. A blend that ran past the tick's end
+   have recovered. That measuring blend still waits for half the tick to be
+   left, and a retry that never had it passes the measurement to the next
+   retry (run hunt3 lane POLISH1). A blend that ran past the tick's end
    made the game itself late, so it counts against the machine too: three
    such ticks among the last 32 that were ready to blend and the fallback
    is on, and a retry blend that ran late does not turn it off. Both edges
@@ -7671,9 +7711,10 @@ static int ip_bits(unsigned v)
 }
 static int ip_fit_commit(void)
 {
-    static int slow, nofit, since, ready_prev, retries;
+    static int slow, nofit, since, ready_prev, retries, measure_owed;
     static unsigned late_bits;
     static int w_ticks, w_ready, w_blend, w_slow, w_refused, w_blends, w_late;
+    static int w_unshown, w_meas, w_meas_drawn;
     /* the tick that just ended: was it ready to blend, and did it? Only a
        tick the pacer gave a start can have drawn a blend at all; an unpaced
        run (a selftest, the SM64DS_INTERP_PROBE instrument) has none, and its
@@ -7684,6 +7725,13 @@ static int ip_fit_commit(void)
         w_blends += g_ip_tick_blends;
         if (g_ip_tick_refused) ++w_refused;
         if (late) ++w_late;
+        /* the tick put no picture of its own up at all, so the picture before
+           it stayed on screen for one more tick */
+        if (!g_ip_tick_shown && ip_owns_picture()) ++w_unshown;
+        if (g_ip_tick_measure) {
+            ++w_meas;
+            if (g_ip_tick_blends > 0) ++w_meas_drawn;
+        }
         late_bits = (late_bits << 1) | (late ? 1u : 0u);
         if (g_ip_tick_blends > 0) ++w_blend;
         if (g_ip_tick_blends > 0 && !late) {
@@ -7691,6 +7739,7 @@ static int ip_fit_commit(void)
             if (slow) {
                 slow = 0;
                 late_bits = 0;
+                measure_owed = 0;
                 fprintf(stderr, "[interp] fit: a blend fits again (%.2f ms "
                         "beside %.2f ms of tick work in %.2f ms): smooth "
                         "motion is back on\n", g_ip_cost_ms, g_ip_work_ms,
@@ -7702,6 +7751,7 @@ static int ip_fit_commit(void)
             slow = 1;
             since = 0;
             retries = 0;
+            measure_owed = 0;
             fprintf(stderr, "[interp] fit: %s (a blend %.2f ms, the tick's "
                     "own work %.2f ms, the tick %.2f ms): pictures repeat, "
                     "and one tick in %d tries again\n",
@@ -7717,7 +7767,13 @@ static int ip_fit_commit(void)
     int this_slow = 0;
     if (slow) this_slow = (++since % IP_FIT_PROBE) != 0;
     g_ip_tick_probe = slow && !this_slow;
-    g_ip_tick_measure = g_ip_tick_probe && (++retries % IP_FIT_MEASURE) == 0;
+    /* every fourth retry owes a measuring blend, and the debt stands until a
+       retry tick actually draws one: a measuring tick whose slots never had
+       half the tick left (ip_measure_now) passes it to the next retry, about
+       a second on, rather than skipping a whole round of four */
+    if (g_ip_tick_measure && g_ip_tick_blends > 0) measure_owed = 0;
+    if (g_ip_tick_probe && (++retries % IP_FIT_MEASURE) == 0) measure_owed = 1;
+    g_ip_tick_measure = g_ip_tick_probe && measure_owed;
     ready_prev = !this_slow;
     ++w_ticks;
     if (this_slow) ++w_slow;
@@ -7726,10 +7782,15 @@ static int ip_fit_commit(void)
             fprintf(stderr, "[interp] fit: %d ticks: %d ready to blend, %d "
                     "drew a blend (%d blends), %d had a slot with no room, %d "
                     "in the slow fallback, %d ran late | blend %.2f ms, tick "
-                    "work %.2f ms, plain present %.2f ms\n", w_ticks, w_ready,
+                    "work %.2f ms, plain present %.2f ms | %d showed no "
+                    "picture, %d measuring (%d drew), blends started after "
+                    "the tick's end: %d slot %d tick\n", w_ticks, w_ready,
                     w_blend, w_blends, w_refused, w_slow, w_late, g_ip_cost_ms,
-                    g_ip_work_ms, g_ip_plain_ms);
+                    g_ip_work_ms, g_ip_plain_ms, w_unshown, w_meas,
+                    w_meas_drawn, g_ip_w_after_slot, g_ip_w_after_tick);
         w_ticks = w_ready = w_blend = w_slow = w_refused = w_blends = w_late = 0;
+        w_unshown = w_meas = w_meas_drawn = 0;
+        g_ip_w_after_slot = g_ip_w_after_tick = 0;
     }
     return this_slow;
 }
@@ -12543,7 +12604,11 @@ int main(void)
 
         /* Top of the DS 2D frame: both OAM shadows back to empty, and the
            stylus record refreshed from the mouse. Everything the game's own
-           Render methods emit this frame lands on top of that. */
+           Render methods emit this frame lands on top of that. The camera
+           arrows' zone is live for this poll alone: this frame's
+           hal_sub_camera_input is the course's reader (hal/sub_screen.cpp,
+           g_cam_reader_at). */
+        hal_sub_camera_zone_live();
         hal_sub_screen_frame_begin();
 
         /* keys -> pad block + desired heading, CAMERA-RELATIVE: W walks

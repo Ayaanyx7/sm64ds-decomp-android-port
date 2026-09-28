@@ -144,6 +144,13 @@ unsigned port_hw_regions_size(void);
 void port_hw_regions_copy_out(void *dst);
 void port_hw_regions_copy_in(const void *src);
 
+// DS timer 0's counter and the timer model's bookkeeping (ntr/rt.cpp), which
+// the course timer and every OS tick read: copied into a .dsstate record just
+// before the capture below, put back just after the restore (run hunt3, lane
+// POLISH1). The counter itself is an I/O word, and no I/O word is captured.
+void port_timer0_state_save(void);
+void port_timer0_state_load(void);
+
 // The two sentinels hal/dsstate_seg.cpp places at the low and high ends of the
 // .dsstate section family. The captured out-of-arena region is the bytes
 // between them: &dsstate_hi - &dsstate_lo, recomputed by the linker every build.
@@ -292,6 +299,7 @@ int lk6_savestate_save(void)
     }
 
     memcpy(na, base, asz);
+    port_timer0_state_save();
     memcpy(ng, dsstate_base(), gsz);
     if (hsz)
         port_hw_regions_copy_out(nh);
@@ -358,6 +366,7 @@ int lk6_savestate_load(void)
 
     memcpy(base, g_slot.arena, g_slot.arena_size);
     memcpy(dsstate_base(), g_slot.globals, g_slot.globals_size);
+    port_timer0_state_load();
     port_ss_rollguard_end(norg);
     if (g_slot.hw_size)
         port_hw_regions_copy_in(g_slot.hw);   /* also drops the decode cache */
