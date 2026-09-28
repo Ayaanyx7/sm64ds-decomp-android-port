@@ -1752,6 +1752,7 @@ void hal_lc_menu_pad(void);
    record the panel fills (hal/sub_screen.cpp wraps Stage::CheckCameraInput
    with the split-symbol bridge the host Ctrl block needs) */
 void hal_sub_camera_input(void);
+void hal_sub_camera_zone_live(void);
 }
 
 /* The frame's cylinder-overlap pass. The host copy in port/unmatched/ rather
@@ -12603,7 +12604,11 @@ int main(void)
 
         /* Top of the DS 2D frame: both OAM shadows back to empty, and the
            stylus record refreshed from the mouse. Everything the game's own
-           Render methods emit this frame lands on top of that. */
+           Render methods emit this frame lands on top of that. The camera
+           arrows' zone is live for this poll alone: this frame's
+           hal_sub_camera_input is the course's reader (hal/sub_screen.cpp,
+           g_cam_reader_at). */
+        hal_sub_camera_zone_live();
         hal_sub_screen_frame_begin();
 
         /* keys -> pad block + desired heading, CAMERA-RELATIVE: W walks
