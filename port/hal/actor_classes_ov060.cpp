@@ -599,13 +599,17 @@ static int __fastcall spikebomb_behavior(void *s, void *)
 static int __fastcall spikebomb_render(void *s, void *)
 { port_actor_render_probe("SPIKE_BOMB", (char *)s + 0xd4);
   return _ZN9SpikeBomb6RenderEv(s); }
-/* slot 16, HOST THUNK: src/_ZN9SpikeBombD1Ev.cpp is a real MSVC
-   destructor over a shadow class, so MSVC emits ??1BowserSkyPlatform@@UAE@XZ
-   and auto-calls ??1Model@@QAE@XZ and two more that exist nowhere in this
-   build -- the BigBooIcon/HauntedChair case. The chain below is what its
-   matched D0 (.c, linked) spells minus the Deallocate. */
-/* slot 16 is the matched src D1 through hal/dtor_faces_cpp.cpp (lane DTOR-FACES-CPP);
-   the transcribed thunk that stood here (spikebomb_d1) spelled the same chain by hand. */
+/* SLOT 16 IS THIS CLASS'S OWN D1. The ROM word 16 of 0x0211aa8c is 0x02118438,
+   SpikeBomb's D1: its own vptr, then dCcAcPos_c +0x124, Model +0xd4, then
+   dActor_c's D2 (read out of overlay_0060.bin). The slot used to seat
+   hal_cppd1_BowserSkyPlatform, the sky platform's D1 at 0x02117d1c, which runs
+   dBgW_KcMbg's destructor at +0x124: a mesh-collision teardown over this
+   class's dCcAcPos_c, whose own destructor never ran. The body is the matched
+   src/_ZN9SpikeBombD1Ev.cpp (??1SpikeBomb@@QAE@XZ), reached through the face
+   hal/actorport_dtor_bridge.cpp aliases onto it. */
+extern "C" void __fastcall actorport_d16t_SpikeBomb(void *, void *);
+static int __fastcall spikebomb_d1(void *s, void *e)
+{ actorport_d16t_SpikeBomb(s, e); return (int)(size_t)s; }
 static int __fastcall spikebomb_d0(void *s, void *)
 { return (int)(size_t)_ZN9SpikeBombD0Ev((int *)s); }
 extern "C" void hal_fill_spike_bomb_vtable(void)
@@ -617,7 +621,7 @@ extern "C" void hal_fill_spike_bomb_vtable(void)
     vt[3]  = (void *)spikebomb_clean;
     vt[6]  = (void *)spikebomb_behavior;
     vt[9]  = (void *)spikebomb_render;
-    vt[16] = (void *)PORT_D16(hal_cppd1_BowserSkyPlatform);
+    vt[16] = (void *)PORT_D16(spikebomb_d1);
     vt[17] = (void *)spikebomb_d0;
 }
 

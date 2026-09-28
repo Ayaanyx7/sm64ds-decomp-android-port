@@ -745,8 +745,19 @@ static int __fastcall mky_pdes(void *s, void *)
    0x02115a48 -> _ZTV13daObjMaruta_c -> _ZTV10dBgActor_c, three tables deep, and
    src/_ZN13daObjHmBskt_cD1Ev.cpp walks two. All three stay in the slice and run
    their own stores. */
-/* slot 16 is the matched src D1 through hal/dtor_faces_cpp.cpp (lane DTOR-FACES-CPP);
-   the transcribed thunk that stood here (mky_d1) spelled the same chain by hand. */
+/* SLOT 16 IS THIS CLASS'S OWN D1. The ROM word 16 of 0x02115bfc is 0x02111688,
+   daMky_c's D1: its own vptr, then dBgCh_Actr +0x194, dCcAc_c +0x160,
+   ShadowModel +0x138, ModelAnim +0xd4, then dActor_c's D2 (read out of
+   overlay_0030.bin). The slot used to seat hal_cppd1_RollingLogTtm, which
+   after the ov030 names were settled is the rolling log's D1 at 0x0211155c
+   (dBgW_KcMbg +0x124, Model +0xd4): the Ukiki's collision entry and shadow
+   were never destroyed and a mesh-collision destructor ran on memory this
+   class does not have there. The body is the matched src/actors/daMky_c.cpp
+   (??1daMky_c@@QAE@XZ), reached through the face hal/actorport_dtor_bridge.cpp
+   aliases onto it. */
+extern "C" void __fastcall actorport_d16t_daMky_c(void *, void *);
+static int __fastcall mky_d1(void *s, void *e)
+{ actorport_d16t_daMky_c(s, e); return (int)(size_t)s; }
 static int __fastcall mky_d0(void *s, void *)
 { return (int)(size_t)_ZN7daMky_cD0Ev((int *)s); }
 static int __fastcall mky_yoshi(void *s, void *)
@@ -771,7 +782,7 @@ extern "C" void hal_fill_ukiki_vtable(void)
     vt[6]  = (void *)mky_behavior;
     vt[9]  = (void *)mky_render;
     vt[12] = (void *)mky_pdes;   /* own body, overrides ActorBase's default */
-    vt[16] = (void *)PORT_D16(hal_cppd1_RollingLogTtm);
+    vt[16] = (void *)PORT_D16(mky_d1);
     vt[17] = (void *)mky_d0;
     vt[18] = (void *)mky_yoshi;  /* own OnYoshiTryEat, overrides the shared default */
     vt[19] = (void *)mky_egg;    /* own OnTurnIntoEgg, overrides the shared default */

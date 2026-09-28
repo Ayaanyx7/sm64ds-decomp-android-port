@@ -3843,8 +3843,61 @@ static int  __fastcall ti_init(void *s, void *)
 }
 static int  __fastcall ti_clean(void *, void *)
 { ++g_ti_hits[3];  return _ZN9dScDSMT_c16CleanupResourcesEv(); }
+/* THE TITLE'S VS BUTTON IS REFUSED HERE (multiplayer is disabled until its
+ * own full fix).
+ *
+ * Every route to VS on the title menu -- a tap on the VS button, or the
+ * d-pad cursor on it and Start -- ends in the verdict setter
+ * src/func_ov007_020aec94.c storing 6 in the title context's +0x10. The
+ * fade-out runs (top-state 6, src/func_ov007_020b155c.c; its callback
+ * src/func_ov007_020b1604.c then requests top-state 7, which arms +0x14),
+ * and src/_ZN9dScDSMT_c8BehaviorEv.cpp takes verdict 6 into
+ * func_0201a458, which builds a heap over the ov062 arena. The host does not
+ * mount that arena (hal/link21_rows.cpp), so the heap header write faults
+ * and the title freezes.
+ *
+ * So verdict 6 is swapped for 2, the ROM's own "back to the title" verdict
+ * (Behavior: StartSceneFade(1, 0, 0x7fff)), before Behavior reads it. The
+ * swap is exact everywhere else: every other reader of +0x10 in ov007
+ * (func_ov007_020af4dc, 020b0834, 020b155c, 020b1604, 020b6f4c) tests it
+ * only for 0, 8, 9, 10 or 11, so 2 and 6 take the same branch in each, and
+ * the one read that tells them apart is the verdict in
+ * src/func_ov007_020b7090.c. The fade-out plays as the ROM's, and the scene
+ * restarts on the title instead of starting VS. Nothing of VS is entered: no
+ * heap, no archive, no overlay 64 / 66.
+ *
+ * ti_beh MUST NOT TOUCH A CALLEE-SAVED REGISTER. Behavior calls
+ * func_0203dabc and func_0203dae4 with no argument where the ARM passes
+ * func_0203da9c()'s r0, and on the host both read their index from the stack
+ * slot that holds Behavior's own saved esi -- the esi ti_beh enters it with.
+ * A first cut of this block kept `s` in esi across the log call and the
+ * title faulted at its first frame in func_0203dae4. So the check is inline
+ * (loads, a compare, a store: no call), and the one rare call parks `s` in a
+ * volatile static rather than in a register. The disassembly of ti_beh is
+ * checked for push esi / edi / ebx / ebp after every build (run hunt3, lane
+ * VSOFF1). Since lane ARITY31 (include/decl_common.h and the _MSC_VER arm in
+ * Behavior) the host Behavior pushes func_0203da9c()'s result for both
+ * calls, so the saved-esi read is gone; the rule stays as a guard. */
+extern "C" char *data_ov007_0210342c;
+static void *volatile g_ti_vs_self;
+static __declspec(noinline) void ti_vs_refused_say(void)
+{
+    std::printf("[title] VS refused (multiplayer is disabled): verdict 6 -> "
+                "2, the title restarts\n");
+    std::fflush(stdout);
+}
 static int  __fastcall ti_beh(void *s, void *)
-{ ++g_ti_hits[6];  return _ZN9dScDSMT_c8BehaviorEv((char *)s); }
+{
+    ++g_ti_hits[6];
+    char *g = data_ov007_0210342c;
+    if (g && *(int *)(g + 0x10) == 6) {
+        *(int *)(g + 0x10) = 2;
+        g_ti_vs_self = s;
+        ti_vs_refused_say();
+        s = g_ti_vs_self;
+    }
+    return _ZN9dScDSMT_c8BehaviorEv((char *)s);
+}
 #if PORT_OV007_MCRENDER_UNSEATED
 /* SCENE 1'S BLOCKER AFTER THE IMPLICIT-r0 SEAM WAS SEATED, run link60 lane
  * AE1, AND THE FIRST ONE THIS FILE CAN ANNOUNCE FROM THE RIGHT FRAME.

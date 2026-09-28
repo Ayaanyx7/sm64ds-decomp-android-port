@@ -422,29 +422,69 @@ void refresh_from_disk()
 }
 
 #ifdef _WIN32
+/* the name is the save path, folded to a hash: one lock per file, whatever
+   spelling or case each process resolved it to */
+HANDLE open_medium_mutex()
+{
+    unsigned hsh = 2166136261u;
+    for (const char *p = g_path; *p; ++p) {
+        char c = *p;
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c == '\\') c = '/';
+        hsh = (hsh ^ (unsigned char)c) * 16777619u;
+    }
+    char name[64];
+    std::snprintf(name, sizeof name, "Local\\sm64ds-save-%08x", hsh);
+    HANDLE h = CreateMutexA(NULL, FALSE, name);
+    if (h) WaitForSingleObject(h, 5000);
+    return h;
+}
+
 struct MediumLock {
     HANDLE h;
-    MediumLock() : h(NULL) {
-        /* the name is the save path, folded to a hash: one lock per file,
-           whatever spelling or case each process resolved it to */
-        unsigned hsh = 2166136261u;
-        for (const char *p = g_path; *p; ++p) {
-            char c = *p;
-            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-            if (c == '\\') c = '/';
-            hsh = (hsh ^ (unsigned char)c) * 16777619u;
-        }
-        char name[64];
-        std::snprintf(name, sizeof name, "Local\\sm64ds-save-%08x", hsh);
-        h = CreateMutexA(NULL, FALSE, name);
-        if (h) WaitForSingleObject(h, 5000);
-    }
+    MediumLock() : h(open_medium_mutex()) {}
     ~MediumLock() {
         if (h) { ReleaseMutex(h); CloseHandle(h); }
     }
 };
+
+// ONE TRANSFER, ONE HOLDER (run hunt3, lane POLISH2). The lock above covers one
+// card command, and one save is sixteen of them (SaveDataToCart for the file,
+// then for the minigame block: crc, tag and payload, primary then mirror). Every
+// SaveCurrentFile also rewrites the minigame block in slot 3, which every
+// window shares, so two windows saving in the same few milliseconds could land
+// one's crc under the other's payload in BOTH copies; ReadMinigameData then
+// finds no valid copy and writes the defaults, and every minigame record is
+// gone. The ROM brackets each transfer with a lock id of its own
+// (func_02057020 ... func_02057078) and takes the card only by that id
+// inside it, so the medium is held over the same span: from the first
+// read or program command of a transfer, by the id that owns the card,
+// until that id is released (hal/os_lockid.cpp calls
+// port_backup_transfer_end). The ids other callers take and never release
+// never reach a card command, so they never start a hold. Windows mutexes are
+// recursive per thread, so the per-command lock inside a transfer is free.
+HANDLE g_xfer = NULL;
+int    g_xfer_id = -1;
+
+void transfer_hold(int owner)
+{
+    if (owner < 0 || g_xfer_id >= 0) return;   /* no id owns the card, or held */
+    open_once();                                /* the name is the save path */
+    g_xfer = open_medium_mutex();
+    g_xfer_id = owner;
+}
+
+void transfer_end(int lock_id)
+{
+    if (g_xfer_id < 0 || g_xfer_id != lock_id) return;
+    if (g_xfer) { ReleaseMutex(g_xfer); CloseHandle(g_xfer); }
+    g_xfer = NULL;
+    g_xfer_id = -1;
+}
 #else
 struct MediumLock {};
+void transfer_hold(int) {}
+void transfer_end(int) {}
 #endif
 
 // A span the chip actually has. No clamping: a chip without those cells says
@@ -705,6 +745,7 @@ int func_02060f60(void *self, int cmd, int retries)
 
     case 6: {
         /* Read: source is a medium offset, destination an ARM9 pointer. */
+        ntr::backup::transfer_hold(w->owner);
         unsigned addr = (unsigned)blk[3];
         void *dst = (void *)(std::size_t)(unsigned)blk[4];
         unsigned len = (unsigned)blk[5];
@@ -714,6 +755,7 @@ int func_02060f60(void *self, int cmd, int retries)
 
     case 8: {
         /* Program: source is an ARM9 pointer, destination a medium offset. */
+        ntr::backup::transfer_hold(w->owner);
         const void *src = (const void *)(std::size_t)(unsigned)blk[3];
         unsigned addr = (unsigned)blk[4];
         unsigned len = (unsigned)blk[5];
@@ -740,6 +782,14 @@ int func_02060f60(void *self, int cmd, int retries)
         blk[0] = 1;
         return 0;
     }
+}
+
+/* The end of a transfer: hal/os_lockid.cpp's func_02057078 (OS_ReleaseLockID)
+   hands every released id here, and the one that owned the card's transfer
+   lets the medium go (ntr::backup::transfer_end, above). */
+void port_backup_transfer_end(int lock_id)
+{
+    ntr::backup::transfer_end(lock_id);
 }
 
 }  // extern "C"

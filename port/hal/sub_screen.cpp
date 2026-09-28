@@ -2229,13 +2229,25 @@ int in_camera_button_zone(int dsx, int dsy)
  * that swallowed the Back arrow (DS x 182-248, y 140-174, wholly inside the
  * zone's right-hand block), and it could only be seen with the improved map
  * on, which every recorded harness forces off (host_settings.cpp). So the
- * filter now asks the ROM's own question: did the course's camera reader run
- * on the frame before this poll? g_tp_frame is poll_touch's own count and
- * hal_sub_camera_input stamps it after that frame's poll, so the stamp equals
- * the count at the next poll exactly when a course ticked in between. The
- * title, the file select, the star select, the minigames and every other menu
- * never make the call, so their buttons are the ROM's own again. */
-int g_cam_reader_at = -1;        /* g_tp_frame when the camera reader last ran */
+ * filter now asks the ROM's own question: will the course's camera reader
+ * run on this poll's frame? g_tp_frame is poll_touch's own count, and the
+ * level loop stamps it through hal_sub_camera_zone_live immediately before
+ * its own poll, on the frame whose hal_sub_camera_input reads the stylus, so
+ * the stamp equals the count exactly on a level-loop poll. The title, the
+ * file select, the star select, the minigames and every other menu run their
+ * polls from the scene loop and never stamp, so their buttons are the ROM's
+ * own again.
+ *
+ * STAMPED BEFORE THE POLL, NOT AFTER THE READ (run hunt3, lane POLISH1). The
+ * stamp used to be taken inside hal_sub_camera_input, after the frame's poll,
+ * for the NEXT poll to match. That answered the previous frame's question,
+ * and at a change between a course and a scene it answered it wrongly for one
+ * frame: the star select interlude runs scene frames inside one level frame,
+ * so its first poll matched the course's stamp and dropped a press on the
+ * star select's own screen there; and the first course poll after the title
+ * hand-off had no stamp at all (-1), so a press held on a hidden arrow across
+ * it was published for that one frame. */
+int g_cam_reader_at = -1;        /* g_tp_frame of the last level-loop poll */
 
 /* ---- AND THE OTHER HALF: THE ARROWS ARE NOT DRAWN --------------------------
  *
@@ -4781,12 +4793,17 @@ unsigned hal_sub_screen_stacked_generation(void)
  * The gate in front of all of it is the CAMERA's own +0x154 bit 0x1000. With
  * that clear the ROM draws no buttons and reads no touches, so if the panel
  * shows arrows and nothing rotates, this is the word to look at. */
+/* The level loop's poll is next, and this frame's hal_sub_camera_input will
+   read what it publishes: the arrow zone is live for that poll (see
+   g_cam_reader_at). */
+void hal_sub_camera_zone_live(void)
+{
+    g_cam_reader_at = g_tp_frame;
+}
+
 void hal_sub_camera_input(void)
 {
     const char *ctrl = (const char *)data_0209f498;
-    /* a course's camera reader ran this frame: the arrow zone is live for
-       the next poll (see g_cam_reader_at) */
-    g_cam_reader_at = g_tp_frame;
     _ZN5Stage16CheckCameraInputEv();
     *(unsigned short *)data_0209f49c |= *(const unsigned short *)(ctrl + 4);
     *(unsigned short *)data_0209f49e |= *(const unsigned short *)(ctrl + 6);

@@ -2600,6 +2600,10 @@ extern int data_0209f264[];          /* current entrance */
 extern unsigned char data_0209f268;  /* next entrance */
 extern int data_0209f220[];          /* current star filter */
 extern int data_0209f32c[];          /* water surface Y (the last water found) */
+/* the cannon camera state's "double every actor's clip distance" byte
+   (FUN_02029ab0 sets it, FUN_02029a68 clears it, dActor_c::BeforeBehavior
+   reads it). A byte to the ROM; the wider host allocation is cxx_aliases.cpp's. */
+extern unsigned char data_0209f274;
 /* next star -- the act the level change staged, which is where the star select
    leaves the player's pick. Declared as a byte for data_0209f26c's reason:
    auto_bss.cpp owns the wider host allocation and the ROM reads it as one. */
@@ -3517,6 +3521,13 @@ extern "C" void *port_stage_boot_body(void *mc, int spawn)
        global, put a teleport that lands below it into the swim state in the
        open air: Cool, Cool Mountain's summit teleport. */
     data_0209f32c[0] = (int)0x80000000;
+    /* Stage::InitResources:233, `data_0209f274 = 0`, on every stage boot.
+       The cannon's aiming camera (func_020095e4 -> FUN_02029ab0) sets it and
+       only leaving that camera state through Camera::ChangeState /
+       Camera::SetFlag_3 clears it, so a level left from inside a cannon
+       carried it into the next one, where dActor_c::BeforeBehavior kept
+       every actor active out to twice its clip distance. */
+    data_0209f274 = 0;
     /* SM64DS_EVENT_SEED=<word>:<hex>[,<word>:<hex>...] -- the level-event bits
        a loaded save file would have left in the save block, written ONCE on the
        first stage boot of the process. <word> indexes data_0209caa0 AS THE

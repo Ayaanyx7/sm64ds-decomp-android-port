@@ -122,6 +122,8 @@ void sd_mix_reset(void);
 void sd_consumer_reset(void);
 void sd_waves_reset(void);
 void sd_sdat_reseat(void);
+// hal/star_flow.cpp: restart the restored level's song after the reset
+extern "C" void port_course_music_after_restore(void);
 
 extern "C" {
 // hal/os_arena.cpp
@@ -141,6 +143,13 @@ void  port_arena_set_cursor(void *p);
 unsigned port_hw_regions_size(void);
 void port_hw_regions_copy_out(void *dst);
 void port_hw_regions_copy_in(const void *src);
+
+// DS timer 0's counter and the timer model's bookkeeping (ntr/rt.cpp), which
+// the course timer and every OS tick read: copied into a .dsstate record just
+// before the capture below, put back just after the restore (run hunt3, lane
+// POLISH1). The counter itself is an I/O word, and no I/O word is captured.
+void port_timer0_state_save(void);
+void port_timer0_state_load(void);
 
 // The two sentinels hal/dsstate_seg.cpp places at the low and high ends of the
 // .dsstate section family. The captured out-of-arena region is the bytes
@@ -290,6 +299,7 @@ int lk6_savestate_save(void)
     }
 
     memcpy(na, base, asz);
+    port_timer0_state_save();
     memcpy(ng, dsstate_base(), gsz);
     if (hsz)
         port_hw_regions_copy_out(nh);
@@ -356,6 +366,7 @@ int lk6_savestate_load(void)
 
     memcpy(base, g_slot.arena, g_slot.arena_size);
     memcpy(dsstate_base(), g_slot.globals, g_slot.globals_size);
+    port_timer0_state_load();
     port_ss_rollguard_end(norg);
     if (g_slot.hw_size)
         port_hw_regions_copy_in(g_slot.hw);   /* also drops the decode cache */
@@ -386,6 +397,11 @@ int lk6_savestate_load(void)
     // walks it into a fault. Re-seat the live process's own root, which is
     // correct in both cases.
     sd_sdat_reseat();
+    // The reset above stopped the song too, and the game asks for a level's
+    // song once, at its boot, so nothing would start it again: the music
+    // stayed off after every F9 until another song began. Start the song the
+    // snapshot was playing now that the sound path is whole again.
+    port_course_music_after_restore();
 
     fprintf(stderr, "[savestate] restored: arena %zu bytes, dsstate %zu bytes, "
                     "hw %zu bytes, audio reset\n", g_slot.arena_size,

@@ -1203,6 +1203,7 @@ static void port_level_sublevel_clear(void)
    0x31 -- the five Bowser fights -- so it arms on a key handover and on
    nothing else; every course sublevel falls through the switch, leaves the
    key slot at its -1 and returns 0. */
+extern "C" void port_music_note_prev_level(int level);   /* hal/star_flow.cpp */
 static void port_level_latch(void)
 {
     /* :188-218 first, because the two words below are its inputs. */
@@ -1212,6 +1213,12 @@ static void port_level_latch(void)
         data_02092124[0] = (unsigned char)data_0209f2f8;
         data_02092118[0] = 0xffu;         /* -1 */
     }
+    /* Stage::InitResources :226, `s8 prevLevel = data_0209f2f8;`, taken here
+       because this is the line that replaces it. Its music guard reads it
+       (hal/star_flow.cpp seat_course_sound). It is the global's value, not
+       the last level booted: ExitMinigameMenu writes 6 into it on the way
+       back to the Rec Room so that return restarts the castle song. */
+    port_music_note_prev_level(data_0209f2f8);
     data_0209f2f8 = data_02092110;
     data_0209f264[0] = data_0209f268;
     data_0209f220[0] = data_0209f1f0;

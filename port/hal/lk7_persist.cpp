@@ -170,6 +170,11 @@ unsigned port_hw_regions_size(void);
 void port_hw_regions_copy_out(void *dst);
 void port_hw_regions_copy_in(const void *src);
 
+// DS timer 0 (ntr/rt.cpp): the disk state's .dsstate carries the record lk6
+// filled at save; it goes back into the timer before the slot round-trip
+// below re-captures it (run hunt3, lane POLISH1).
+void port_timer0_state_load(void);
+
 // lk6: the in-memory slot this layer mirrors to and from disk.
 int lk6_savestate_save(void);
 int lk6_savestate_load(void);
@@ -828,6 +833,7 @@ int lk7_persist_read(void)
     const int norg = port_ss_rollguard_begin();
     if (asz) memcpy(base, abuf, asz);
     if (dsz) memcpy(&dsstate_lo, dbuf, dsz);
+    port_timer0_state_load();
     port_ss_rollguard_end(norg);
     free(abuf);
     free(dbuf);

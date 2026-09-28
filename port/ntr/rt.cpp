@@ -1,6 +1,7 @@
 #include "ntr/rt.h"
 
 #include "ntr/mmio.h"
+#include "hal/dsstate_seg.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -324,6 +325,67 @@ void rt_timer0_advance(unsigned vblanks) {
         ++g_t0_irqs;
         if (i + 1 < overflows) reg32(REG_IF) |= 0x8u;
     }
+}
+
+// ---- TIMER 0 IN A SAVE STATE (run hunt3, lane POLISH1) ----------------------
+//
+// The OS tick is (overflow count << 16) | TM0CNT_L. The overflow count
+// (data_020a6438) and every Timer object are hosted DS globals and ride in
+// .dsstate; the low half is the I/O word at 0x04000100, and the save state
+// deliberately captures no I/O shadow (ntr/io.cpp, port_hw_regions_*). So an
+// F9 put the overflow count back but left the counter where the live run had
+// it: the course timer came back off by up to 65535 counts (1/8 s), and a
+// state saved in the first 1/8 s after the slide's timer started could read
+// a small negative time, which the HUD caps to 99'59"99 until the next
+// overflow.
+//
+// What the timer needs is exactly this: the counter, its control word, the
+// pending-overflow bit in IF, and this model's own three words (the control
+// word it last saw, the reload it latched, the prescaler remainder), so the
+// next rt_timer0_advance continues from the saved instant as if the run had
+// never left it. hal/lk6_savestate.cpp copies them in here just before it
+// captures .dsstate and puts them back just after it restores it; a disk load
+// (hal/lk7_persist.cpp) puts them back after its own .dsstate copy, before it
+// hands the world to the slot. Nothing else reads this record: the rollback
+// ring's .dsstate copies carry it inert, as they carried nothing before.
+// THE STATE LAYOUT CHANGES by this record's 20 bytes; a disk state from an
+// earlier build is already refused by its gittip.
+extern "C" {
+DSSTATE_BEGIN
+struct PortTimer0Saved {
+    uint32_t magic;       // kT0Magic once a save has filled it
+    uint16_t cnt_l;       // TM0CNT_L, the counter
+    uint16_t cnt_h;       // TM0CNT_H, run / IRQ / prescaler
+    uint16_t ctl_was;     // g_t0_ctl_was
+    uint16_t reload;      // g_t0_reload
+    uint16_t if_tm0;      // IF bit 3, a pending overflow
+    uint16_t pad;
+    uint32_t frac;        // g_t0_frac
+};
+PortTimer0Saved port_timer0_saved;
+DSSTATE_END
+}
+static const uint32_t kT0Magic = 0x56533054u;   // "T0SV"
+
+extern "C" void port_timer0_state_save(void) {
+    port_timer0_saved.magic = kT0Magic;
+    port_timer0_saved.cnt_l = reg16(0x04000100);
+    port_timer0_saved.cnt_h = reg16(0x04000102);
+    port_timer0_saved.ctl_was = g_t0_ctl_was;
+    port_timer0_saved.reload = g_t0_reload;
+    port_timer0_saved.if_tm0 = static_cast<uint16_t>(reg32(REG_IF) & 0x8u);
+    port_timer0_saved.pad = 0;
+    port_timer0_saved.frac = g_t0_frac;
+}
+
+extern "C" void port_timer0_state_load(void) {
+    if (port_timer0_saved.magic != kT0Magic) return;   // saved before this record existed
+    reg16(0x04000100) = port_timer0_saved.cnt_l;
+    reg16(0x04000102) = port_timer0_saved.cnt_h;
+    g_t0_ctl_was = port_timer0_saved.ctl_was;
+    g_t0_reload = port_timer0_saved.reload;
+    reg32(REG_IF) = (reg32(REG_IF) & ~0x8u) | (port_timer0_saved.if_tm0 & 0x8u);
+    g_t0_frac = port_timer0_saved.frac;
 }
 
 uint32_t rt_irq_disable() {
