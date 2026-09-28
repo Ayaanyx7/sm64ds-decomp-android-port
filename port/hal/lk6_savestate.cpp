@@ -122,6 +122,8 @@ void sd_mix_reset(void);
 void sd_consumer_reset(void);
 void sd_waves_reset(void);
 void sd_sdat_reseat(void);
+// hal/star_flow.cpp: restart the restored level's song after the reset
+extern "C" void port_course_music_after_restore(void);
 
 extern "C" {
 // hal/os_arena.cpp
@@ -386,6 +388,11 @@ int lk6_savestate_load(void)
     // walks it into a fault. Re-seat the live process's own root, which is
     // correct in both cases.
     sd_sdat_reseat();
+    // The reset above stopped the song too, and the game asks for a level's
+    // song once, at its boot, so nothing would start it again: the music
+    // stayed off after every F9 until another song began. Start the song the
+    // snapshot was playing now that the sound path is whole again.
+    port_course_music_after_restore();
 
     fprintf(stderr, "[savestate] restored: arena %zu bytes, dsstate %zu bytes, "
                     "hw %zu bytes, audio reset\n", g_slot.arena_size,
