@@ -168,9 +168,10 @@ namespace {
 
 int g_seated;
 int g_course_music = -1;
-/* seat_course_sound's prevLevel: the sublevel the previous stage boot seated
-   (data_0209f2f8 as it stood before this boot's latch). -1 before the first
-   boot; the cartridge's bss zero is not a castle level either. */
+/* seat_course_sound's prevLevel: data_0209f2f8 as it stood when the port's
+   latch replaced it (hal/level_change.cpp port_level_latch, the ROM's :226).
+   -1 until the first latch; the cartridge's bss zero is not a castle level
+   either. */
 int g_music_prev_level = -1;
 
 /* THE QUEUED SWAP TRAP. data_02092114 is the in-level character swap request
@@ -363,12 +364,13 @@ void seat_course_sound(int level)
      * 0x200 is the first castle entry: Player::St_Talk_Cleanup starts 0x39
      * itself once the welcome message closes. prevLevel is data_0209f2f8
      * before InitResources re-latches it (:226); the port's latch runs in
-     * hal/level_change.cpp before this boot, so the value is kept here as the
-     * sublevel the previous boot seated (g_music_prev_level), which is what
-     * that global held on the cartridge between the two boots. */
+     * hal/level_change.cpp before this boot and hands the old value to
+     * port_music_note_prev_level below. It is the global, not the last level
+     * booted: ExitMinigameMenu writes 6 into it on the way back to the Rec
+     * Room, so that return is not castle to castle and the castle song, which
+     * the minigame menu stopped, starts again. */
     const int vs_mode = (data_0209f2d8 == 1);
     const int prev = g_music_prev_level;
-    g_music_prev_level = level;
     const char *skip = 0;
     if (vs_mode)
         skip = "VS: the ROM does not read this column";
@@ -700,6 +702,14 @@ void port_boot_course_sound(int level)
     seat_engine_a_layers();
 }
 
+/* Stage::InitResources' prevLevel (:226), handed over by the port's latch
+   (hal/level_change.cpp port_level_latch) at the moment it replaces
+   data_0209f2f8. seat_course_sound's same-area music guard reads it. */
+void port_music_note_prev_level(int level)
+{
+    g_music_prev_level = level;
+}
+
 /* THE MUSIC AFTER A SAVE-STATE RESTORE (a port feature, run hunt3 lane MUSIC1).
  *
  * lk6_savestate_load silences the sequencer and the mixer and re-seeds the
@@ -734,14 +744,11 @@ void port_boot_course_sound(int level)
  * sub-song player are not captured either; LoadAndSetMusic_Layer1 clears them
  * itself (func_02011b7c), the state a fresh boot leaves them in.
  *
- * Also re-seats seat_course_sound's previous-level record: after a restore
- * the world is in the snapshot's level, which is what data_0209f2f8 (restored
- * with .dsstate) says. VS mode is left alone: the ROM does not read the row
- * there and the arena's song belongs to its countdown. */
+ * VS mode is left alone: the ROM does not read the row there and the arena's
+ * song belongs to its countdown. */
 void port_course_music_after_restore(void)
 {
     const int level = data_0209f2f8;
-    g_music_prev_level = level;
     if (level < 0 || level >= 0x34 || data_0209f2d8 == 1)
         return;
     const int base = (signed char)data_02075768[level * 3 + 2];
