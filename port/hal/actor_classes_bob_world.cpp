@@ -430,66 +430,22 @@ static int __fastcall coin_egg(void *s, void *, int a)
 // Coin::InitResources does NOT load its own file for coin types 0 and 1. It
 // reads data_ov002_020ff06c[type]->filePtr and hands it straight to
 // ModelBase::SetFile, on the assumption that somebody already loaded it. That
-// somebody is Stage::InitResources (arm9 0x0202cc0c), which walks a four-entry
-// table of SharedFilePtr* at arm9 0x020756f0 and loads each one. The four
-// entries -- and config/arm9/relocs.txt names all four -- are exactly the
-// coin's two pairs:
+// somebody is Stage::InitResources (arm9 0x0202cc0c), whose loop over the
+// twelve SharedFilePtr* at arm9 0x020756f0 loads the coin's two pairs first
+// (files 0x8006 / 0x8005 / 0x8008 / 0x8007), and Stage::CleanupResources
+// releases them again on the way out of the level.
 //
-//     0x020756f0 -> ov002 0x0210da48   file 0x8006   coin type 0, model B
-//     0x020756f4 -> ov002 0x0210d9b8   file 0x8005   coin type 0, model A
-//     0x020756f8 -> ov002 0x0210da50   file 0x8008   coin type 1, model B
-//     0x020756fc -> ov002 0x0210d9f8   file 0x8007   coin type 1, model A
-//
-// Stage::InitResources DOES NOT RUN IN THE PORT: hal/stage_bridges.cpp fills
-// every one of the Stage's twenty slots with a trap, and gate 26 landed the
-// Stage as a scene root rather than as a running actor. Without the preload a
-// spawned coin walks straight into Model::LoadTexAndPal with a null BMD_File
-// and faults at +0xc -- which is exactly what the first run did, and the
-// backtrace named every frame of it.
-//
-// So the load happens here, out of the same four SharedFilePtrs by name, with
-// the same Model::LoadFile the ROM calls. Nothing is invented: the fileIDs are
-// asserted against the ones __sinit_ov002_02100560 constructed them with, so a
-// mount that has drifted says so instead of loading a stranger's archive.
-// WHEN Stage::InitResources IS HOSTED THIS COMES OUT WHOLE -- it is one call
-// and one table, in the wrong place only because its owner is not running.
-extern "C" {
-void *_ZN5Model8LoadFileER13SharedFilePtr(void *ptr);
-extern unsigned char data_ov002_0210da48[], data_ov002_0210d9b8[],
-    data_ov002_0210da50[], data_ov002_0210d9f8[];
-}
-
-static void port_coin_models_preload(void)
-{
-    static const struct { unsigned char *ptr; unsigned short file;
-                          const char *what; }
-    k[] = {
-        {data_ov002_0210da48, 0x8006, "coin type 0 model B"},
-        {data_ov002_0210d9b8, 0x8005, "coin type 0 model A"},
-        {data_ov002_0210da50, 0x8008, "coin type 1 model B"},
-        {data_ov002_0210d9f8, 0x8007, "coin type 1 model A"},
-    };
-    static int done;
-    if (done)
-        return;
-    done = 1;
-    for (unsigned i = 0; i < sizeof k / sizeof k[0]; ++i) {
-        unsigned short id = *(unsigned short *)k[i].ptr;
-        if (id != k[i].file) {
-            std::fprintf(stderr, "FATAL: %s: the sinit constructed file %04x, "
-                         "the ROM's own table says %04x -- WRONG BYTES\n",
-                         k[i].what, id, k[i].file);
-            std::abort();
-        }
-        _ZN5Model8LoadFileER13SharedFilePtr(k[i].ptr);
-    }
-}
+// That loop and its release are hosted now (hal/level_boot.cpp's
+// port_stage_preload_shared_models, on every stage boot; the release in
+// hal/level_change.cpp's change teardown), so the once-per-process copy of
+// the coin half that stood here is gone: it held the four at one extra
+// reference for the whole process, where the cartridge frees and reloads them
+// with every level like the other eight.
 
 extern "C" void hal_fill_coin_vtable(void)
 {
     void **vt = _ZTV4Coin;
     hal_fill_common_model_vtable();
-    port_coin_models_preload();
     port_coin_states_seat();
     bw_fill_shared(vt);
     vt[0] = (void *)coin_init;
