@@ -169,11 +169,15 @@ void hal_fill_switch_pillar_vtable(void);
 extern unsigned char g_profile_C0_WATER[];         /* ov012 0x021123e4 */
 void *daObjC0Water_c_classInit(void);                        /* ov012 0x02111730 */
 void hal_fill_basement_water_vtable(void);
-/* ---- gate 200: PUSH_BLOCK (306) + MUGEN_BGM (351), ov002 (already
+/* ---- gate 200: POWER_FLOWER (306) + MUGEN_BGM (351), ov002 (already
    mounted; the SpawnInfo/vtable symbols joined ov002_syms.txt for this
-   gate). id 306's records are dsd's "PowerFlower" names -- a naming-race
-   decoy; daObjPowerUpItem_c_classInit installs _ZTV9PushBlock itself (no SpawnInfo
-   +0x24 vtable word for this id). Both fills are in
+   gate). daObjPowerUpItem_c_classInit installs the table at 0x02109800
+   itself (no SpawnInfo +0x24 vtable word for this id); the port hosts it
+   under the name _ZTV9PushBlock, but config names it _ZTV11PowerFlower /
+   _ZTV18daObjPowerUpItem_c and its InitResources loads the flower's open and
+   closed models (gPFlowerOpenModelFile / gPFlowerCloseModelFile): id 306 is
+   the Power Flower. The row used to be labelled PUSH_BLOCK; the label is only
+   what logs and the census print. Both fills are in
    hal/actor_classes_ov002g200.cpp. */
 extern unsigned char g_profile_POWER_UP_ITEM[];           /* ov002 0x021097a0, +4 reads 306 */
 void *daObjPowerUpItem_c_classInit(void);                          /* ov002 0x020b9e0c */
@@ -183,7 +187,7 @@ void *daMugenBGM_c_classInit(void);                             /* ov002 0x020f1
 void hal_fill_mugen_bgm_vtable(void);
 /* ---- link100 SEAT3, gate 230: PUSHABLE_BLOCK (192), ov002 (already mounted;
    the SpawnInfo record joined ov002_syms.txt for this gate). A DIFFERENT class
-   from the PUSH_BLOCK row above, which is id 306: this one's factory really is
+   from the POWER_FLOWER row above, which is id 306: this one's factory really is
    called daObjPushblock_c_classInit and its table is the unnamed _ZTV16daObjPushblock_c,
    RTTI daObjPushblock_c. Keyed on the id and the addresses, not the names. Its
    vtable is filled by hal/actor_base_tables_ov002.cpp (gate 226, nine own
@@ -2420,9 +2424,9 @@ void hal_fill_cloud_vtable(void);               /* _ZTV5Cloud 0x02111858, 31 */
       hal_fill_switch_pillar_vtable}, \
      {35, "BASEMENT_WATER", g_profile_C0_WATER, daObjC0Water_c_classInit, \
       hal_fill_basement_water_vtable}, \
-     /* ---- gate 200: PUSH_BLOCK (306, the "PowerFlower" decoy) + MUGEN_BGM
+     /* ---- gate 200: POWER_FLOWER (306, labelled PUSH_BLOCK until FEATHER1) + MUGEN_BGM
         (351), ov002 ---- */ \
-     {306, "PUSH_BLOCK", g_profile_POWER_UP_ITEM, daObjPowerUpItem_c_classInit, \
+     {306, "POWER_FLOWER", g_profile_POWER_UP_ITEM, daObjPowerUpItem_c_classInit, \
       hal_fill_pushblock_vtable}, \
      {351, "MUGEN_BGM", g_profile_MUGEN_BGM, daMugenBGM_c_classInit, \
       hal_fill_mugen_bgm_vtable}, \
