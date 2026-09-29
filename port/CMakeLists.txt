@@ -24155,6 +24155,22 @@ file(GLOB _cp1_hal_seats CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/hal/*.cp
 add_custom_command(OUTPUT "${OVCROSS_C}" APPEND
     DEPENDS ${_cp1_hal_seats})
 
+# BBILL1 (run hunt4): THE ENDING'S LAST ICON STATE, HOSTED FROM THE ROM BODY.
+#
+# data_ov002_02110eec[8] (func_ov002_020f3de4) had an aborting face in
+# hal/cutscene_states_link100.cpp because the function has no byte-matching
+# src file. With every character unlocked the ending enters it right after
+# Peach's cake line, so the port aborted there. port/unmatched/
+# func_ov002_020f3de4.c is the banked near-miss of that body (register choice
+# and one swapped independent pair away from the ROM); it reads
+# data_ov002_021000c0, which port/ov002_syms.txt now mounts. All three hosting
+# targets, the SLICE OV2T shape: the face that calls it is compiled into
+# port_slice_shared, so the reference is on every one of the three link lines.
+foreach(_tbbill1 walk_window walk_window_hires smoke_player)
+    target_sources(${_tbbill1} PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/unmatched/func_ov002_020f3de4.c")
+endforeach()
+
 # XREL1 (run linkfull): EVERY OVERLAY MOUNT DEPENDS ON THE CONFIG IT READS.
 #
 # tools/ovdata.py builds each mount out of its overlay's config/arm9/overlays/
