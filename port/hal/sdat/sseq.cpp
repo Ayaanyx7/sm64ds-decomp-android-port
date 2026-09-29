@@ -157,6 +157,10 @@ struct Player {
     // this to 64 flattened the opening's cpr-96..127 SFX down onto the BGM and
     // let the mixer steal between them at random.
     int cpr;
+    // The ARM7 player's PAUSE byte, +1 (PlayerInit clears it at 0x037FD9C4).
+    // Command 0x02 writes it (sd_seq_pause); while it is set SND_SeqMain skips
+    // PlayerSeqMain for this player and still runs PlayerUpdateChannel.
+    int paused;
     sd_s16 var[SD_VARS];
 };
 
@@ -1186,6 +1190,47 @@ void sd_seq_stop(int p)
     memset(&g_pl[p], 0, sizeof g_pl[p]);
 }
 
+/* COMMAND 0x02, PAUSE_SEQ: the ARM7's handler at 0x037FE09C (arm7.bin case 2
+ * of the command switch at 0x037FEBF0), in full:
+ *
+ *     player->pause = flag;                        strb r1, [r6, #1]
+ *     if (flag)
+ *         for (t = 0; t < 16; t++)
+ *             if ((track = GetPlayerTrack(player, t)) != NULL)
+ *                 ReleaseTrackChannels(track, player, 127);   0x037FD948
+ *
+ * ReleaseTrackChannels gives every channel the track holds release rate 127
+ * (the fastest fade), drops it to priority 1, releases it and takes it off the
+ * track: track_stop's release + detach, with the rate set first. Nothing is
+ * stopped and nothing is rewound, so the tracks keep their place in the
+ * stream. SND_SeqMain (0x037FE288) then tests the byte before it steps a
+ * player:
+ *
+ *     if (doPeriodic && !player->pause) PlayerSeqMain(player);
+ *     PlayerUpdateChannel(player);
+ *
+ * so a paused sequence stands still, and flag 0 carries on from the same tick.
+ * The game sends it from Sound::PauseMusic / Sound::UnpauseMusic through
+ * func_0204f958 -> func_0204f558 -> func_0205ad6c, on the pause menu's way in
+ * and out of a course. The player stays active the whole time (its status bit
+ * does not clear), which is what the ARM9 expects to read back. */
+void sd_seq_pause(int p, int flag)
+{
+    if (p < 0 || p >= SD_PLAYERS) return;
+    Player &pl = g_pl[p];
+    pl.paused = flag;
+    if (!flag || !pl.active) return;
+    SD_VT("play %2d pause\n", p);
+    for (int t = 0; t < SD_TRACKS; t++)
+        for (int i = 0; i < SD_CHANNELS; i++)
+            if (g_note[i].active && g_note[i].player == p &&
+                g_note[i].track == t) {
+                sd_mix_set_env(i, -1, -1, -1, 127);
+                note_release(i, "sequence paused");
+                note_detach(i);
+            }
+}
+
 void sd_seq_set_volume(int p, int v)
 {
     if (p < 0 || p >= SD_PLAYERS || !g_pl[p].active) return;
@@ -1419,8 +1464,9 @@ void sd_seq_frame(void)
         Player &pl = g_pl[p];
         if (!pl.active) continue;
 
-        pl.tempoCount += pl.tempo;
-        while (pl.tempoCount >= 240) {
+        // A paused player is not stepped (sd_seq_pause), only updated.
+        if (!pl.paused) pl.tempoCount += pl.tempo;
+        while (!pl.paused && pl.tempoCount >= 240) {
             pl.tempoCount -= 240;
 
             // Note durations are in sequencer TICKS, so they expire here --

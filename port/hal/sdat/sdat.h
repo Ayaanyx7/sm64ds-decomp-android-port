@@ -186,6 +186,8 @@ int sd_cnv_vol(int v);
 int sd_seq_start(int player, const sd_u8 *seqBase, sd_u32 startOff,
                  const sd_u8 *sbnk);
 void sd_seq_stop(int player);
+// Command 0x02: pause (flag 1) or resume (flag 0) a player where it stands.
+void sd_seq_pause(int player, int flag);
 void sd_seq_set_volume(int player, int vol);      // 0..127
 // PLAYER_PARAM 4: the player's channel priority (player +4 in the ARM7).
 void sd_seq_set_priority(int player, int prio);
