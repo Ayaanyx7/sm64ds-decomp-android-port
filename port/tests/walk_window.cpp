@@ -5291,6 +5291,17 @@ static int port_menu_relaunch(int scene_id, int level_id)
     return 1;
 }
 
+/* THE FRONT DOOR FOR hal/title_entry.cpp (run hunt4): a scene session that
+   picks a save file on the title ends through port_menu_relaunch(-1, -1), the
+   destination port_front_end_quit_poll below uses. Handed over through a
+   pointer for port_interlude_frame_hook's reason (title_entry.cpp is on the
+   smoke targets and this file is not), seated at static init so it is in
+   place before main reaches the scene handover. */
+extern "C" int (*port_title_front_door_hook)(void);
+static int port_title_front_door(void) { return port_menu_relaunch(-1, -1); }
+static const int port_title_front_door_seated =
+    (port_title_front_door_hook = port_title_front_door, 1);
+
 /* THE THIRD DESTINATION: a VS boot. Same launcher discipline as the two
    above -- the shared clear table, the destination class cleared and then
    set, no forced layout -- and the child does the rest: its boot hook (past

@@ -111,6 +111,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <windows.h>
 
 extern "C" {
 
@@ -368,6 +369,120 @@ extern "C" int port_title_entry_taken(void)
     return g_taken;
 }
 
+/* ---- A SCENE SESSION THAT PICKS A FILE: THE FRONT DOOR (run hunt4) -------
+ *
+ * The debug menu's minigame row starts the game again as a child with
+ * SM64DS_SCENE=<the minigame> (tests/walk_window.cpp port_menu_relaunch). The
+ * ROM carries that session anywhere its own menus go: out of the minigame, to
+ * the Rec Room menu, back to the title, and on to the file select. When the
+ * player picks a file there, StartFile asks for scene 3 exactly as it does in
+ * the default boot -- and the bridge above is not armed, because the session
+ * did not boot the title (port_title_entry_armed: want != SCENE_TITLE). So the
+ * scene spawner declines the Stage every frame and the title's own white
+ * fade-out stays on screen for good. That is the forum's white screen.
+ *
+ * ARMING THE BRIDGE HERE IS NOT THE ANSWER. port_scene_env_want() is resolved
+ * once for the whole process and about seventy port sites read it; a level
+ * that fell through from this session would run as "scene <minigame>" (the
+ * minigame blockers and witnesses in hal/scene_mg.cpp key on it). The session
+ * ends instead, through the same front door port_front_end_quit_poll uses:
+ * port_menu_relaunch(-1, -1), a fresh default boot whose title arms itself.
+ *
+ * THE PICKED FILE GOES WITH IT. SM64DS_BOOT_FILE=<0|1|2> is the slot the ROM
+ * wrote to data_0209caa0[0x328] (func_02013c84, from the player's own pick).
+ * The successor copies no save state from it: it reads its save from the card
+ * like every boot, and the driver below presses the same file button through
+ * the ROM's own handler. The name is not in the relaunch clear table, so the
+ * child inherits it, and the child removes it from its own environment on
+ * first read so none of ITS successors inherit it again.
+ *
+ * NO SUCCESSOR FROM A SCRIPTED RUN. A frame budget (SM64DS_SCENE_FRAMES) is a
+ * harness run with nobody to hand a window to; it says what a session would
+ * do, once, and carries on exactly as before. */
+extern "C" {
+/* seated by tests/walk_window.cpp (port_menu_relaunch(-1, -1)); a pointer for
+   port_interlude_frame_hook's reason: this file is on the smoke targets too
+   and that one is not. Null there, and the session path then stays as it was. */
+int (*port_title_front_door_hook)(void) = 0;
+void func_ov007_020b6134(int slot);    /* src/func_ov007_020b6134.cpp */
+}
+
+static const char BOOT_FILE_ENV[] = "SM64DS_BOOT_FILE";
+
+static int port_title_front_door_poll(void)
+{
+    static int fired;
+    static int said;
+    if (fired)
+        return 1;
+    if (data_02092664 != SCENE_STAGE || data_02092660 != 0)
+        return 0;
+    const int want = port_scene_env_want();
+    if (!std::getenv("SM64DS_SCENE") || want == SCENE_TITLE ||
+        want == SCENE_STARSEL)
+        return 0;
+    const int slot = (int)data_0209caa0[0x328];
+    const int level = (int)data_02092110;
+    if (std::getenv("SM64DS_SCENE_FRAMES")) {
+        if (!said) {
+            said = 1;
+            std::fprintf(stderr, "[title-entry] scene %d session asked for "
+                         "the Stage (file slot %d, level %d): a session would "
+                         "start the front door carrying the slot; this run has "
+                         "a frame budget, so no successor\n", want, slot,
+                         level);
+        }
+        return 0;
+    }
+    if (!port_title_front_door_hook)
+        return 0;
+    fired = 1;
+    port_scene_request_release("a scene session picked a file; the front "
+                               "door carries it");
+    const int carry = level >= 0 && slot >= 0 && slot <= 2;
+    char v[2] = { (char)('0' + slot), 0 };
+    if (carry)
+        SetEnvironmentVariableA(BOOT_FILE_ENV, v);
+    const int ok = port_title_front_door_hook();
+    const unsigned long err = ok ? 0 : GetLastError();
+    if (!ok && carry)
+        SetEnvironmentVariableA(BOOT_FILE_ENV, 0);
+    if (ok)
+        std::fprintf(stderr, "[title-entry] scene %d session picked file slot "
+                     "%d (level %d): started the game again at its front "
+                     "door%s, this process is quitting\n", want, slot, level,
+                     carry ? " with SM64DS_BOOT_FILE set" : "");
+    else
+        std::fprintf(stderr, "[title-entry] scene %d session picked file slot "
+                     "%d: could not start the front door (win32 %lu); "
+                     "quitting anyway, which lands the player back in the "
+                     "launcher\n", want, slot, err);
+    std::fflush(stderr);
+    return 1;
+}
+
+/* The carried pick in the successor: 0, 1 or 2, or -1. Read once, used only
+   on the default boot's title, consumed either way. */
+static int port_title_carried_file(void)
+{
+    static int v = -2;
+    if (v != -2)
+        return v;
+    v = -1;
+    const char *e = std::getenv(BOOT_FILE_ENV);
+    if (!e)
+        return v;
+    SetEnvironmentVariableA(BOOT_FILE_ENV, 0);
+    if (e[0] >= '0' && e[0] <= '2' && !e[1] && port_boot_is_default_title())
+        v = e[0] - '0';
+    std::fprintf(stderr, "[boot-file] SM64DS_BOOT_FILE=%s: %s\n", e,
+                 v >= 0 ? "the title presses that file's button once the "
+                          "file select is up"
+                        : "ignored (not a default title boot, or not 0..2)");
+    std::fflush(stderr);
+    return v;
+}
+
 /* ---- SM64DS_SKIP_MENU: BOOT TO FILE, THROUGH THE ROM'S OWN CHOICE ---------
  *
  * The owner asked for a toggle that skips the main menu and drops the player
@@ -582,13 +697,19 @@ extern "C" void port_title_elems_dump(int frame)
 
 /* Called once per frame from hal/scene_boot.cpp's port_scene_tick, beside the
    state trace and for the same reason: after the actor phases, so it reads the
-   state the frame ended in. Inert unless SM64DS_SKIP_MENU is set. */
+   state the frame ended in. Inert unless SM64DS_SKIP_MENU is set, or a scene
+   session's front door carried a file (SM64DS_BOOT_FILE, above): that runs
+   the same two steps and then STEP 3, the file's own button. */
 extern "C" void port_title_skip_tick(int frame)
 {
     port_title_elems_dump(frame);
     static int tapped;      /* the title screen has been touched */
     static int chosen;      /* the menu row has been picked */
-    if (chosen || !port_boot_skip_menu())
+    static int picked;      /* the carried file's button has been pressed */
+    const int carry = port_title_carried_file();
+    if (!port_boot_skip_menu() && carry < 0)
+        return;
+    if (chosen && (carry < 0 || picked))
         return;
     /* Only on the title. port_scene_env_want is the same test the bridge
        makes, and it is cheap and cached. */
@@ -602,6 +723,33 @@ extern "C" void port_title_skip_tick(int frame)
         return;
     const int state = *(short *)(sp + 0);
     const int req   = *(short *)(sp + 2);
+
+    /* ---- STEP 3: THE CARRIED FILE, THROUGH THE FILE BUTTON'S OWN HANDLER --
+     *
+     * Only after step 2, and only once the file select is up and settled:
+     * top-state 0 with the element machine at 5 and nothing requested of
+     * either (measured on the default boot: state 6 at f495, then state 0 /
+     * elem 5 at f564). src/func_ov007_020b50e8.c answers the A / B / C buttons
+     * (ids 14..16) with func_ov007_020b6134(id - 14), which on top-state 0 is
+     * func_ov007_020aec94(slot + 3): the same pick a stylus makes, and from
+     * there dScDSMT_c::Behavior's own func_02013c84 + StartFile. */
+    if (chosen) {
+        char *ep = *(char **)(g + 4);
+        if (state != 0 || req != -1 || !ep)
+            return;
+        if (*(short *)ep != 5 || *(short *)(ep + 2) != -1)
+            return;
+        if (*(int *)(sp + 0xc) < 8)
+            return;
+        picked = 1;
+        func_ov007_020b6134(carry);
+        std::fprintf(stderr, "[boot-file] f%d: the file select is up; pressed "
+                     "file %c through the ROM's own func_ov007_020b6134(%d) "
+                     "(top-state now asks for %d)\n", frame, 'A' + carry,
+                     carry, (int)*(short *)(sp + 2));
+        std::fflush(stderr);
+        return;
+    }
 
     /* ---- STEP 1: THE TITLE SCREEN WANTS A TOUCH, SO GIVE IT ONE ----------
      *
@@ -681,7 +829,7 @@ extern "C" void port_title_skip_tick(int frame)
 extern "C" int port_title_entry_should_stop(void)
 {
     if (!port_title_entry_armed())
-        return 0;
+        return port_title_front_door_poll();   /* a scene session: see above */
     if (data_02092664 != SCENE_STAGE)
         return 0;                    /* not the Stage: 2, 6 and 7 are not ours */
     return data_02092660 == 0;       /* the title has finished tearing down */
