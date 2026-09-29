@@ -177,6 +177,13 @@ int hal_lc_compose_rows(int *text_r0, int *text_r1, int *coin_r0, int *coin_r1);
    at run time rather than by a literal, the way the map's camera buttons are:
    a graphic that moved would take its tile number with it. */
 extern const unsigned short _ZN3OAM14BOUNCING_ARROWE[];
+
+/* Message::Update's four cursor templates (see msg_layer_px below), mounted by
+   name through port/ov002_syms.txt: one OamAttr each, attr3 0xffff. */
+extern unsigned char data_ov002_0210c390[];
+extern unsigned char data_ov002_0210c398[];
+extern unsigned char data_ov002_0210c3a0[];
+extern unsigned char data_ov002_0210c3a8[];
 }
 
 namespace {
@@ -710,7 +717,11 @@ inline uint32_t blend_alpha(uint32_t top, uint32_t below, int eva, int evb) {
 // which is a question about the layer's PRIORITY and not its identity. Two
 // pixels owned by BG2 on the same frame can answer differently if the game
 // moves BG2CNT's priority field between them.
-struct Cell { uint32_t color; bool hit; uint8_t owner; uint8_t prio; };
+struct Cell { uint32_t color; bool hit; uint8_t owner; uint8_t prio;
+              uint8_t msgcur; /* OBJ texels only: see msg_layer_px */ };
+/* msgcur rides in what was the struct's tail padding, so the buffer did not
+   grow for it. */
+static_assert(sizeof(Cell) == 8, "Cell grew");
 Cell g_a[192][256];
 
 // Owner ids: 0-3 are BG0..BG3 and 4 is the sprite layer. The same numbering is
@@ -718,6 +729,31 @@ Cell g_a[192][256];
 // read against each other without a translation table.
 enum { kOwnerObj = 4, kOwnerN = 5 };
 const char *const kOwnerName[kOwnerN] = {"BG0", "BG1", "BG2", "BG3", "OBJ"};
+
+/* THE MESSAGE BOX'S OWN SPRITES, marked per pixel. Message::Update draws two
+   cursors with OAM::Render (src/_ZN7Message6UpdateEv.cpp; the twin is
+   src/func_020326ac.c): the choice pointer beside the answers of a Yes / No
+   question (templates ov002 0x0210c3a0 / 0x0210c3a8), at the box origin
+   data_0209d650 + 0xc, and the advance arrow (ov002 0x0210c390 / 0x0210c398)
+   at the box's lower right. Both are positioned in the BOX's coordinates, so
+   on the cartridge they sit inside the box by construction. The box is BG3,
+   which the widescreen blit centres at the native scale; these texels are OBJ,
+   which it anchored to the screen edges like the corner HUD, and that pulled
+   the pointer out to the left of the box and the arrow out to the right (the
+   0.5.2 forum report). Cell::msgcur is set on an OBJ texel one of those
+   four templates put there, and the blit gives that texel BG3's placement.
+   raster_obj writes the byte with every OBJ texel it stores, 1 or 0, so a
+   later sprite that covers a cursor texel clears it; it is read only where
+   the owner is OBJ, so the value a background pixel carries over from an
+   older frame is never looked at. At 4:3 nothing reads it. */
+
+/* The message layer, as the widescreen placement sees it: BG3's own texels,
+   and the box's cursor sprites that the game positions inside BG3's box. */
+inline bool msg_layer_px(int y, int x)
+{
+    return g_a[y][x].owner == 3
+           || (g_a[y][x].owner == kOwnerObj && g_a[y][x].msgcur);
+}
 
 // Is the layer that owns a composited pixel BEHIND the 3D layer?
 //
@@ -966,7 +1002,9 @@ void unite(int a, int b) {
 // rule that predates this one and is not a band decision at all: dialogue is
 // centred at the native scale, whatever else is on screen. Leaving its glyphs
 // in the mask would also bridge a box of text into whatever HUD sits beside it
-// and drag both to the box's centre.
+// and drag both to the box's centre. The box's own cursor sprites (msgcur)
+// are held out with it, for the same two reasons: they take the box's placement,
+// and they must not bridge into a HUD element beside the box.
 //
 // band_l / band_r are the same two splits the band rule used, so an element
 // wholly inside a band keeps exactly that band's offset.
@@ -980,13 +1018,13 @@ void resolve(int band_l, int band_r, int margin)
     for (int y = 0; y < 192; ++y) {
         int run = kBridgeX + 1;
         for (int x = 0; x < 256; ++x) {
-            const bool on = g_a[y][x].hit && g_a[y][x].owner != 3;
+            const bool on = g_a[y][x].hit && !msg_layer_px(y, x);
             run = on ? 0 : (run + 1);
             dil[y][x] = (run <= kBridgeX) ? 1 : 0;
         }
         run = kBridgeX + 1;
         for (int x = 255; x >= 0; --x) {
-            const bool on = g_a[y][x].hit && g_a[y][x].owner != 3;
+            const bool on = g_a[y][x].hit && !msg_layer_px(y, x);
             run = on ? 0 : (run + 1);
             if (run <= kBridgeX) dil[y][x] = 1;
         }
@@ -1062,7 +1100,7 @@ void resolve(int band_l, int band_r, int margin)
             if (!l) continue;
             const int r = find_root(l);
             g_lbl[y][x] = (int16_t)r;
-            if (!g_a[y][x].hit || g_a[y][x].owner == 3) continue;
+            if (!g_a[y][x].hit || msg_layer_px(y, x)) continue;
             if (x < x0[r]) x0[r] = x;
             if (x > x1[r]) x1[r] = x;
         }
@@ -1488,6 +1526,46 @@ inline bool arrow_entry(unsigned short a2, int y, int bh)
     return false;
 }
 
+/* THE MESSAGE BOX'S CURSORS, read out of the cartridge's own four templates
+   (the banner over msg_layer_px) rather than written down as numbers, the way the
+   bouncing arrows are above. A drawn entry is one of them when its shape, its
+   size, its tile and its palette are a template's: OAM::Render keeps all four
+   from the template when Message::Update passes palette -1, and only the
+   position and the priority come from the call. Four fields and not the tile
+   alone because engine A's OBJ VRAM is shared by every top-screen sprite. */
+struct MsgCur { unsigned short a0, a1, a2; };
+MsgCur g_msgcur_tpl[4];
+
+inline unsigned short tpl16(const unsigned char *p, int k)
+{
+    return (unsigned short)(p[k * 2] | (p[k * 2 + 1] << 8));
+}
+
+void msgcur_init(void)
+{
+    const unsigned char *const t[4] = {
+        data_ov002_0210c390, data_ov002_0210c398,
+        data_ov002_0210c3a0, data_ov002_0210c3a8};
+    for (int k = 0; k < 4; ++k) {
+        g_msgcur_tpl[k].a0 = (unsigned short)(tpl16(t[k], 0) & 0xC000u);
+        g_msgcur_tpl[k].a1 = (unsigned short)(tpl16(t[k], 1) & 0xC000u);
+        g_msgcur_tpl[k].a2 = (unsigned short)(tpl16(t[k], 2) & 0xF3FFu);
+    }
+}
+
+inline bool msgcur_entry(unsigned short a0, unsigned short a1,
+                         unsigned short a2)
+{
+    static bool init;
+    if (!init) { msgcur_init(); init = true; }
+    for (int k = 0; k < 4; ++k)
+        if ((a0 & 0xC000u) == g_msgcur_tpl[k].a0
+            && (a1 & 0xC000u) == g_msgcur_tpl[k].a1
+            && (a2 & 0xF3FFu) == g_msgcur_tpl[k].a2)
+            return true;
+    return false;
+}
+
 void arrow_capture(int px, int py, uint32_t color)
 {
     if (!g_arrow_n) {
@@ -1560,6 +1638,10 @@ void raster_obj(uint32_t dispcnt, const Blend &bl, const Windows &win,
         g_arrow_n = 0;
     }
     const bool arrows_moved = hal_minimap_arrow_reanchor_on() != 0;
+    /* THE BOX'S CURSORS (msg_layer_px) are only looked for while BG3, the
+       box's layer, is switched on in DISPCNT: Message::Update draws a cursor
+       only over an open box. */
+    const bool box_up = (dispcnt >> 11) & 1;
     int probe_x, probe_y;
     objbg_probe_pixel(probe_x, probe_y);
     ++g_obj_frame;
@@ -1639,6 +1721,8 @@ void raster_obj(uint32_t dispcnt, const Blend &bl, const Windows &win,
            piece -- it neither draws where the ROM put it nor takes part in the
            priority resolution of the sprites that stay. */
         const bool arrow = arrows_moved && arrow_entry(a2, y, bh);
+        /* and is it one of the message box's own cursors (msg_layer_px)? */
+        const bool msgcur = box_up && msgcur_entry(a0, a1, a2);
         /* attribute 2 bits 10-11, this sprite's own priority. Read here rather
            than at the store because the OBJ-vs-OBJ test below needs it before
            a texel is written. */
@@ -1884,6 +1968,8 @@ void raster_obj(uint32_t dispcnt, const Blend &bl, const Windows &win,
                 g_a[py][px].color = color;
                 g_a[py][px].hit = true;
                 g_a[py][px].owner = kOwnerObj;
+                /* whose texel this is, for the widescreen placement */
+                g_a[py][px].msgcur = msgcur ? 1 : 0;
                 /* The priority the OBJ-vs-OBJ test above, the OBJ-vs-BG test
                    at the top of this loop, and the 3D layer's test in the
                    final blit all read. */
@@ -2928,14 +3014,16 @@ extern "C" void port_message_composite_engine_a(void *fbp)
             /* THE PLACEMENT, in precedence order.
                BG3 first: the message layer is centred at the native scale
                whatever else is on screen, which is the rule that predates the
-               element pass and the reason BG3 is held out of its mask.
+               element pass and the reason BG3 is held out of its mask. The
+               box's cursor sprites go with it (msg_layer_px): the game puts them
+               in the box's own coordinates, so they move as the box moves.
                Then a full-2D top screen, which is pillarboxed whole.
                Otherwise the pixel takes ITS OWN ELEMENT's anchor, so an
                element that straddles a split moves in one piece instead of
                being cut at the split. With SM64DS_HUD_BANDSPLIT armed the
                last arm is the original per-column band split instead, which
                is the control the before/after images are taken against. */
-            hx0 = (g_a[y][x].owner == 3)
+            hx0 = msg_layer_px(y, x)
                           ? x * uni + margin / 2
                           /* A SCENE PRESENTED NATIVELY TAKES THE PILLARBOX ARM
                              whether or not a 3D layer is behind it. Tango's
