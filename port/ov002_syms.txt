@@ -133,7 +133,16 @@ data_ov002_021098e8:0x18 data_ov002_021098ec:0x14 data_ov002_021098f0:0x10
 # SetFile takes the last arg by reference, so the block is dereferenced and
 # must be mounted. Both 0x20 bytes.
 data_ov002_0210d854:0x20 data_ov002_0210d894:0x20
-data_ov002_0210d7f4:0x8
+# The CLPS_Block daObjCannonShutter_c::InitResources hands its mesh collider
+# (the relocation at 0x020bccc4). One row: 43 4c 50 53 08 00 01 00, then
+# c0 0f 00 00 ff 00 00 00, then 0x10 bytes of 0xff fill to the next block, so
+# it is pinned to its ROM span 0x20 like its neighbours. At 0x8 the mount held
+# the header only: the surface lookup (func_020381cc) read row 0 out of
+# whatever host symbol the linker put next, g_profile_WARPKUN, whose first
+# word is a host code pointer, so the cannon lid's surface changed with the
+# exe layout (Snowman's Land: Mario fell through the lid on one build and
+# landed on it on another).
+data_ov002_0210d7f4:0x20
 g_profile_WARPKUN:0x1c
 # gate 32: the two-entry coin-id table Enemy::SpawnCoin indexes by its own
 # +0x108 death-drop type. Not reached by any class before an enemy could die.
