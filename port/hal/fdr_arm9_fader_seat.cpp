@@ -410,6 +410,76 @@ static void *fdr_msvc_order_vt[6] = {
     (void *)fdr_view_is_at_end,       /* 0x14  IsAtEnd */
 };
 
+/* THE SETTER VIEW, run hunt4 lane RECROOM1: the same one-slot skew, in the
+   body this file forwards for slot 0x0c's `type == 1` branch.
+
+   The matched FaderBrightness::SetBackwardTime stores `speed` and ends in an
+   UNQUALIFIED `return IsAtStart();`. Read out of the INT68 binary,
+   ?SetBackwardTime@FaderBrightness@@UAEHI@Z is
+
+       +0x2d  mov  dword ptr [esi + 8], eax     speed (frames != 0 arm)
+       +0x33  mov  eax, dword ptr [esi]
+       +0x35  mov  ecx, esi
+       +0x37  call dword ptr [eax + 0x10]       nothing pushed
+
+   and on a dWipe_c, whose vptr is the ROM-ordered data_020926f0, byte 0x10 is
+   SetForwardTime: fdr_s10 below. That trampoline sees the OBJECT in ECX, takes
+   the call for its __thiscall shape, runs SetForwardTime with a word off the
+   caller's frame as its duration and returns with `ret 8` for eight bytes
+   nobody pushed. The epilogues that follow pop the wrong words and return
+   into the stack. Measured on the INT68 copy and on the shipped 0.5.3 kit
+   exe: quit a minigame from its pause menu (which sets the wipe's type to 1),
+   start another from the Rec Room, quit that one the same way, and the Rec
+   Room's own dScene_c::BeforeBehavior fade-in faults with eip 001aef2c on its
+   first frame -- the players' crash, the same eip and return word.
+
+   hal/scene_boot.cpp's L2Eb2cView already runs the same two setters for the
+   FaderColor table this way. This is that view for the dWipe_c: the ROM
+   object's three leading words, so the body reads and writes the fields it
+   expects, plus the real receiver past them. On the cartridge 0x020176d8
+   stores speed and then asks the RECEIVER's slot 5 (byte 0x14), which on a
+   dWipe_c is dWipe_c::IsAtStart; the thunk below commits the stored speed to
+   the real object first and then makes exactly that dispatch, so the order of
+   the two effects is the ROM's too. */
+struct FdrSetterView {
+    void **vt;        /* +0x00  the MSVC-ordered table below */
+    int currInterp;   /* +0x04 */
+    int speed;        /* +0x08  the one field the setters write */
+    void *real;       /* +0x0c  past the ROM object, invisible to the body */
+};
+
+static int fdr_setter_dispatch(FdrSetterView *v, unsigned rom_byte)
+{
+    ((int *)v->real)[2] = v->speed;
+    void **vt = *(void ***)v->real;
+    return ((FdrPredicate)vt[rom_byte / 4])(v->real, 0);
+}
+
+static int __fastcall fdr_setter_is_at_start(FdrSetterView *v, void *)
+{ return fdr_setter_dispatch(v, 0x14); }
+static int __fastcall fdr_setter_is_at_end(FdrSetterView *v, void *)
+{ return fdr_setter_dispatch(v, 0x18); }
+
+static int __fastcall fdr_setter_unreached(void *, void *)
+{
+    std::fprintf(stderr, "  [fdr] the MSVC-ordered view built for "
+                 "FaderBrightness::SetBackwardTime was dispatched below byte "
+                 "0x10. That body is supposed to reach 0x10 and nothing else, "
+                 "so its codegen has changed and the view no longer describes "
+                 "it.\n");
+    std::fflush(stderr);
+    return 0;
+}
+
+static void *fdr_setter_msvc_vt[6] = {
+    (void *)fdr_setter_unreached,     /* 0x00  dtor, folded */
+    (void *)fdr_setter_unreached,     /* 0x04  AdvanceFade */
+    (void *)fdr_setter_unreached,     /* 0x08  SetBackwardTime */
+    (void *)fdr_setter_unreached,     /* 0x0c  SetForwardTime */
+    (void *)fdr_setter_is_at_start,   /* 0x10  IsAtStart */
+    (void *)fdr_setter_is_at_end,     /* 0x14  IsAtEnd */
+};
+
 }  /* extern "C" -- the view's internals are C++ and not ROM names */
 
 extern "C" int _ZN15FaderBrightness20IsBetweenStartAndEndEv(void *self)
@@ -445,9 +515,23 @@ void func_02017610(void *self)
    src/_ZN7dWipe_c15SetBackwardTimeEj.c forwards it and its own comment explains that keeping it
    is what makes the register allocation match. Both sides are cdecl here and
    the caller cleans its own arguments, so the extra word costs nothing and is
-   carried rather than silently dropped. */
+   carried rather than silently dropped.
+
+   THE MATCHED BODY RUNS AGAINST FdrSetterView, run hunt4 lane RECROOM1: its
+   closing IsAtStart() is one MSVC slot low against this object's ROM-ordered
+   table, and the view is what lands it on the ROM's byte 0x14. See the view. */
 int _ZN15FaderBrightness15SetBackwardTimeEj(void *self, u32 frames, u32)
-{ return ((FaderBrightness *)self)->FaderBrightness::SetBackwardTime(frames); }
+{
+    FdrSetterView v;
+    v.vt = fdr_setter_msvc_vt;
+    v.currInterp = ((int *)self)[1];
+    v.speed = ((int *)self)[2];
+    v.real = self;
+    const int r = ((FaderBrightness *)(void *)&v)->
+        FaderBrightness::SetBackwardTime(frames);
+    ((int *)self)[2] = v.speed;
+    return r;
+}
 
 }  /* extern "C" */
 

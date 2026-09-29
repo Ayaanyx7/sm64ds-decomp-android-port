@@ -68,6 +68,7 @@ int  IsLevelInsideCastle(int level);           /* seat_course_sound's two   */
 int  IsLevelTinyHugeIslandOutside(int level);  /* same-area music guards    */
 void _ZN5Sound22StopLoadedMusic_Layer1Ej(unsigned int frames);
 void _ZN5Sound8SetMusicEjj(unsigned int player, unsigned int seqId);
+void _ZN5Sound10PauseMusicEv(void);            /* Stage::PS_Init's own call */
 
 // ---- the globals it reads and seats ----------------------------------------
 extern int          data_0209fc48;    /* the running cutscene script, 0 = none */
@@ -760,6 +761,18 @@ void port_course_music_after_restore(void)
             _ZN5Sound22StopLoadedMusic_Layer1Ej(0);
         else
             _ZN5Sound8SetMusicEjj(data_0209f250, (unsigned)current);
+    }
+    /* A snapshot taken on the pause screen comes back on it (data_0209f2c4 is
+       in .dsstate), and the song just started has not been through the pause
+       the game put the old one through. Stage::PS_Init sends Sound::PauseMusic
+       on the way in and PS_Cleanup sends UnpauseMusic (or stops layer 1) on
+       the way out, so the song is paused here the same way, and the pause
+       screen's own exit lets it go. */
+    if (data_0209f2c4 != 0) {
+        _ZN5Sound10PauseMusicEv();
+        fprintf(stderr, "[course] restore: the snapshot is on the pause "
+                "screen (state %d): the song is paused with it\n",
+                data_0209f2c4);
     }
     g_course_music = current;
     fprintf(stderr, "[course] restore: sublevel %d, base song %d, song %d "

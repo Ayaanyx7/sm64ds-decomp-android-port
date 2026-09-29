@@ -835,7 +835,14 @@ int func_ov030_02112578(void *arg0)
     int _ZN6Player11ShowMessageER7fBase_cjPK7Vector3hh(void *player, void *actor, unsigned int id, const void *pos, unsigned int a, unsigned int b);
     void _ZN9Animation8SetFlagsEi(void *thiz, int flags);
     void func_0201267c(int a, void *b);
+#ifdef _MSC_VER
+    /* Player::GetTalkState's receiver: on the cartridge ClosestPlayer's result
+       is still in r0 at the bl in case 3 (ov030 0x02112598 -> 0x02112748), and
+       the host face (port/hal/method_faces.cpp) takes it as its one argument. */
+    int _ZN6Player12GetTalkStateEv(void *player);
+#else
     int _ZN6Player12GetTalkStateEv(void);
+#endif
     void _ZN6Player18HasFinishedTalkingEv(void *player);
     int _ZNK10dBgCh_Actr13JustHitGroundEv(const void *thiz);
     int _ZN9Animation8FinishedEv(void *thiz);
@@ -894,7 +901,11 @@ int func_ov030_02112578(void *arg0)
         break;
     }
     case 3:
+#ifdef _MSC_VER
+        if (_ZN6Player12GetTalkStateEv(r6) == 2) {
+#else
         if (_ZN6Player12GetTalkStateEv() == 2) {
+#endif
             _ZN6Player18HasFinishedTalkingEv(r6);
             _ZN9ModelAnim7SetAnimEP8BCA_Filei5Fix12IiEj(c + 0xd4, data_ov030_02115d18[1], 0, 0x1000, 0);
             { u8 *p = (u8 *)((unsigned int)c + 0x3c7); *p = *p + 1; }

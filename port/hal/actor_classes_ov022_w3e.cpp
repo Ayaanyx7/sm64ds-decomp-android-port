@@ -98,8 +98,11 @@
 //
 // 243 keeps a pointer at +0x108 to a pair of mwcc pointer-to-member records,
 // and __sinit_ov022_021130bc builds that pair in bss 0x02114690 by copying the
-// two .data pairs at 0x02114424 ({func_ov022_021126ac, 0}) and 0x0211442c
-// ({func_ov022_02112710, 0}). Two TUs dispatch through it:
+// two .data pairs at 0x0211442c ({func_ov022_02112710, 0}) to +0 (the INIT
+// half) and 0x02114424 ({func_ov022_021126ac, 0}) to +8 (the per-frame half).
+// Read off the sinit's own bytes (ov022 0x021130bc: ldr r1 = 0x0211442c,
+// ldr r0 = 0x02114424, str [r1] -> 0x02114690+0, str [r0] -> +8), not off the
+// .data addresses' order. Two TUs dispatch through it:
 //   src/_ZN21daObj_volcanoCannon_c11ChangeStateEPNS_5StateE.cpp        sets the pointer and calls record 0
 //   src/_ZN21daObj_volcanoCannon_c8BehaviorEv.cpp  calls the record at +8
 // Both are compiled with /vmg /vmm (port/CMakeLists.txt), which is the wave-18
@@ -589,8 +592,8 @@ int *_ZN21daObj_volcanoCannon_cD0Ev(int *self);                 /* slot 17 */
 void *daObj_volcanoCannon_c_classInit(void);
 /* the two PMF state bodies the record seat installs (both matched, both on
    this lane's slice). ROM pairs, read out of overlay_0022.bin:
-     0x02114424 = { func_ov022_021126ac, 0 }
-     0x0211442c = { func_ov022_02112710, 0 }   */
+     0x02114424 = { func_ov022_021126ac, 0 }   -> bss +8, the per-frame half
+     0x0211442c = { func_ov022_02112710, 0 }   -> bss +0, the init half   */
 int func_ov022_021126ac(char *self);
 int func_ov022_02112710(char *self);
 extern unsigned char data_ov022_02114690[];   /* the bss pair the sinit fills */
@@ -635,10 +638,10 @@ static int __fastcall vf_d0(void *s, void *)
 { return (int)(size_t)_ZN21daObj_volcanoCannon_cD0Ev((int *)s); }
 /* the two pointer-to-member records, as __fastcall (ecx is arg 1) so the
    __thiscall dispatch /vmg /vmm emits reaches these cdecl bodies. */
-static int __fastcall vf_state0(void *s, void *)
-{ return func_ov022_021126ac((char *)s); }
-static int __fastcall vf_state1(void *s, void *)
+static int __fastcall vf_state_init(void *s, void *)
 { return func_ov022_02112710((char *)s); }
+static int __fastcall vf_state_tick(void *s, void *)
+{ return func_ov022_021126ac((char *)s); }
 extern "C" void hal_fill_volcano_fire_vtable(void)
 {
     ov22e_bringup();
@@ -655,9 +658,15 @@ extern "C" void hal_fill_volcano_fire_vtable(void)
     /* THE STATE-RECORD RE-SEAT. __sinit_ov022_021130bc ran in ov22e_bringup
        above and copied the ROM's two {fn, 0} pairs -- DS code addresses -- into
        0x02114690. Overwrite both function words with the host thunks and write
-       the deltas back as the ROM's zero. */
+       the deltas back as the ROM's zero. IN THE SINIT'S ORDER: +0 is the init
+       half func_ov022_02112710 (ChangeState runs it once: the 0x3c-frame timer
+       and the random throw), +8 the per-frame half func_ov022_021126ac
+       (Behavior runs it: the kill checks and the burn). Seated the other way
+       round, ChangeState ran the kill check on a timer still at zero and
+       every fireball destroyed itself the frame it spawned, before its
+       Behavior ever lit particle 0x129: the volcano erupted with no fire. */
     {
-        static void *const seat[2] = { (void *)vf_state0, (void *)vf_state1 };
+        static void *const seat[2] = { (void *)vf_state_init, (void *)vf_state_tick };
         int i;
         for (i = 0; i < 2; ++i) {
             *(void *volatile *)(data_ov022_02114690 + i * 8) = seat[i];

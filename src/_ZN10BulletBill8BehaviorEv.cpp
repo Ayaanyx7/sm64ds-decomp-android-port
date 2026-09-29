@@ -38,7 +38,14 @@ extern "C" {
 void func_0200f760(void *self, void *cc);
 void _ZN8dActor_c9UpdatePosEP5dCc_c(void *self, void *cc);
 void *_ZN8dActor_c10FindWithIDEj(u32 id);
+#ifdef _MSC_VER
+/* Player::IncMegaKillCount's receiver: on the cartridge FindWithID's result stays in
+   r0 for the bl that follows (ov079 0x02126ae8 / 0x02126aec), and the host face
+   (port/hal/bob_enemy_bridges.cpp) takes it as its one argument. */
+void _ZN6Player16IncMegaKillCountEv(void *player);
+#else
 void _ZN6Player16IncMegaKillCountEv();
+#endif
 void _ZN8Particle6System9NewSimpleEj5Fix12IiES2_S2_(u32, int, int, int);
 void _ZN7fBase_c18MarkForDestructionEv(void *self);
 void func_02012694(int a, void *b);
@@ -72,8 +79,12 @@ int BulletBill::Behavior()
     if (id != 0) {
         flags = (*(s32 *)((char *)&mdCcAcPos_c + 0x20));
         if (flags & 0x10) {
+#ifdef _MSC_VER
+            _ZN6Player16IncMegaKillCountEv(_ZN8dActor_c10FindWithIDEj(id));
+#else
             _ZN8dActor_c10FindWithIDEj(id);
             _ZN6Player16IncMegaKillCountEv();
+#endif
             _ZN8Particle6System9NewSimpleEj5Fix12IiES2_S2_(0x8f, mPosX, mPosY, mPosZ);
             _ZN7fBase_c18MarkForDestructionEv(c);
             {

@@ -347,7 +347,7 @@ const char *op_name(int op)
     switch (op) {
     case 0x00: return "START_SEQ";
     case 0x01: return "STOP_SEQ";
-    case 0x02: return "PREPARE_SEQ";
+    case 0x02: return "PAUSE_SEQ";
     case 0x03: return "PLAYER_PARAM";
     case 0x04: return "TRACK_PARAM";
     case 0x05: return "MUTE_TRACKS";
@@ -430,6 +430,12 @@ void exec(const Node *n)
               sd_seq_active(n->a & 31) ? "  (CUTS a player still sounding)"
                                        : "");
         sd_seq_stop(n->a & 31);
+        break;
+    case 0x02:                          // PAUSE_SEQ: a = player, b = flag
+        // func_0205ad6c's command (Sound::PauseMusic / UnpauseMusic reach it
+        // through func_0204f558). The ARM7's handler is on sd_seq_pause.
+        SD_VT("cmd  PAUSE player %2d flag %d\n", n->a & 31, n->b);
+        sd_seq_pause(n->a & 31, n->b);
         break;
     case 0x03: {                        // PLAYER_PARAM: b = param, c = value
         // Param 4 is func_0205ad24's, sent once at start (see below).

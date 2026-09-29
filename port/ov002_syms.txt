@@ -133,7 +133,16 @@ data_ov002_021098e8:0x18 data_ov002_021098ec:0x14 data_ov002_021098f0:0x10
 # SetFile takes the last arg by reference, so the block is dereferenced and
 # must be mounted. Both 0x20 bytes.
 data_ov002_0210d854:0x20 data_ov002_0210d894:0x20
-data_ov002_0210d7f4:0x8
+# The CLPS_Block daObjCannonShutter_c::InitResources hands its mesh collider
+# (the relocation at 0x020bccc4). One row: 43 4c 50 53 08 00 01 00, then
+# c0 0f 00 00 ff 00 00 00, then 0x10 bytes of 0xff fill to the next block, so
+# it is pinned to its ROM span 0x20 like its neighbours. At 0x8 the mount held
+# the header only: the surface lookup (func_020381cc) read row 0 out of
+# whatever host symbol the linker put next, g_profile_WARPKUN, whose first
+# word is a host code pointer, so the cannon lid's surface changed with the
+# exe layout (Snowman's Land: Mario fell through the lid on one build and
+# landed on it on another).
+data_ov002_0210d7f4:0x20
 g_profile_WARPKUN:0x1c
 # gate 32: the two-entry coin-id table Enemy::SpawnCoin indexes by its own
 # +0x108 death-drop type. Not reached by any class before an enemy could die.
@@ -512,7 +521,10 @@ g_profile_CH_ROOM:0x1c
 # 0x20-byte ones as [i*2] and [i*2+1] with i 0..3, and the three 0x50-byte
 # blocks as five 4-int rows by func_ov002_020f2f9c. No size suffix is needed
 # on any of them.
-data_ov002_021000b8 data_ov002_021000c8 data_ov002_021000d0 data_ov002_021000d8 data_ov002_021000e0 data_ov002_021000f0 data_ov002_02100100 data_ov002_02100110 data_ov002_02100120 data_ov002_02100130 data_ov002_02100150 data_ov002_02100160 data_ov002_02100170 data_ov002_02100190 data_ov002_021001b0 data_ov002_02100200 data_ov002_02100250
+# data_ov002_021000c0 joined in run hunt4 (lane BBILL1): the four-short re-arm
+# heading table of icon state func_ov002_020f3de4 (port/unmatched/), read [j]
+# with j 0..3; bare, so the next-symbol rule gives it its 8 bytes (to c8).
+data_ov002_021000b8 data_ov002_021000c0 data_ov002_021000c8 data_ov002_021000d0 data_ov002_021000d8 data_ov002_021000e0 data_ov002_021000f0 data_ov002_02100100 data_ov002_02100110 data_ov002_02100120 data_ov002_02100130 data_ov002_02100150 data_ov002_02100160 data_ov002_02100170 data_ov002_02100190 data_ov002_021001b0 data_ov002_02100200 data_ov002_02100250
 
 # ---- link100 STUBADJ, gate 226 ----
 # daObjPushblock_c::InitResources (0x020b8fe0, slot 0 of _ZTV16daObjPushblock_c)
@@ -600,3 +612,30 @@ _ZN3OAM13MM_SMALL_STARE _ZN3OAM5PAUSEE _ZN3OAM19ARROW_POINTING_LEFTE _ZN3OAM20AR
 _ZN3OAM9TINY_STARE _ZN3OAM26SMALL_ARROW_POINTING_RIGHTE _ZN3OAM25SMALL_ARROW_POINTING_LEFTE _ZN3OAM8VS_PAUSEE
 data_ov002_0210caf4 data_ov002_0210cb14 data_ov002_0210ce90 data_ov002_0210cea8 data_ov002_0210ced0
 data_ov002_0210cee8 data_ov002_0210cf08 data_ov002_0210cf28 data_ov002_0210cf78 data_ov002_0210cfa0
+
+# ---- hunt4 CLPS002: six CLPS blocks OTHER overlays point at ----
+# Each is a one-row surface table (43 4c 50 53 08 00 01 00 + one 8-byte row,
+# then 0x10 bytes of 0xff fill to the next block), read out of
+# extracted/overlays/overlay_0002.bin (base 0x020ad660). Nothing in ov002
+# names them; the only relocations are DATA words in other overlays' mounts:
+#   ov098 data_ov098_0213c388 +0x0 -> 0x0210d914, +0xc -> 0x0210d734
+#         (ArrowSignRight::InitResources' per-variant table: variant 0 is
+#         ARROW_SIGN_LEFT, variant 1 ARROW_SIGN_RIGHT)
+#   ov098 data_ov098_0213c4c8 +0x8 -> 0x0210d934  (Crate::InitResources, CRATE)
+#   ov091 data_ov091_02134c38 +0x0, +0xc -> 0x0210d834
+#         (RotatingUpDownPlatformUtm::InitResources, idx 0 / 1: the Whomp's
+#         Fortress ROTATING_UP_DOWN_PLATFORM, id 29; the UTM class, id 30,
+#         reads idx 2 = +0x18, a level-window word, not one of these)
+#   ov095 data_ov095_021374a8 +0x0 -> 0x0210d974  (SeesawBob::InitResources
+#         variant 0 = the SEESAW_UTM, id 28, not the Bob-omb seesaw)
+#   ov102 data_ov102_0214e190 +0x24 -> 0x0210d814 (FortressTower::InitResources
+#         idx 3 = the WARP_PIPE, id 298, not the tower, which reads +0x18)
+# Unmounted, ovdata.py --cross found no provider for them and left the raw DS
+# address in each word: the surface lookup (func_020381cc) read zeros, the
+# default surface, where the ROM has these rows, and a PC without DS main RAM
+# faulted there (level 48's camera, reading 0x0210d918). Mounted, each target
+# lies in exactly one window co-resident with its owner (ov002's), so the
+# existing cross pass binds all seven words; no seat. Pinned to 0x20 like the
+# neighbouring blocks above (0x0210d974's next symbol is bss at 0x0210d9a0).
+data_ov002_0210d734:0x20 data_ov002_0210d814:0x20 data_ov002_0210d834:0x20
+data_ov002_0210d914:0x20 data_ov002_0210d934:0x20 data_ov002_0210d974:0x20
