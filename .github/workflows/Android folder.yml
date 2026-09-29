@@ -1,4 +1,4 @@
-name: Import SDL2 Android Project
+name: Import SDL3 Android Project
 
 on:
   workflow_dispatch:
@@ -20,11 +20,11 @@ jobs:
       - name: Download SDL3
         run: |
           wget https://github.com/libsdl-org/SDL/releases/download/release-3.4.16/SDL3-3.4.16.zip
-          unzip SDL2-3.4.16.zip
+          unzip SDL3-3.4.16.zip
 
       - name: Copy android-project
         run: |
-          cp -r SDL2-3.4.16/android-project ./android-project
+          cp -r SDL3-3.4.16/android-project ./android-project
 
       - name: Commit
         run: |
