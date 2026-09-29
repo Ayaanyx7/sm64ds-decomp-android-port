@@ -24136,6 +24136,25 @@ foreach(_tw32k2render walk_window walk_window_hires smoke_player)
     target_sources(${_tw32k2render} PRIVATE ${SLICE_W32_K2RENDER_SOURCES})
 endforeach()
 
+# ===========================================================================
+# CROSSPATCH1 (run hunt4): THE PER-LOADED-LEVEL CROSS-POINTER SEAT
+# ===========================================================================
+#
+# hal/cross_level_seat.cpp re-patches, on every level mount, the cross-mount
+# words ovdata.py --cross has to leave raw (their target window is shared by
+# several level or object overlays), from the table the same pass now appends
+# to ov_cross.c. Its caller is hal/level_boot.cpp's port_level_mount_at, which
+# all three hosting targets compile, so all three take the file. The generator
+# scans hal/*.cpp for existing hand-seat rows and leaves those words to their
+# seats, so the cross step depends on every hal source (a seat added or edited
+# re-runs it; it takes a second). Placed above XREL1's block, which stays last.
+foreach(_tcp1 walk_window walk_window_hires smoke_player)
+    target_sources(${_tcp1} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/hal/cross_level_seat.cpp")
+endforeach()
+file(GLOB _cp1_hal_seats CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/hal/*.cpp")
+add_custom_command(OUTPUT "${OVCROSS_C}" APPEND
+    DEPENDS ${_cp1_hal_seats})
+
 # XREL1 (run linkfull): EVERY OVERLAY MOUNT DEPENDS ON THE CONFIG IT READS.
 #
 # tools/ovdata.py builds each mount out of its overlay's config/arm9/overlays/
