@@ -1812,6 +1812,13 @@ static int port_mount_trace(void)
    rather than merely harmless. See hal/ttc_level_data_seat.cpp. */
 extern "C" void port_ttc_level_data_seat(int level_id);
 
+/* run hunt4 lane CROSSPATCH1: the per-loaded-level seat for every other
+   contested cross-mount word (the ones ovdata.py --cross leaves raw because
+   several level or object overlays share the target window). Same two call
+   sites and the same "second call decides" order as the Ttc seat, and after
+   it. See hal/cross_level_seat.cpp. */
+extern "C" void port_cross_level_seat(int level_id);
+
 static void *port_level_mount_at(int idx)
 {
     void **mounted = g_level_mounted;
@@ -1825,6 +1832,7 @@ static void *port_level_mount_at(int idx)
            previously loaded level left them, and a re-entry to 27 after a trip
            through 33 arrives here rather than below. */
         port_ttc_level_data_seat(port_level_table[idx].id);
+        port_cross_level_seat(port_level_table[idx].id);
         return mounted[idx];
     }
     if (port_mount_trace())
@@ -1860,6 +1868,7 @@ static void *port_level_mount_at(int idx)
        returns. */
     port_stage_mod_apply(d->id, lvl);
     port_ttc_level_data_seat(d->id);
+    port_cross_level_seat(d->id);
     return lvl;
 }
 
