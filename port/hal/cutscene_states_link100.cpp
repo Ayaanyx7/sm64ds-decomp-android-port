@@ -115,10 +115,11 @@
  * data_ov002_02110eec[8] names func_ov002_020f3de4, which still has NO src
  * file: it does not byte-match yet (the banked near-miss sits at 44
  * divergences on an ordering floor). It used to get an ABORTING face that
- * named itself, and the ending reached it: with every character unlocked the
- * cast screen's last icon state is entered right after Peach's cake line, so
- * a player who had finished the game got the abort there (0.5.2 report
- * 3a4fb011, and the level 40 ending with SM64DS_EVENT_SEED=2:f). The cell now
+ * named itself, and the ending reached it: with any unlocked character (one
+ * is enough; SM64DS_EVENT_SEED=2:1, 2:3, 2:7 and 2:f all enter it) the cast
+ * screen's last icon state is entered right after Peach's cake line, so a
+ * player who had finished the game got the abort there (0.5.2 report
+ * 3a4fb011; only a save with no character unlocked skips it). The cell now
  * runs port/unmatched/func_ov002_020f3de4.c, the ROM body transcribed from
  * that near-miss, whose mwccarm object is the ROM's instruction sequence up
  * to register choice and one swapped independent pair (the file's header

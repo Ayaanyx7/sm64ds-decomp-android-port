@@ -24159,8 +24159,8 @@ add_custom_command(OUTPUT "${OVCROSS_C}" APPEND
 #
 # data_ov002_02110eec[8] (func_ov002_020f3de4) had an aborting face in
 # hal/cutscene_states_link100.cpp because the function has no byte-matching
-# src file. With every character unlocked the ending enters it right after
-# Peach's cake line, so the port aborted there. port/unmatched/
+# src file. With any unlocked character (one is enough) the ending enters it
+# right after Peach's cake line, so the port aborted there. port/unmatched/
 # func_ov002_020f3de4.c is the banked near-miss of that body (register choice
 # and one swapped independent pair away from the ROM); it reads
 # data_ov002_021000c0, which port/ov002_syms.txt now mounts. All three hosting
