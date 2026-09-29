@@ -1286,13 +1286,34 @@ def main():
     # word-address -> target. Apply those before emitting, or every baked
     # pointer is garbage (build-time leftovers, ASCII scraps).
     relocs = load_relocs(root, ov)
+    reloc_sites = sorted(relocs)
+
+    # THE SITES COME FROM relocs.txt, NOT FROM A STRIDE OFF THE SYMBOL START.
+    # A relocated word sits on the ROM's own 4-byte grid, but dsd names a symbol
+    # wherever code first addressed it, and that can be any byte. The old
+    # `range(0, size - 3, 4)` walk stepped from the symbol's start, so inside a
+    # symbol at an address ending in 1, 2 or 3 it asked about sites the ROM
+    # never used and never about the ones it did. data_ov007_020ccb7d (71 bytes,
+    # address ending in d) is the one that shipped: eight rows, each with a
+    # pointer at +4 into ov007's own .rodata head, all left holding DS
+    # addresses. func_ov007_020ade58 reads through them while the title scene
+    # comes up, so a machine that could not reserve DS main RAM at 0x02000000
+    # faulted on 0x020ccb54 before the first frame (0.5.2 player reports, run
+    # hunt4 lane BOOT1), and every other machine read zeros out of the reserved
+    # pages instead of the table's bytes. For a symbol at a 4-aligned address
+    # the offsets below are exactly the old stride's hits, in the same order.
+    def reloc_offsets(a, size):
+        i = bisect.bisect_left(reloc_sites, a)
+        out = []
+        while i < len(reloc_sites) and reloc_sites[i] + 4 <= a + size:
+            out.append(reloc_sites[i] - a)
+            i += 1
+        return out
 
     def reloc_blob(a, blob):
         b = bytearray(blob)
-        for off in range(0, len(b) - 3, 4):
-            t = relocs.get(a + off)
-            if t is not None:
-                b[off:off + 4] = t.to_bytes(4, "little")
+        for off in reloc_offsets(a, len(b)):
+            b[off:off + 4] = relocs[a + off].to_bytes(4, "little")
         return bytes(b)
 
     # Under --rom-clean every ROM-content array below is emitted ZEROED and
@@ -1673,9 +1694,7 @@ def main():
 
     patches = []
     for name, a, size, blob in emitted:
-        for off in range(0, size - 3, 4):
-            if relocs.get(a + off) is None:
-                continue
+        for off in reloc_offsets(a, size):
             if (a + off) in FALSE_RELOC_SITES.get(ov, ()):
                 continue
             v = int.from_bytes(blob[off:off + 4], "little")
