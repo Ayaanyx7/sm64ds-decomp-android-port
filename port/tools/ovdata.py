@@ -43,7 +43,9 @@ rebuilding all nine.
 The cross pass drops a pointer whose target could name more than one mount's
 copy, and "could" is a RESIDENCY question, not an address question: overlays
 that the DS never has loaded at the same time are not two answers. See the
-Residency class.
+Residency class. What it drops it does not abandon: it lists every such word
+with its candidate copies (level_seat_table), and hal/cross_level_seat.cpp
+binds each to the one resident for the level being mounted.
 """
 
 import bisect
@@ -826,6 +828,178 @@ HAND_SEATED = {
 }
 
 
+# WORDS A HAND SEAT IN port/hal ALREADY OWNS. Three seats rewrite words this
+# table would otherwise carry, each with its own rule and each checking the
+# value it finds before it writes:
+#   hal/ttc_level_data_seat.cpp   eight ov065 words: ov035's copy on level 27,
+#                                 raw everywhere else, abort on a third value
+#   hal/actor_classes_ov074.cpp   twenty ov074 BTA / file-table words onto
+#                                 ov053's image, ONCE, and it aborts unless the
+#                                 word still holds its ROM address -- so a level
+#                                 seat that bound them first (level 45 is the
+#                                 only level that loads ov074) would kill the
+#                                 boot: "FATAL: ov074 level-file seat +0:
+#                                 mounted word reads 0x0164ff4c", measured
+#   hal/intro_ov002_seat.cpp      three ov002 words (the DEMO actor's CLPS and
+#                                 ov085 file-handle pointers), once, for good
+# They stay those seats'. Found by SCANNING port/hal for a seat row
+# `{ data_ovNNN_ADDR, ["name",] off, 0xROMADDR ...` rather than by a list, so
+# a new seat of that shape is honoured without an edit here; matched on the
+# word's DS address (ADDR + off) and its ROM value, because a seat and a mount
+# can spell the same word through different symbols (ov074's 0x02122f38 + 12
+# is the mount's data_ov074_02122f3c + 8). The STATIC_ROCK seat in
+# hal/level_boot.cpp is code, not a row, and is compatible by design (see
+# hal/cross_level_seat.cpp), so it is not in this set.
+_SEAT_ROW = re.compile(
+    r"\{\s*data_ov(\d{3})_([0-9a-fA-F]{8})\s*,\s*(?:\"[^\"]*\"\s*,\s*)?"
+    r"(0x[0-9a-fA-F]+|\d+)u?\s*,\s*(0x[0-9a-fA-F]{8})u?\b")
+
+
+def hal_seated(root):
+    """{(overlay, DS address of the word, ROM value): seat file}"""
+    out = {}
+    for p in sorted((root / "port/hal").glob("*.cpp")):
+        for m in _SEAT_ROW.finditer(p.read_text(errors="replace")):
+            ov = "ov" + m.group(1)
+            addr = int(m.group(2), 16) + int(m.group(3), 0)
+            out[(ov, addr, int(m.group(4), 16))] = p.name
+    return out
+
+
+def code_ranges(root, ov):
+    """[(start, end)] of the overlay's .text and .init, from delinks.txt."""
+    out = []
+    path = root / f"config/arm9/overlays/{ov}/delinks.txt"
+    for line in path.read_text().splitlines():
+        ms = re.search(
+            r"^\s+\.(\w+)\s+start:0x([0-9a-fA-F]+)\s+end:0x([0-9a-fA-F]+)",
+            line)
+        if ms:
+            if ms.group(1) in ("text", "init"):
+                out.append((int(ms.group(2), 16), int(ms.group(3), 16)))
+        elif out and not line.startswith(" "):
+            break
+    return out
+
+
+def level_seat_table(root, mounts, windows, claims_by_ov, contested):
+    """The table hal/cross_level_seat.cpp re-patches from on every level mount.
+
+    THE CONTESTED WORDS ARE NOT AMBIGUOUS ON THE DS, ONLY AT BUILD TIME. The
+    cross pass cannot say which of the level (or object) overlays sharing a
+    base a pointer names, because that depends on which ones are loaded. The
+    DS answers it the moment a level loads: LoadLevelOverlays loads
+    data_020758c8[level], LoadOrUnloadObjectOverlays loads that level's object
+    overlays out of data_02075998 / data_02075804 plus ov060 or ov098 and
+    ov102, and every word keeps its ROM address, which then reads whichever of
+    those is resident there. The seat asks the ROM's own tables (through the
+    linked matched TU) which overlays that is and writes the host address of
+    the SAME BYTE in the one resident copy -- or the raw ROM address when the
+    word's own overlay is not loaded, no resident mount covers the target, or
+    the target is code. So this table lists, per contested word, every mounted
+    copy the target could name and which overlay each belongs to; the choice
+    is made at run time.
+
+    Per candidate overlay the host copy is the per-symbol provider when one
+    covers the target (what the cross pass binds to and what the linked TUs
+    name), else the whole image; when both exist the whole image is carried
+    as the accepted ALTERNATE so a word another seat already rebased onto it
+    (the STATIC_ROCK CLPS seat in hal/level_boot.cpp writes port_ov016_at())
+    is recognised rather than reported as a third value. A target inside the
+    candidate's .text or .init stays raw, the rule the whole-image mount's
+    'provides nothing' comment gives: DS code bytes are no host answer to a
+    pointer. A word an existing hand seat owns (hal_seated above) is left out.
+    """
+    whole = {m["overlay"]: m["window"][0] for m in mounts
+             if m["mode"] == "whole"}
+    seated = hal_seated(root)
+    cover = {ov: make_covering(c) for ov, c in claims_by_ov.items()}
+    code = {}
+    cands = []
+    rows = []
+    decls = set()
+    stats = {"words": 0, "hand_seated": 0, "no_copy": 0, "code_hits": 0,
+             "candidates": 0}
+    owners = {}
+    for ov, name, off, target, site in contested:
+        seat = seated.get((ov, site, target))
+        if (name, off) in HAND_SEATED or seat:
+            stats["hand_seated"] += 1
+            owners[seat or "HAND_SEATED"] = owners.get(
+                seat or "HAND_SEATED", 0) + 1
+            continue
+        cs = []
+        for wov, (s, e) in sorted(windows.items()):
+            if not (s <= target < e):
+                continue
+            if wov not in code:
+                code[wov] = code_ranges(root, wov)
+            if any(a <= target < b for a, b in code[wov]):
+                stats["code_hits"] += 1
+                continue
+            hit = cover[wov](target) if wov in cover else None
+            prim = (hit[2], target - hit[0]) if hit else None
+            alt = None
+            if wov in whole:
+                img = (f"port_{wov}_image", target - whole[wov])
+                if prim is None:
+                    prim = img
+                else:
+                    alt = img
+            if prim is None:
+                continue
+            cs.append((int(wov[2:]), prim, alt))
+        if not cs:
+            stats["no_copy"] += 1
+            continue
+        decls.add(name)
+        for _, p, a in cs:
+            decls.add(p[0])
+            if a:
+                decls.add(a[0])
+        rows.append((name, off, target, int(ov[2:]), len(cands), len(cs)))
+        cands.extend(cs)
+    stats["words"] = len(rows)
+    stats["candidates"] = len(cands)
+    stats["left_to"] = owners
+
+    out = ["", "/* THE PER-LOADED-LEVEL SEAT'S TABLE, read by hal/cross_level_seat.cpp",
+           " * on every level mount: one row per contested word (site, ROM value,",
+           " * owning overlay, its candidate run), one row per candidate copy. */"]
+    out += sorted(f"extern u8 {d}[];" for d in decls)
+    # C has no empty initialiser, so an empty table is one dummy row each and
+    # the count says 0.
+    n = len(rows)
+    out.append(f"const unsigned port_xl_want_count = {n}u;")
+    out.append(f"const unsigned port_xl_cand_count = {len(cands)}u;")
+    out.append("u8 *const port_xl_site[] = {")
+    out += ([f"    {nm} + {o}," for nm, o, _, _, _, _ in rows] or ["    0,"])
+    out.append("};")
+    out.append("const unsigned port_xl_rom[] = {")
+    out += ([f"    {t:#010x}u," for _, _, t, _, _, _ in rows] or ["    0u,"])
+    out.append("};")
+    out.append("const unsigned short port_xl_owner[] = {")
+    out += ([f"    {w}," for _, _, _, w, _, _ in rows] or ["    0,"])
+    out.append("};")
+    out.append("const unsigned short port_xl_cand0[] = {")
+    out += ([f"    {c}," for _, _, _, _, c, _ in rows] or ["    0,"])
+    out.append("};")
+    out.append("const unsigned short port_xl_ncand[] = {")
+    out += ([f"    {k}," for _, _, _, _, _, k in rows] or ["    0,"])
+    out.append("};")
+    out.append("const unsigned short port_xl_cand_ov[] = {")
+    out += ([f"    {o}," for o, _, _ in cands] or ["    0,"])
+    out.append("};")
+    out.append("u8 *const port_xl_cand_host[] = {")
+    out += ([f"    {p[0]} + {p[1]}," for _, p, _ in cands] or ["    0,"])
+    out.append("};")
+    out.append("u8 *const port_xl_cand_alt[] = {")
+    out += ([f"    {a[0]} + {a[1]}," if a else "    0," for _, _, a in cands]
+            or ["    0,"])
+    out.append("};")
+    return out, stats
+
+
 def write_map(out_path, ov, mode, window, provides, wants):
     """The sidecar the --cross pass reads. See the module docstring.
 
@@ -1012,8 +1186,11 @@ def cross_mode(root, out_path, map_paths):
     # candidates. Binding it to the ov009 copy would be right on the castle
     # grounds and a walk over another level's bytes everywhere else, which is
     # the class of bug this pass exists to remove. Resolving it correctly needs
-    # a seat that re-patches per loaded level; until there is one, raw is the
-    # honest answer and the sweep keeps it visible.
+    # a seat that re-patches per loaded level, so this pass leaves the word raw
+    # and hands it to one: every contested word goes into the table
+    # level_seat_table() appends to the same output, and
+    # hal/cross_level_seat.cpp rewrites it on each level mount from the ROM's
+    # own answer to which overlays that level loads.
     #
     # The test is on WINDOWS, not on the provided ranges. ov014 is mounted
     # whole and provides nothing, so comparing provided ranges alone would find
@@ -1111,6 +1288,7 @@ def cross_mode(root, out_path, map_paths):
     decls = []
     body = []
     seen = set()
+    contested = []
     unresolved = 0
     contested_hits = 0
     unowned = 0
@@ -1130,6 +1308,13 @@ def cross_mode(root, out_path, map_paths):
             if n_windows > 1:
                 unresolved += 1
                 contested_hits += 1
+                if m["mode"] == "whole":
+                    at = m["window"][0]
+                else:
+                    at = next((pa for pa, _sz, pn in m["provides"]
+                               if pn == name), None)
+                contested.append((m["overlay"], name, off, target,
+                                  None if at is None else at + off))
                 continue
             # ZERO co-resident windows means no mount that could be live
             # alongside this one owns the address -- arm9, an unmounted
@@ -1161,6 +1346,9 @@ def cross_mode(root, out_path, map_paths):
     lines.append("{")
     lines.extend(body)
     lines.append("}")
+    seat_lines, seat_stats = level_seat_table(root, mounts, windows,
+                                              claims_by_ov, contested)
+    lines.extend(seat_lines)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n", encoding="ascii")
     if outside:
@@ -1170,6 +1358,7 @@ def cross_mode(root, out_path, map_paths):
           f"{unresolved} left raw ({contested_hits} into a window contested by "
           f"a co-resident mount, {unowned} into a range no co-resident mount "
           f"owns, the rest arm9 or an unmounted overlay) -> {out_path}")
+    print(f"cross: level seat: {seat_stats}")
 
 
 def main():
@@ -1286,13 +1475,34 @@ def main():
     # word-address -> target. Apply those before emitting, or every baked
     # pointer is garbage (build-time leftovers, ASCII scraps).
     relocs = load_relocs(root, ov)
+    reloc_sites = sorted(relocs)
+
+    # THE SITES COME FROM relocs.txt, NOT FROM A STRIDE OFF THE SYMBOL START.
+    # A relocated word sits on the ROM's own 4-byte grid, but dsd names a symbol
+    # wherever code first addressed it, and that can be any byte. The old
+    # `range(0, size - 3, 4)` walk stepped from the symbol's start, so inside a
+    # symbol at an address ending in 1, 2 or 3 it asked about sites the ROM
+    # never used and never about the ones it did. data_ov007_020ccb7d (71 bytes,
+    # address ending in d) is the one that shipped: eight rows, each with a
+    # pointer at +4 into ov007's own .rodata head, all left holding DS
+    # addresses. func_ov007_020ade58 reads through them while the title scene
+    # comes up, so a machine that could not reserve DS main RAM at 0x02000000
+    # faulted on 0x020ccb54 before the first frame (0.5.2 player reports, run
+    # hunt4 lane BOOT1), and every other machine read zeros out of the reserved
+    # pages instead of the table's bytes. For a symbol at a 4-aligned address
+    # the offsets below are exactly the old stride's hits, in the same order.
+    def reloc_offsets(a, size):
+        i = bisect.bisect_left(reloc_sites, a)
+        out = []
+        while i < len(reloc_sites) and reloc_sites[i] + 4 <= a + size:
+            out.append(reloc_sites[i] - a)
+            i += 1
+        return out
 
     def reloc_blob(a, blob):
         b = bytearray(blob)
-        for off in range(0, len(b) - 3, 4):
-            t = relocs.get(a + off)
-            if t is not None:
-                b[off:off + 4] = t.to_bytes(4, "little")
+        for off in reloc_offsets(a, len(b)):
+            b[off:off + 4] = relocs[a + off].to_bytes(4, "little")
         return bytes(b)
 
     # Under --rom-clean every ROM-content array below is emitted ZEROED and
@@ -1673,9 +1883,7 @@ def main():
 
     patches = []
     for name, a, size, blob in emitted:
-        for off in range(0, size - 3, 4):
-            if relocs.get(a + off) is None:
-                continue
+        for off in reloc_offsets(a, size):
             if (a + off) in FALSE_RELOC_SITES.get(ov, ()):
                 continue
             v = int.from_bytes(blob[off:off + 4], "little")
