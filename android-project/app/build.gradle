@@ -17,12 +17,12 @@ android {
             ndkBuild {
                 arguments "APP_PLATFORM=android-21"
                 // abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
-                abiFilters 'arm64-v8a'
+                abiFilters 'armeabi-v7a'
             }
             cmake {
                 arguments "-DANDROID_PLATFORM=android-21", "-DANDROID_STL=c++_static"
                 // abiFilters 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
-                abiFilters 'arm64-v8a'
+                abiFilters 'armeabi-v7a'
             }
         }
     }
@@ -43,7 +43,7 @@ android {
         externalNativeBuild {
             if (buildWithCMake) {
                 cmake {
-                    path 'jni/CMakeLists.txt'
+                    path 'jni/src/CMakeLists.txt'
                 }
             } else {
                 ndkBuild {
