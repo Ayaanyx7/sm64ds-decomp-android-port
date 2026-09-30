@@ -54,11 +54,6 @@ void FaderBrightness::AdvanceFade() { AdvanceInterp(); }
 // cannot reach the two other definitions of func_0203ae58's shape:
 // hal/fader_wipes.cpp and hal/link21_rows.cpp are on the window targets and
 // carry their own rows.
-int ApproachLinear(int &ref, int target, int step);
-extern "C" void _Z14ApproachLinearRiii(int *value, int target, int step)
-{
-    ApproachLinear(*value, target, step);
-}
 
 // AND THE DELETE SLOT THE HOST COMPILER INSISTS ON. include/Fader.h:85 gives
 // Fader a class operator delete that calls the flat extern "C" name
