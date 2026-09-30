@@ -1,0 +1,39 @@
+cmake_minimum_required(VERSION 3.22)
+project(sm64ds_smoke_android C CXX)
+
+# Same helper the real CMakeLists.txt uses: read a slice manifest into a
+# list of source paths, one per line, skipping blanks and comments.
+function(port_read_lines path outvar)
+    file(STRINGS "${path}" _lines)
+    set(${outvar} "${_lines}" PARENT_SCOPE)
+endfunction()
+
+# slice_gate1.txt's paths are written relative to the REPO ROOT (one level
+# up from port/), per its own header comment.
+port_read_lines("${CMAKE_CURRENT_SOURCE_DIR}/slice_gate1.txt" SLICE_LINES)
+set(SLICE_SOURCES "")
+foreach(line IN LISTS SLICE_LINES)
+    string(STRIP "${line}" line)
+    if(line MATCHES "^#" OR line STREQUAL "")
+        continue()
+    endif()
+    list(APPEND SLICE_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../${line}")
+endforeach()
+
+# tests/ and hal/ paths are relative to port/ itself, matching how the real
+# CMakeLists.txt writes them.
+add_executable(smoke
+    tests/smoke.cpp
+    hal/cstd_div.c
+    hal/os_time.cpp
+    hal/shims.cpp
+    ${SLICE_SOURCES})
+
+target_include_directories(smoke PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/hal"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# Deliberately no SM64DS_PLATFORM_PC define — none of gate 1's hal files
+# actually check for it, so there's nothing to set yet.
