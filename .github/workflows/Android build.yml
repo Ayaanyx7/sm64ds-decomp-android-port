@@ -1,0 +1,39 @@
+name: Android Build
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;27.2.12479018"
+
+      - name: Configure CMake
+        run: |
+          cmake -S android-project/app/src/main/cpp \
+                -B android-project/app/build/cmake \
+                -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+                -DANDROID_ABI=armeabi-v7a \
+                -DANDROID_PLATFORM=android-24
+
+      - name: Build native library
+        run: |
+          cmake --build android-project/app/build/cmake --parallel
