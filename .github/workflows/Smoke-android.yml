@@ -26,7 +26,7 @@ jobs:
 
       - name: Configure
         run: |
-          cmake -S port/android_smoke -B build-android \
+          cmake -S port/android -B build-android \
             -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
             -DANDROID_ABI=armeabi-v7a \
             -DANDROID_PLATFORM=android-24 \
