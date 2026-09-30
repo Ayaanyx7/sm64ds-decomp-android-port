@@ -1,12 +1,28 @@
-cmake_minimum_required(VERSION 3.6)
+cmake_minimum_required(VERSION 3.22)
 
-project(my_app)
+project(sm64ds_android C CXX)
 
-if(NOT TARGET SDL3::SDL3)
-    find_package(SDL3 CONFIG REQUIRED)
-endif()
+set(CMAKE_C_STANDARD 99)
+set(CMAKE_CXX_STANDARD 17)
 
-add_library(main SHARED
-    YourSourceHere.c
+file(GLOB_RECURSE SM64DS_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../src/*.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../src/*.cpp"
 )
-target_link_libraries(main PRIVATE SDL3::SDL3)
+
+add_library(sm64ds SHARED
+    ${SM64DS_SOURCES}
+)
+
+target_compile_definitions(sm64ds PRIVATE
+    PLATFORM_ANDROID=1
+)
+
+target_compile_options(sm64ds PRIVATE
+    -fno-strict-aliasing
+)
+
+target_link_libraries(sm64ds
+    android
+    log
+)
