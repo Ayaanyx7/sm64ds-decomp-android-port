@@ -1,0 +1,45 @@
+name: smoke-android
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'port/CMakeLists.android.txt'
+      - 'port/hal/**'
+      - 'port/tests/smoke.cpp'
+      - 'port/slice_gate1.txt'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Configure
+        run: |
+          cmake -S port -B build-android \
+            -DCMAKE_TOOLCHAIN_FILE=${{ steps.setup-ndk.outputs.ndk-path }}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=armeabi-v7a \
+            -DANDROID_PLATFORM=android-24 \
+            -G Ninja \
+            -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=port/CMakeLists.android.txt
+
+      - name: Build
+        run: cmake --build build-android --target smoke -- -k 0
+
+      - name: Upload binary
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-android-armeabi-v7a
+          path: build-android/smoke
+          if-no-files-found: warn
