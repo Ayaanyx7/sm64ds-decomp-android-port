@@ -5,27 +5,31 @@ project(sm64ds_android C CXX)
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_CXX_STANDARD 17)
 
-file(GLOB_RECURSE SM64DS_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../src/*.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../src/*.cpp"
+add_library(sm64ds SHARED)
+
+target_sources(sm64ds PRIVATE
+
+    # Android entry point
+    android-project/app/src/main/cpp/main.cpp
+
+    # Port layer
+    # Add the actual files from port/ here
+
+    # Game source
+    # Add the game TUs that the PC port actually links
+
+    # Third-party
+    # Add stb implementation files actually required
 )
 
-file(GLOB_RECURSE PORT_SOURCES
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../port/*.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../port/*.cpp"
-)
-
-add_library(sm64ds SHARED
-    ${SM64DS_SOURCES}
-    ${PORT_SOURCES}
+target_include_directories(sm64ds PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/port
+    ${CMAKE_CURRENT_SOURCE_DIR}/third-party
 )
 
 target_compile_definitions(sm64ds PRIVATE
     PLATFORM_ANDROID=1
-)
-
-target_compile_options(sm64ds PRIVATE
-    -fno-strict-aliasing
 )
 
 target_link_libraries(sm64ds
